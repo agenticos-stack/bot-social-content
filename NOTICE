@@ -1,0 +1,7 @@
+Social Content AI agent
+Copyright 2026 AgenticOS contributors
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+The archive codec and bounded gadget contract are consumed from the separately
+released `@agenticos-dev/bot-archive-tools` and `@agenticos-dev/bot-contract`
+packages; their own notices and licenses remain authoritative.

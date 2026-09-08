@@ -1,0 +1,12 @@
+{
+  "blueprintKey": "social_localization",
+  "legacyBlueprintId": "social.localization",
+  "artifact": "social-content.gadget",
+  "metadata": {
+    "title": "Social Content",
+    "description": "Watch authorized source accounts, keep normalized posts, localize approved picks into written Traditional Chinese (zh-HK), and hand the exact approved version to the Social Hub publisher through a door.",
+    "author": { "type": "user", "name": "AgenticOS Platform", "id": "platform@agenticos.hk" },
+    "version": 1
+  },
+  "files": ["client.js", "server.js", "storage.js", "config.js", "doors.js", "model.js", "agent.md", "README.md"]
+}
