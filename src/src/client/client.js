@@ -127,8 +127,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-collection { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-mobile-panes { display: none; }
 .sl-inbox { margin: 0 0 22px; padding: 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); }
-.sl-inbox-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 36px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); white-space: nowrap; font-size: 10.5px; }
+.sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.sl-inbox-tabs button { min-height: 44px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); white-space: nowrap; font-size: 12px; }
 .sl-inbox-tabs button.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }

@@ -100,6 +100,14 @@ local build. Real browser acceptance and production publication are separate
 gates, not implied by these package tests.
 # Shared visual foundation
 
+Dev-only **Canvas language → Apply** switches between English and zh-HK.
+It preserves the chat but reloads the canvas fixture (discarding canvas edits),
+and records the choice in the preview URL. Dev controls remain English.
+This tests UI language, not the source/draft content language or user preferences.
+Production must supply the user's resolved locale on the iframe document; the
+bot reads `document.documentElement.lang`. Verify host integration before release:
+the inspected Studio sandbox template still hardcodes English.
+
 The local workspace and canvas both consume `@agenticos-dev/bot-shell/tokens.css`.
 Use its semantic CSS variables instead of app-specific palettes. Each iframe
 must load the stylesheet separately; parent CSS does not cross that boundary.
