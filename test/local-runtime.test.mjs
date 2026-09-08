@@ -31,6 +31,26 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     assert.equal(messages.at(-1).value.records[0].id, 'fixture-0');
     assert.equal(messages.at(-1).target, origin);
     assert.equal((await browser.gadget.subscribe()).supported, false);
+    const batch = await browser.gadget.createBatch({itemIds:['fixture-0'],destinationBindings:['LOCAL_DRAFT']});
+    assert.equal(batch.items.length, 1);
+    assert.equal(batch.items[0].rightsStatus, 'pending');
+    const batchItemId = batch.items[0].id;
+    const caption = '每天從美好的早晨開始，探索生活中的精彩時刻。';
+    const saved = await browser.gadget.saveRevision({batchItemId,expectedRevision:0,caption});
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    assert.equal(saved.revision, 1);
+    const stale = await browser.gadget.saveRevision({batchItemId,expectedRevision:0,caption:'這是過期的修改，不應覆蓋已儲存的文案。'});
+    assert.equal(stale.ok, false);
+    assert.ok(stale.issues.some(issue => issue.code === 'revision_conflict'));
+    const reopened = await browser.gadget.getBatch(batch.id);
+    assert.equal(reopened.items[0].caption, caption);
+    assert.equal(reopened.items[0].revision, 1);
+    assert.equal(reopened.items[0].rightsStatus, 'pending');
+    const duplicate = await browser.gadget.createBatch({itemIds:['fixture-0'],destinationBindings:['LOCAL_DRAFT']});
+    assert.equal(duplicate.code, 'duplicate_active');
+    assert.equal((await browser.gadget.listBatchSummaries()).batches.length, 1);
+    const rights = await browser.gadget.confirmRights({batchItemId,status:'confirmed',by:'local-developer'});
+    assert.equal(rights.rightsStatus, 'confirmed');
     await assert.rejects(browser.gadget.submitForReview(), /method_not_admitted/);
     for (const method of ['submitForReview','seedLocal','setConfig','refresh']) assert.equal((await call(method)).status,403);
   } finally { await session.dispose(); }

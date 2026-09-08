@@ -77,13 +77,19 @@ SOCIAL_CONTENT_PREVIEW_PORT=17921 pnpm preview
 
 This runs the built archive's server in local workerd/DO SQLite, with a
 development-only seed wrapper and three synthetic source records. Reads and
-selection changes use SQLite; state survives browser reloads but resets when
+selection changes, draft creation and revision saves use SQLite; state survives browser reloads but resets when
 the process stops. There are no granted providers, armed schedules, external
 publishing, setup writes or live subscriptions. Unsupported calls fail explicitly.
 Chat remains explicitly scripted. Runtime mode hides fixture scenario controls;
 language changes reload the canvas without clearing saved selections. The
 `Local SQLite` label distinguishes this mode. This remains an experimental
-storage/selection preview, not a complete workflow acceptance environment.
+storage/draft-editing preview, not a complete workflow acceptance environment.
+
+To test: select a source, continue, enter written Chinese copy and a poster
+headline, then choose **Save changes**. Reload and open **Content → Inspect →
+Continue editing** to recover the saved draft. Existing rights checks, duplicate
+prevention and revision-conflict handling are unchanged. The seeded destination
+is explicitly labelled **Local draft only (not connected)**; it grants nothing.
 
 The local POST bridge requires an exact loopback origin and a per-process token,
 admits only named methods, and accepts no caller-supplied workspace identity.

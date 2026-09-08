@@ -32,8 +32,8 @@ identity and an explicit method allowlist. No platform login is involved.
 
 ## Not claimed
 
-This is not live agent execution, provider access, scheduling, publishing or
-end-to-end draft editing. These calls remain unadmitted. Subscription reports
+This is not live agent execution, provider access, scheduling or publishing.
+These calls remain unadmitted. Subscription reports
 unsupported; there is no realtime push stream. Chat is scripted. SQLite lasts
 for the running preview process, not across server stops. Public SDK packaging
 of this testkit and a generic live host adapter remain separate work.
@@ -44,3 +44,27 @@ Gateway Social upstream is loopback port 17921, with the SDK source override
 and `SOCIAL_CONTENT_PREVIEW_MODE=local-runtime`. Other gateway mappings are
 unchanged. The runtime process is retained for user review. Fixture mode is
 still the default `pnpm preview` command and can be started on a free port.
+
+## Draft editing follow-up
+
+The local bridge now admits the packaged server's `createBatch`, `saveRevision`
+and `confirmRights` methods. The seed adds `LOCAL_DRAFT`, labelled "Local draft
+only (not connected)". It is a storage row, not a provider grant. Initial rights
+remain pending; there is no automatic approval or publication.
+
+Extended real-runtime test passed: create draft, save revision 1, reject a stale
+revision, read original saved caption, refuse duplicate active work, explicitly
+confirm local rights, and still refuse publication. Existing localization
+validation remains active (the initial English test caption was correctly
+rejected; the passing test uses written Chinese).
+
+Mac browser verification on the running archive: selected a source, continued
+into the existing editor, entered written Chinese plus a poster headline and
+clicked Save changes. Readback showed revision 1 with the exact caption and
+headline. Reload → Content → Inspect showed saved revision 1 and caption.
+Simulated another editor saving revision 2 while the UI held revision 1. Save
+was refused and the compare banner displayed Reload saved version / Keep my
+edits. No packaged server or storage implementation was changed.
+
+Remaining: poster binary transport, provider/agent adapters, persistent local
+state across server restarts, and generic SDK packaging of this development host.
