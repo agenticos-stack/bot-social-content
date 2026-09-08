@@ -54,9 +54,10 @@ owns a running host; restart it before switching identities.
 Connected: local API authentication, a ticketed capnweb agent session, the
 working source canvas/SQLite, governed draft methods and the existing approval
 surface. The host keeps the API cookie and ticket out of the sandbox and
-validates the source digest before every agent call. Skills/MCP, provider calls,
-scheduling and publishing remain intentionally unavailable until their normal
-API-governed doors are configured. Packaging remains a release step.
+validates the source digest before every agent call. The approval round trip has
+been verified locally. Skills/MCP, provider calls, scheduling and publishing
+remain intentionally unavailable until their normal API-governed doors are
+configured. Packaging remains a release step.
 
 After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for
