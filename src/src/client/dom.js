@@ -7,6 +7,18 @@
 // `text()` or the `textContent` a caller sets itself; nothing in this module
 // ever parses a string as HTML.
 
+// Domain-to-design-system adapter. No SDK dependency on Social Content names.
+const UI_CLASSES = {
+  'sl-primary': 'bot-button', 'sl-secondary': 'bot-button',
+  'sl-filter-btn': 'bot-button', 'sl-search-input': 'bot-input',
+  'sl-zh-edit': 'bot-input', 'sl-open-source-input': 'bot-input',
+  'sl-post': 'bot-card', 'sl-inbox-card': 'bot-card',
+  'sl-post-body': 'bot-card-body', 'sl-field': 'bot-field',
+  'sl-empty': 'bot-empty', 'sl-preview-dialog': 'bot-drawer',
+  'sl-preview-sheet': 'bot-drawer-sheet', 'sl-preview-head': 'bot-drawer-head',
+  'sl-preview-scroll': 'bot-drawer-body', 'sl-preview-actions': 'bot-drawer-actions'
+};
+
 /** Creates an element, applies attrs/props, and appends children (strings become text nodes). */
 export function el(tag, attrs, children) {
   const node = document.createElement(tag);
@@ -21,6 +33,10 @@ export function el(tag, attrs, children) {
       else node.setAttribute(key, String(value));
     }
   }
+  for (const name of [...node.classList]) {
+    if (UI_CLASSES[name]) node.classList.add(UI_CLASSES[name]);
+  }
+  if (node.classList.contains('sl-primary')) node.dataset.variant = 'primary';
   for (const child of Array.isArray(children) ? children : children != null ? [children] : []) {
     if (child == null) continue;
     node.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));

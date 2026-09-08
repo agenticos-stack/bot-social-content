@@ -71,7 +71,10 @@ import {
 const STEP_LABEL_KEY = { select: "stepSelect", localize: "stepLocalize", review: "stepReview", publish: "stepPublish", result: "stepResult" };
 const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
 
-const BASE_STYLE = `
+import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
+import sharedComponents from '@agenticos-dev/bot-shell/components.css';
+
+const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
@@ -104,6 +107,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .sl-app { max-width: 1080px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 36px) 96px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
+.sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
+.sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
+.sl-main-actions { margin-left:auto; display:flex; gap:4px; }
+.sl-main-actions .sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; font-size:20px; display:grid; place-items:center; }
+.sl-icon-action:hover { background:var(--sl-hover); }
+.sl-icon-action:disabled { opacity:.45; cursor:not-allowed; }
+@media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
 .sl-stepper { display: flex; gap: 20px; margin: 18px 0; border-bottom: 1px solid var(--sl-line); flex-wrap: wrap; }
 .sl-step-tab { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; padding: 0 0 10px; border-bottom: 2px solid transparent; display: flex; align-items: center; gap: 6px; }
@@ -126,10 +137,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-degraded .sl-chip-dot { background: var(--sl-warning); }
 .sl-collection { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-mobile-panes { display: none; }
-.sl-inbox { margin: 0 0 22px; padding: 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); }
-.sl-inbox-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 36px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); white-space: nowrap; font-size: 10.5px; }
-.sl-inbox-tabs button.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
+.sl-inbox { margin: 0 0 24px; padding: 0 0 20px; border-bottom: 1px solid var(--sl-line); background: var(--sl-surface); }
+.sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
+.sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
@@ -145,7 +156,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-media { display: block; position: relative; aspect-ratio: 1.15/1; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); }
 .sl-provider-glyph { position: absolute; left: 10px; bottom: 10px; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.92); font: 700 9px var(--sl-font); }
 .sl-media-kicker { position: absolute; left: 10px; top: 10px; font: 600 8px var(--sl-font); letter-spacing: .04em; color: var(--sl-muted); text-transform: uppercase; }
-.sl-post-body { padding: 12px 13px; }
+.sl-post-body { display: block; padding: 16px; }
+.sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
+.sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
+.sl-app { --bot-control-height: 34px; }
+.sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
+.sl-app .sl-search-input { height: 36px; }
+@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
@@ -242,18 +259,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
 .sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
 .sl-tag-field input { width: 100%; border: 0; height: 30px; }
-.sl-preview-dialog { width: min(480px, calc(100vw - 40px)); max-width: none; height: 100dvh; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); }
+.sl-preview-dialog { width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); }
 .sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); }
-.sl-preview-sheet { height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: center; gap: 10px; }
 .sl-preview-head strong { display: block; font-size: 13px; }
 .sl-preview-head span { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
-.sl-preview-close { margin-left: auto; border: 0; background: transparent; font-size: 16px; height: 32px; width: 32px; border-radius: 8px; }
+.sl-preview-close { margin-left: auto; flex-shrink: 0; border: 0; background: transparent; color: var(--sl-ink); font-size: 24px; height: 44px; width: 44px; border-radius: var(--sl-radius-row); }
 .sl-preview-close:hover { background: var(--sl-hover); }
-.sl-preview-scroll { overflow: auto; padding: 18px; }
-.sl-preview-media { aspect-ratio: 1.2/1; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 14px; display: grid; place-items: center; overflow: hidden; }
-.sl-preview-media img { width: 100%; height: 100%; object-fit: cover; }
-.sl-preview-caption { font-size: 12px; line-height: 1.7; }
+.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
+.sl-preview-media { height: clamp(140px, 28dvh, 260px); background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 20px; display: grid; place-items: center; overflow: hidden; }
+.sl-preview-media img { width: 100%; height: 100%; object-fit: contain; }
+.sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
+.sl-preview-head { padding: 12px 20px; }
+.sl-preview-head strong { font-size: 16px; }
+.sl-preview-head span { font-size: 11px; }
+.sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
+.sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
+.sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
+.sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 .sl-rights { margin-top: 14px; padding: 12px; border-radius: var(--sl-radius-control); }
 .sl-rights-confirmed { background: color-mix(in srgb, var(--sl-success) 14%, var(--sl-surface)); }
 .sl-rights-pending { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); }
@@ -261,7 +285,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-rights strong { display: block; font-size: 10.5px; }
 .sl-rights span { display: block; margin-top: 2px; font-size: 9.5px; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
-.sl-preview-actions button { flex: 1; }
+.sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -316,6 +340,7 @@ function App() {
   const leaveDialog = buildPreviewDialog();
 
   let summary = null;
+  let activeSection = null;
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
@@ -345,6 +370,7 @@ function App() {
       try {
         const summaries = await rpc.listBatchSummaries({ limit: 50 });
         inboxState = setInboxSummaries(inboxState, summaries);
+        if (activeSection === null) activeSection = inboxState.summaries.some(b => b.draftCount || b.reviewCount || b.attentionCount) ? 'content' : 'sources';
       } catch (error) {
         inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, "batchLoadFailed") };
       }
@@ -891,7 +917,28 @@ function App() {
     renderStepper();
     if (!summary?.configured) return; // setup screen owns viewHost until configured
     if (!wizard.batch) {
-          renderCollection(viewHost, collectionState, { locale, summary, handlers: collectionHandlers, inboxState, renderInbox });
+      const section = activeSection || 'sources';
+      const body = el('div');
+      const navigation = el('nav', { class: 'sl-main-nav', 'aria-label': t(locale, 'appTitle') }, [
+        ...[['sources', locale === 'zh-HK' ? '來源' : 'Sources'], ['content', locale === 'zh-HK' ? '內容' : 'Content']].map(([key, label]) => el('button', {
+          type: 'button', 'aria-pressed': String(section === key), onclick: () => { activeSection = key; renderCurrentView(); }
+        }, label)),
+        el('div', { class: 'sl-main-actions' }, [
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'refresh'), 'aria-label': t(locale, 'refresh'), disabled: collectionState.loading || inboxState.loading,
+            onclick: async () => {
+              if (section === 'sources') return collectionHandlers.onRefresh();
+              inboxState = setInboxLoading(inboxState, true); renderCurrentView();
+              try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); }
+              catch (error) { inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') }; }
+              renderCurrentView();
+            }
+          }, el('span', { 'aria-hidden': 'true' }, '↻')),
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, el('span', { 'aria-hidden': 'true' }, '⚙'))
+        ])
+      ]);
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
+      replace(viewHost, [navigation, body]);
       return;
     }
     if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });

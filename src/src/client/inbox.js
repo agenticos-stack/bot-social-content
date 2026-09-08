@@ -101,7 +101,7 @@ export function renderInbox(root, state, ctx) {
   const { locale, handlers } = ctx;
   const totals = state.totals ?? {};
   const filters = [
-    ["all", t(locale, "inboxAll"), totals.batches], ["new", t(locale, "filterNew"), totals.new], ["drafts", t(locale, "inboxDrafts"), totals.drafts],
+    ["all", t(locale, "inboxAll"), totals.batches], ["drafts", t(locale, "inboxDrafts"), totals.drafts],
     ["review", t(locale, "inboxReview"), totals.review], ["scheduled", t(locale, "inboxScheduled"), totals.scheduled], ["attention", t(locale, "inboxAttention"), totals.attention]
   ];
   const cards = visibleBatchSummaries(state).map((batch) => {
@@ -118,8 +118,8 @@ export function renderInbox(root, state, ctx) {
     el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onInspectBatch(batch) }, t(locale, "inboxInspect"))
   ]); });
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
-    el("div", { class: "sl-inbox-tabs", role: "tablist" }, filters.map(([key, label, count]) => el("button", { type: "button", role: "tab", "aria-selected": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" ? ` ${count}` : ""}`))),
-    cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : el("p", { class: "sl-field-note" }, state.filter === "new" ? t(locale, "inboxNewHint") : state.loading ? t(locale, "loading") : t(locale, "inboxNoMatches")),
+    el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),
+    cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : state.loading ? el("p", { class: "sl-field-note", role: "status" }, t(locale, "loading")) : null,
     state.nextCursor ? el("button", { type: "button", class: "sl-secondary", onclick: handlers.onLoadMoreBatches }, t(locale, "inboxLoadMore")) : null,
     state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null
   ]));
