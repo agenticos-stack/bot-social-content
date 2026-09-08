@@ -5,6 +5,7 @@ const routes = new Map([
   ['/api/agenticos/v1/studio/shell', ['GET']],
   ['/api/dev/session', ['POST']],
   ['/api/dev/rpc', ['POST']],
+  ['/api/dev/agent', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
@@ -42,8 +43,15 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
       body=Buffer.concat(chunks);
     }
     const starting = url.pathname === '/api/dev/session';
-    if (starting || url.pathname === '/api/dev/rpc') {
+    const agent = url.pathname === '/api/dev/agent';
+    if (starting || url.pathname === '/api/dev/rpc' || agent) {
       if (!development) return fail(503,'Local source runtime is not configured.');
+      if(agent){
+        let input;
+        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        try{return Response.json({data:await development.agent(request,input)},{headers:{'cache-control':'no-store'}});}
+        catch(error){return fail(409,error instanceof Error?error.message:'The local agent session is unavailable.');}
+      }
       if(!starting)try{return await development.call(new Request(request.url,{method:'POST',headers:request.headers,body}));}
       catch {return fail(403,'Local development session is unavailable for this account.');}
       let input;

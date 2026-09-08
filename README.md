@@ -39,9 +39,10 @@ pnpm preview
 
 Use an isolated local API with the existing development authentication enabled
 and this exact frontend origin configured. Sign in, then **Start development
-session**. Reopening resumes the same local runtime. No API conversation or
-platform gadget record is created. Restart the preview after source changes;
-automatic hot reload is not implemented for this mode yet.
+session**. Reopening resumes the same local runtime and a dedicated API
+conversation for the agent. The conversation is not a marketplace install and
+no platform gadget record or archive upload is created. Restart the preview
+after source changes; automatic hot reload is not implemented for this mode.
 
 The canvas runs in an opaque sandbox and talks through a MessageChannel to the
 authenticated host. The host rechecks user and active organization on every
@@ -50,11 +51,12 @@ Storage lives under ignored `.bot-local/connected/`, keyed by app, organization
 and user. Existing offline drafts are not copied or changed. One account/org
 owns a running host; restart it before switching identities.
 
-Currently connected: local API authentication and local-source canvas/SQLite
-with sample data and admitted draft methods. **Not connected:** live agent
-execution, skills/MCP, provider calls, scheduling and publishing. Those need a
-development transport that routes governed API calls to this same local runtime,
-not the platform's installed-gadget resolver. Packaging remains a release step.
+Connected: local API authentication, a ticketed capnweb agent session, the
+working source canvas/SQLite, governed draft methods and the existing approval
+surface. The host keeps the API cookie and ticket out of the sandbox and
+validates the source digest before every agent call. Skills/MCP, provider calls,
+scheduling and publishing remain intentionally unavailable until their normal
+API-governed doors are configured. Packaging remains a release step.
 
 After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for

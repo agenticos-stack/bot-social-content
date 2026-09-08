@@ -11,6 +11,14 @@ test('development launch never creates an installed gadget or API conversation',
   assert.equal((await handle(request({}))).status,200);
   assert.equal(calls,1);
 });
+test('connected BFF delegates only the host-owned agent operation',async()=>{
+  let input;
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{agent:async(_request,value)=>{input=value;return {result:{turnId:'t_local'}};}}});
+  const response=await handle(new Request(frontendOrigin+'/api/dev/agent',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{"operation":"pending"}'}));
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{data:{result:{turnId:'t_local'}}});
+  assert.deepEqual(input,{operation:'pending'});
+});
 test('connected BFF preserves cookies but never bearer credentials',async()=>{
   const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,fetcher:async(url,options)=>{
     assert.equal(url,'http://127.0.0.1:8789/api/auth/dev-sign-in');

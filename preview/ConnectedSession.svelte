@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import ConnectedCanvas from './ConnectedCanvas.svelte';
+  import ConnectedChat from './ConnectedChat.svelte';
   import Shell from '@agenticos-dev/bot-shell/GadgetSplitView.svelte';
   let email = $state('');
   let user = $state(null);
@@ -38,9 +39,7 @@
 
 {#if development}
   <div class="runtime-shell">
-    {#snippet chat()}
-      <div class="runtime-status"><h1>Social Content</h1><p>Local source · SQLite</p><p class="hint">Live agent connection is not implemented yet. Canvas edits run locally; no upload or installation is required.</p><button onclick={()=>development=null}>Back to account</button></div>
-    {/snippet}
+    {#snippet chat()}<ConnectedChat agent={development.agent} onBack={()=>development=null} />{/snippet}
     {#snippet canvas()}<ConnectedCanvas />{/snippet}
     <Shell {chat} {canvas} chatSide="left" chatOpen={true} mobilePane="canvas" canvasScroll="clip" chatLabel="Development connection" canvasLabel="Local canvas" />
   </div>
@@ -69,7 +68,7 @@
 {/if}
 
 <style>
-  .runtime-shell{flex:1;min-height:0;--bot-chat-width:320px}.runtime-status{padding:24px}
+  .runtime-shell{flex:1;min-height:0;--bot-chat-width:320px}
   .connected{flex:1;overflow:auto;display:grid;place-items:start center;padding:clamp(32px,8vh,96px) 24px;background:var(--color-paper)}
   section{width:min(100%,380px);padding:24px;border:1px solid var(--color-line-strong);border-radius:var(--bot-radius-card,14px);background:var(--color-panel)}
   h1{font-family:var(--font-brand);font-size:20px;line-height:1.3;margin:0 0 12px}p{font-size:13px;line-height:1.6;color:var(--color-ink-soft);margin:8px 0}.account{color:var(--color-ink);overflow-wrap:anywhere}.account span{display:block;font-size:12px;color:var(--color-ink-soft);margin-top:4px}

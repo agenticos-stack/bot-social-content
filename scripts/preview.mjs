@@ -13,6 +13,7 @@ import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
 import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
+import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
 
@@ -38,6 +39,7 @@ const overlay = process.env.BOT_SDK_SOURCE;
 if (!['fixture', 'local-runtime', 'connected'].includes(mode)) throw new Error('Unknown preview mode');
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
 const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN;
+const connectedSourceHash = mode === 'connected' ? sourceDigest(archive.files) : null;
 const development=mode==='connected'?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
   async authenticate(request){
     const headers={cookie:request.headers.get('cookie') || '',accept:'application/json'};
@@ -45,13 +47,25 @@ const development=mode==='connected'?createDevelopmentSessions({appKey:SOCIAL_LO
     const session=await get('/api/auth/get-session');
     if(!session?.user?.id)return null;
     const shell=await get('/v1/studio/shell');
-    return {userId:session.user.id,orgId:shell.data?.activeOrg?.id};
+    return {userId:session.user.id,orgId:shell.data?.activeOrg?.id,cookie:headers.cookie};
   },
-  async createRuntime(key){
+  async createRuntime(key, identity){
     const root=new URL('../.bot-local/connected/',import.meta.url);
     await mkdir(root,{recursive:true,mode:0o700});
+    const stateDirectory=fileURLToPath(new URL(key,root));
     const prior=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
-    try{return await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory:fileURLToPath(new URL(key,root))});}
+    let local;
+    try {
+      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory});
+      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),callLocal:async(method,args)=>{
+        const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
+        const payload=await result.json();
+        if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
+        return payload.value;
+      }});
+      return {...local,agent,dispose:async()=>{agent.close();await local.dispose();}};
+    }
+    catch (error) { await local?.dispose().catch(() => undefined); throw error; }
     finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!prior.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
   }
 }):null;
@@ -146,7 +160,7 @@ ${tokensCss}</style></head><body><div id="preview-root" data-mode="${mode}"></di
   response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — ${mode} preview</title><style>${brandCss}
 ${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
 });
-server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (${connected ? 'local API authentication; live transport pending' : runtime ? 'SQLite persists in .bot-local/social-content' : 'in-memory fixture'})`));
+server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (${connected ? 'local API authentication; ticketed agent + local SQLite' : runtime ? 'SQLite persists in .bot-local/social-content' : 'in-memory fixture'})`));
 server.on('error', async error => { console.error(error.message); await runtime?.dispose(); process.exitCode = 1; });
 let stopping = false;
 for (const signal of signals) process.on(signal, () => {

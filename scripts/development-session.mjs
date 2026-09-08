@@ -15,19 +15,25 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
     if(!pending && !start)throw new Error('Start the development session first.');
     if(!pending){
       owner=key;
-      pending=Promise.resolve().then(()=>createRuntime(key)).catch(error=>{pending=undefined;owner=undefined;throw error;});
+      pending=Promise.resolve().then(()=>createRuntime(key, identity, request)).catch(error=>{pending=undefined;owner=undefined;throw error;});
     }
     return {runtime:await pending,key};
   }
   return {
     async start(request){
       const {key}=await acquire(request,true);
-      return {mode:'local-source',sessionId:key,storage:'local-do-sqlite',agentConnected:false};
+      const {runtime}=await acquire(request,false);
+      return {mode:'local-source',sessionId:key,storage:'local-do-sqlite',agentConnected:Boolean(runtime.agent?.info?.connected),agent:runtime.agent?.info ?? null};
     },
     async call(request){
       const {runtime}=await acquire(request,false);
       // Host-only credential for the existing local testkit. Never the API cookie.
       return runtime.handle(new Request(origin+'/local-rpc',{method:'POST',headers:{origin,'content-type':'application/json','x-bot-local-session':runtime.token},body:request.body,duplex:'half'}));
+    },
+    async agent(request, input){
+      const {runtime}=await acquire(request,false);
+      if(typeof runtime.agent?.handle !== 'function')throw new Error('The local agent session is unavailable.');
+      return runtime.agent.handle(input);
     },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };
