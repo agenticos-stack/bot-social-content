@@ -39,4 +39,10 @@ scheduling, publishing, source hot reload and production authentication remain
 out of scope for this local rig. Connected mode deliberately does not serve
 fixture canvas routes. Offline SQLite state remains separate and unchanged.
 
+Approval round-trip evidence (local API :8789, preview :17923, 2026-09-08):
+`listItems` raised a real `callGadgetMethod` ask for the registered `dev:`
+instance; answering it with `{ approve: true }` returned `applied: true` and
+the local SQLite result. The BFF response was 2.7KB after lifecycle-event
+compaction (streaming deltas are not replayed as megabytes of JSON).
+
 Gateway currently routes Social Content to 17923. The prior persistent offline preview on 17922 remains available for recovery; Studio's existing API rig is untouched.
