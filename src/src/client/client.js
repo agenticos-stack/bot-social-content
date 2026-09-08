@@ -129,10 +129,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-degraded .sl-chip-dot { background: var(--sl-warning); }
 .sl-collection { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-mobile-panes { display: none; }
-.sl-inbox { margin: 0 0 22px; padding: 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); }
+.sl-inbox { margin: 0 0 24px; padding: 0 0 20px; border-bottom: 1px solid var(--sl-line); background: var(--sl-surface); }
 .sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 44px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); white-space: nowrap; font-size: 12px; }
-.sl-inbox-tabs button.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
+.sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
+.sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
@@ -148,7 +148,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-media { display: block; position: relative; aspect-ratio: 1.15/1; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); }
 .sl-provider-glyph { position: absolute; left: 10px; bottom: 10px; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.92); font: 700 9px var(--sl-font); }
 .sl-media-kicker { position: absolute; left: 10px; top: 10px; font: 600 8px var(--sl-font); letter-spacing: .04em; color: var(--sl-muted); text-transform: uppercase; }
-.sl-post-body { padding: 12px 13px; }
+.sl-post-body { display: block; padding: 16px; }
+.sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
+.sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
+.sl-app { --bot-control-height: 34px; }
+.sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
+.sl-app .sl-search-input { height: 36px; }
+@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }

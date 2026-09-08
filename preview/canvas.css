@@ -12,7 +12,7 @@ body #gadget-root .sl-post:nth-child(2) .sl-media{background:var(--color-panel-s
 body #gadget-root .sl-post:nth-child(2) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(12deg);border-radius:50%}
 body #gadget-root .sl-post:nth-child(3) .sl-media{background:var(--color-panel-subtle)}
 body #gadget-root .sl-post:nth-child(3) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(-5deg)}
-body #gadget-root .sl-post-body{padding:14px}
+body #gadget-root .sl-post-body{padding:16px}
 body #gadget-root .sl-selection{background:var(--color-panel);border-color:var(--color-panel-subtle)}
 body #gadget-root .sl-primary{background:var(--color-act-hover);color:var(--color-ink);border-color:var(--color-act-hover);border-radius:8px}
 body #gadget-root .sl-filter-btn{border-radius:8px}

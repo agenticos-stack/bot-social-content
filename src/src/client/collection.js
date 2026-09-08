@@ -385,7 +385,6 @@ export function renderCollection(root, state, ctx) {
     el("div", { class: "sl-selection-inner" }, [
       el("div", { class: "sl-selected-copy" }, [
         el("strong", null, t(locale, "selectedCount", { n: nSelected })),
-        el("span", null, t(locale, "continueReady"))
       ]),
       el("button", { type: "button", class: "sl-clear", onclick: handlers.onClear }, t(locale, "clear")),
       el(
@@ -398,7 +397,7 @@ export function renderCollection(root, state, ctx) {
 
   replace(root, [
     ctx.inboxState ? (() => { const host = el("div"); renderInboxInto(host, ctx.inboxState, ctx); return host; })() : null,
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "collectionTitle")), el("p", null, t(locale, "collectionDesc"))]),
+    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "collectionTitle"))]),
     toolbar,
     chipRow,
     body,
