@@ -15,6 +15,7 @@ const archive = await readBlueprintArchive(bytes.buffer.slice(bytes.byteOffset, 
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
 const overlay = process.env.BOT_SDK_SOURCE;
+const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
 const bundle = await build({
   entryPoints: [fileURLToPath(new URL('../preview/main.js', import.meta.url))], bundle: true,
   write: false, format: 'esm', platform: 'browser', conditions: ['browser', 'svelte'],
@@ -42,10 +43,10 @@ const server = createServer((request, response) => {
   const locale = url.searchParams.get("locale") === "zh-HK" ? "zh-HK" : "en";
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   if (url.pathname === '/') {
-    response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content — local workspace</title></head><body><div id="preview-root"></div><script nonce="${nonce}" type="module" src="/workspace.js"></script></body></html>`);
+    response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content — local workspace</title><style>${tokensCss}</style></head><body><div id="preview-root"></div><script nonce="${nonce}" type="module" src="/workspace.js"></script></body></html>`);
     return;
   }
-  response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — fixture preview</title><style>${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
+  response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — fixture preview</title><style>${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
 });
 server.listen(port, "127.0.0.1", () => console.log(`Fixture preview: http://127.0.0.1:${port}/ (add ?locale=zh-HK or ?setup=1)`));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));

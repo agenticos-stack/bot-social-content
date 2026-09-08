@@ -1,22 +1,22 @@
-html body{margin:0;background:#fff;color:#30362c;font-family:'Avenir Next',Avenir,'Segoe UI',sans-serif}
+html body{margin:0;background:var(--color-panel);color:var(--color-ink);font-family:var(--font-sans)}
 body #gadget-root .sl-app{max-width:none;padding:22px 28px 90px}
 body #gadget-root .sl-titleline h1{font-size:18px;letter-spacing:-.4px;margin-bottom:9px}
 body #gadget-root .sl-titleline p{font-size:11px;line-height:1.7;max-width:58ch}
-body #gadget-root .sl-search-input{border-radius:8px;background:#f8f9f5;border-color:#d6dacd}
+body #gadget-root .sl-search-input{border-radius:8px;background:var(--color-paper);border-color:var(--color-line-strong)}
 body #gadget-root .sl-toolbar{margin-top:22px;margin-bottom:14px}
-body #gadget-root .sl-post{border-radius:12px;overflow:hidden;border-color:#dce1d3;box-shadow:0 3px 12px #28332005}
-body #gadget-root .sl-media{background:#e6e9da;position:relative;isolation:isolate}
-body #gadget-root .sl-media::before{content:"";position:absolute;width:45%;height:68%;left:28%;top:23%;border-radius:60px 60px 14px 14px;background:#b5bf95;transform:rotate(-12deg);z-index:-1;box-shadow:15px 15px 0 #d6dcc6}
-body #gadget-root .sl-media::after{content:"SAMPLE ARTWORK";position:absolute;bottom:12px;right:12px;font-size:8px;letter-spacing:1px;color:#536043}
-body #gadget-root .sl-post:nth-child(2) .sl-media{background:#f0e3cf}
-body #gadget-root .sl-post:nth-child(2) .sl-media::before{background:#cca77e;box-shadow:15px 15px 0 #e6cfaf;transform:rotate(12deg);border-radius:50%}
-body #gadget-root .sl-post:nth-child(3) .sl-media{background:#e1e7e8}
-body #gadget-root .sl-post:nth-child(3) .sl-media::before{background:#9fb9bc;box-shadow:15px 15px 0 #cbd9d9;transform:rotate(-5deg)}
+body #gadget-root .sl-post{border-radius:12px;overflow:hidden;border-color:var(--color-panel-subtle);box-shadow:0 3px 12px transparent}
+body #gadget-root .sl-media{background:var(--color-panel-subtle);position:relative;isolation:isolate}
+body #gadget-root .sl-media::before{content:"";position:absolute;width:45%;height:68%;left:28%;top:23%;border-radius:60px 60px 14px 14px;background:var(--color-ink-faint);transform:rotate(-12deg);z-index:-1;box-shadow:15px 15px 0 var(--color-line-strong)}
+body #gadget-root .sl-media::after{content:"SAMPLE ARTWORK";position:absolute;bottom:12px;right:12px;font-size:8px;letter-spacing:1px;color:var(--color-ink-soft)}
+body #gadget-root .sl-post:nth-child(2) .sl-media{background:var(--color-panel-subtle)}
+body #gadget-root .sl-post:nth-child(2) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(12deg);border-radius:50%}
+body #gadget-root .sl-post:nth-child(3) .sl-media{background:var(--color-panel-subtle)}
+body #gadget-root .sl-post:nth-child(3) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(-5deg)}
 body #gadget-root .sl-post-body{padding:14px}
-body #gadget-root .sl-selection{background:#fbfcf8;border-color:#dfe4d6}
-body #gadget-root .sl-primary{background:#e9c482;color:#3e3420;border-color:#c59e59;border-radius:8px}
+body #gadget-root .sl-selection{background:var(--color-panel);border-color:var(--color-panel-subtle)}
+body #gadget-root .sl-primary{background:var(--color-act-hover);color:var(--color-ink);border-color:var(--color-act-hover);border-radius:8px}
 body #gadget-root .sl-filter-btn{border-radius:8px}
-body #gadget-root .sl-bottom-bar{background:#fafbf7;border-color:#e0e4d8}
-body #gadget-root .sl-inbox{border-color:#e5e8df;background:#fafbf7}
-body #gadget-root button:focus-visible{outline:2px solid #946722;outline-offset:3px}
+body #gadget-root .sl-bottom-bar{background:var(--color-panel);border-color:var(--color-panel-subtle)}
+body #gadget-root .sl-inbox{border-color:var(--color-panel-subtle);background:var(--color-panel)}
+body #gadget-root button:focus-visible{outline:2px solid var(--color-act-hover);outline-offset:3px}
 @media(max-width:600px){body #gadget-root .sl-app{padding:18px 16px 100px}body #gadget-root .sl-toolbar{margin-top:16px}}

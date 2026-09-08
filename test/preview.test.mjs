@@ -29,10 +29,15 @@ test("served preview includes the required mount before loading the real client"
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Preview startup timed out")), 5000); })
     ]);
     const shell = await fetch(`http://127.0.0.1:${port}/`);
-    assert.match(await shell.text(), /id="preview-root"/);
+    const shellHtml = await shell.text();
+    assert.match(shellHtml, /id="preview-root"/);
+    assert.match(shellHtml, /--color-panel: #ffffff/);
+    assert.match(shellHtml, /:root\[data-theme='dark'\]/);
     const response = await fetch(`http://127.0.0.1:${port}/canvas?locale=zh-HK`);
     assert.equal(response.status, 200);
     const html = await response.text();
+    assert.match(html, /--color-panel: #ffffff/);
+    assert.match(html, /:root\[data-theme='dark'\]/);
     assert.match(html, /<main id="gadget-root"><\/main>/);
     assert.ok(html.indexOf('id="gadget-root"') < html.indexOf('src="/client.js"'));
     assert.match(html, /lang="zh-HK"/);

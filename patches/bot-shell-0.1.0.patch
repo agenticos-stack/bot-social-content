@@ -72,3 +72,125 @@ index e24714f..4668777 100644
  }
  
  /** Presentation only. Compiling this entry requires a Svelte-capable bundler. */
+diff --git a/package.json b/package.json
+index 4409d8b..ab019f2 100644
+--- a/package.json
++++ b/package.json
+@@ -4,6 +4,7 @@
+   "private": false,
+   "type": "module",
+   "files": [
++    "tokens.css",
+     "GadgetSplitView.svelte",
+     "GadgetSplitView.svelte.d.ts",
+     "README.md",
+@@ -11,6 +12,7 @@
+     "NOTICE"
+   ],
+   "exports": {
++    "./tokens.css": "./tokens.css",
+     "./GadgetSplitView.svelte": {
+       "types": "./GadgetSplitView.svelte.d.ts",
+       "svelte": "./GadgetSplitView.svelte",
+diff --git a/tokens.css b/tokens.css
+new file mode 100644
+--- /dev/null
++++ b/tokens.css
+@@ -0,0 +1,97 @@
++/* AgenticOS shared token snapshot. Source: Studio e9cd821b845a6d6e24be4b9028067a39424a1f86
++ * src/lib/agenticos-ui/tokens.css. Owner-approved extract; Apache-2.0.
++ * Base element styles intentionally omitted. Fonts are host-loaded, never fetched here. */
++:root {
++  color-scheme: light;
++
++  --font-sans: "Plus Jakarta Sans Variable", "CJK Sans Fallback", "Jakarta Fallback", ui-sans-serif, system-ui, sans-serif;
++  --font-brand: "Geist Variable", "Plus Jakarta Sans Variable", "CJK Sans Fallback", "Jakarta Fallback", ui-sans-serif, system-ui, sans-serif;
++  --font-mono: "Geist Mono Variable", "Geist Mono Fallback", ui-monospace, SFMono-Regular, Consolas, monospace;
++
++  /* neutral ink ramp (.agos) */
++  --color-ink: #18181b;
++  --color-ink-soft: #3f3f46;
++  --color-ink-faint: #8e8e96;
++
++  /* surfaces */
++  --color-paper: #fafafa;
++  --color-paper-2: #f0f0f1;
++  --color-panel: #ffffff;
++  --color-panel-subtle: #f4f4f5;
++  --color-line: #e7e7ea;
++  --color-line-strong: #d9d9de;
++
++  /* brand gold action; signal green stays for live state */
++  --color-signal: #34e597;
++  --color-act: #f5b544;
++  --color-act-hover: #e09a2e;
++  --color-act-press: #c9851f;
++  --color-act-ink: #1a1a1a;
++
++  /* status accents + soft fills (green = live/success, kept) */
++  --color-green: #15b079;
++  --color-green-dark: #0e8a5f;
++  --color-green-soft: #d8f6e8;
++  --color-cyan: #4dd8ff;
++  --color-cyan-soft: #e8f9ff;
++  --color-amber: #b26b00;
++  --color-amber-soft: #fdf2da;
++  --color-red: #df1b41;
++  --color-red-soft: #fce8ec;
++
++  --radius-xs: 0;
++  --radius-sm: 0;
++  --radius-md: 0;
++  --radius-lg: 0;
++
++  --shadow-sm: 0 1px 1px rgba(50, 50, 93, 0.04), 0 1px 2px rgba(50, 50, 93, 0.04);
++  --shadow-card: 0 2px 5px -1px rgba(50, 50, 93, 0.1), 0 1px 3px -1px rgba(0, 0, 0, 0.06);
++  --shadow-lg: 0 13px 27px -5px rgba(50, 50, 93, 0.12), 0 8px 16px -8px rgba(0, 0, 0, 0.16);
++
++  --signal-ink: #04130a;
++  --signal-glow: rgba(52, 229, 151, 0.4);
++  --ease: cubic-bezier(0.22, 1, 0.36, 1);
++  --focus-ring: 0 0 0 3px rgba(245, 181, 68, 0.28);
++  --statusbar-h: 30px;
++
++  /* page background wash (gold-tinted) */
++  --bg-wash: radial-gradient(120% 70% at 100% 0%, rgba(245, 181, 68, 0.06), transparent 55%);
++}
++
++:root[data-theme='dark'] {
++  color-scheme: dark;
++
++  --color-ink: #f5f3ee;
++  --color-ink-soft: #b3ab97;
++  --color-ink-faint: #8a8273;
++
++  --color-paper: #16140f;
++  --color-paper-2: #1a1711;
++  --color-panel: #1f1c15;
++  --color-panel-subtle: #1a1711;
++  --color-line: #2e2a20;
++  --color-line-strong: #3d382b;
++
++  /* gold action brightens on dark surfaces */
++  --color-act: #f5b544;
++  --color-act-hover: #ffc75a;
++  --color-act-press: #e09a2e;
++  --color-act-ink: #1a1a1a;
++
++  --color-green: #2bd08a;
++  --color-green-dark: #34e597;
++  --color-green-soft: #0f2a20;
++  --color-cyan: #5fdcff;
++  --color-cyan-soft: #08222d;
++  --color-amber: #e8a13a;
++  --color-amber-soft: #2a1e08;
++  --color-red: #ff5774;
++  --color-red-soft: #2c0f16;
++
++  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.3);
++  --shadow-card: 0 2px 6px -1px rgba(0, 0, 0, 0.45), 0 1px 3px -1px rgba(0, 0, 0, 0.4);
++  --shadow-lg: 0 16px 30px -6px rgba(0, 0, 0, 0.6), 0 8px 16px -8px rgba(0, 0, 0, 0.5);
++
++  --focus-ring: 0 0 0 3px rgba(245, 181, 68, 0.32);
++  --bg-wash: radial-gradient(120% 70% at 100% 0%, rgba(245, 181, 68, 0.08), transparent 55%);
++}

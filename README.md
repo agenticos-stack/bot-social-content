@@ -98,3 +98,16 @@ SHA-256 alongside `release.json`; after an authorized upload, record the owner,
 returned Blueprint version ID and optional listing ID. None is invented by a
 local build. Real browser acceptance and production publication are separate
 gates, not implied by these package tests.
+# Shared visual foundation
+
+The local workspace and canvas both consume `@agenticos-dev/bot-shell/tokens.css`.
+Use its semantic CSS variables instead of app-specific palettes. Each iframe
+must load the stylesheet separately; parent CSS does not cross that boundary.
+The host owns font loading and theme selection. This preview defaults to light;
+it does not yet synchronize an interactive theme switch across frames.
+
+The temporary pnpm patch includes the unreleased token export and split-shell
+changes. A fresh `pnpm install` works without a private Studio checkout or sibling
+SDK checkout. Remove the patch when these changes have an official SDK release.
+Available shared UI today: design tokens and split shell. Domain cards and forms
+remain application-owned; a complete shared component library is future work.

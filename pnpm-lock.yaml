@@ -106,7 +106,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@agenticos-dev/bot-shell@0.1.0': 67688301283bb75557d99667643d523b71544bfa7020eb00d3169ce182c1aa16
+  '@agenticos-dev/bot-shell@0.1.0': bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2
 
 importers:
 
@@ -124,7 +124,7 @@ importers:
         version: 0.1.0
       '@agenticos-dev/bot-shell':
         specifier: 0.1.0
-        version: 0.1.0(patch_hash=67688301283bb75557d99667643d523b71544bfa7020eb00d3169ce182c1aa16)(svelte@5.56.3)
+        version: 0.1.0(patch_hash=bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2)(svelte@5.56.3)
       esbuild:
         specifier: 0.28.1
         version: 0.28.1
@@ -420,7 +420,7 @@ snapshots:
 
   '@agenticos-dev/bot-sdk@0.1.0': {}
 
-  '@agenticos-dev/bot-shell@0.1.0(patch_hash=67688301283bb75557d99667643d523b71544bfa7020eb00d3169ce182c1aa16)(svelte@5.56.3)':
+  '@agenticos-dev/bot-shell@0.1.0(patch_hash=bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2)(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
 
