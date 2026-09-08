@@ -73,22 +73,26 @@ index e24714f..4668777 100644
  
  /** Presentation only. Compiling this entry requires a Svelte-capable bundler. */
 diff --git a/package.json b/package.json
-index 4409d8b..ab019f2 100644
+index 4409d8b..eeaa0f6 100644
 --- a/package.json
 +++ b/package.json
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,9 @@
    "private": false,
    "type": "module",
    "files": [
 +    "tokens.css",
++    "components.css",
++    "showcase.html",
      "GadgetSplitView.svelte",
      "GadgetSplitView.svelte.d.ts",
      "README.md",
-@@ -11,6 +12,7 @@
+@@ -11,6 +14,9 @@
      "NOTICE"
    ],
    "exports": {
 +    "./tokens.css": "./tokens.css",
++    "./components.css": "./components.css",
++    "./showcase.html": "./showcase.html",
      "./GadgetSplitView.svelte": {
        "types": "./GadgetSplitView.svelte.d.ts",
        "svelte": "./GadgetSplitView.svelte",
@@ -194,3 +198,81 @@ new file mode 100644
 +  --focus-ring: 0 0 0 3px rgba(245, 181, 68, 0.32);
 +  --bg-wash: radial-gradient(120% 70% at 100% 0%, rgba(245, 181, 68, 0.08), transparent 55%);
 +}
+diff --git a/components.css b/components.css
+new file mode 100644
+--- /dev/null
++++ b/components.css
+@@ -0,0 +1,58 @@
++/* Opt-in, framework-neutral UI primitives. Load tokens.css first.
++ * Native HTML owns semantics and interaction; classes only own presentation. */
++:root {
++  --bot-space-1: 4px;
++  --bot-space-2: 8px;
++  --bot-space-3: 12px;
++  --bot-space-4: 16px;
++  --bot-space-6: 24px;
++  --bot-radius-control: 9px;
++  --bot-radius-card: 14px;
++  --bot-control-height: 40px;
++  --bot-text-body: 14px;
++  --bot-text-meta: 12px;
++}
++.bot-button.bot-button, .bot-input.bot-input {
++  box-sizing: border-box;
++  min-height: var(--bot-control-height);
++  border: 1px solid var(--color-line-strong);
++  border-radius: var(--bot-radius-control);
++  padding: var(--bot-space-2) var(--bot-space-3);
++  font: 500 var(--bot-text-body)/1.5 var(--font-sans);
++  color: var(--color-ink);
++  background: var(--color-panel);
++}
++.bot-button.bot-button { cursor: pointer; }
++.bot-button.bot-button:hover:not(:disabled) { background: var(--color-panel-subtle); }
++.bot-button.bot-button[data-variant="primary"] {
++  background: var(--color-act); border-color: var(--color-act-hover); color: var(--color-act-ink);
++}
++.bot-button.bot-button[data-variant="primary"]:hover:not(:disabled) { background: var(--color-act-hover); }
++.bot-button.bot-button:disabled { opacity: .5; cursor: not-allowed; }
++.bot-button.bot-button[aria-pressed="true"], .bot-button.bot-button[aria-selected="true"] {
++  background: var(--color-panel-subtle); font-weight: 650;
++}
++.bot-input.bot-input { width: 100%; min-width: 0; }
++textarea.bot-input.bot-input { min-height: 140px; resize: vertical; line-height: 1.8; }
++.bot-input.bot-input[aria-invalid="true"] { border-color: var(--color-red); }
++.bot-input.bot-input:disabled { background: var(--color-panel-subtle); opacity: .65; }
++.bot-button.bot-button:focus-visible, .bot-input.bot-input:focus-visible {
++  outline: 2px solid var(--color-act-hover); outline-offset: 2px;
++}
++.bot-card.bot-card { border: 1px solid var(--color-line); border-radius: var(--bot-radius-card); background: var(--color-panel); overflow: hidden; }
++.bot-card-body.bot-card-body { padding: var(--bot-space-4); }
++.bot-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--bot-space-2); }
++.bot-field { display: grid; gap: var(--bot-space-2); }
++.bot-field > label { font: 600 var(--bot-text-meta)/1.5 var(--font-sans); color: var(--color-ink-soft); }
++.bot-empty { padding: var(--bot-space-6); color: var(--color-ink-soft); text-align: center; font: 400 var(--bot-text-body)/1.7 var(--font-sans); }
++.bot-badge { display: inline-flex; padding: var(--bot-space-1) var(--bot-space-2); border-radius: var(--bot-radius-control); background: var(--color-panel-subtle); color: var(--color-ink-soft); font: 500 var(--bot-text-meta)/1.5 var(--font-sans); }
++/* Modal dialog is document-scoped: in a canvas iframe it cannot cover the host.
++ * Do not portal this to a parent document. Use showModal()/close() for native focus/Escape. */
++dialog.bot-drawer { box-sizing: border-box; width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--color-line); background: var(--color-panel); color: var(--color-ink); }
++.bot-drawer-sheet { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
++.bot-drawer-head, .bot-drawer-actions { display: flex; align-items: center; gap: var(--bot-space-2); padding: var(--bot-space-4); }
++.bot-drawer-head { border-bottom: 1px solid var(--color-line); }
++.bot-drawer-actions { border-top: 1px solid var(--color-line); }
++.bot-drawer-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--bot-space-6); overflow-wrap: anywhere; }
++@media (pointer: coarse) { :root { --bot-control-height: 44px; } .bot-input.bot-input { font-size: 16px; } }
++@media (max-width: 600px) { dialog.bot-drawer { width: 100%; } .bot-drawer-body { padding: var(--bot-space-4); } }
+diff --git a/showcase.html b/showcase.html
+new file mode 100644
+--- /dev/null
++++ b/showcase.html
+@@ -0,0 +1,10 @@
++<!doctype html>
++<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot UI components</title>
++<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./components.css">
++<style>body{margin:0;padding:24px;background:var(--color-paper);color:var(--color-ink);font:14px/1.7 var(--font-sans)}main{max-width:900px;margin:auto;display:grid;gap:24px}h1,h2,p{margin:0 0 12px}section{padding:24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}</style></head>
++<body><main><header><h1>Bot UI</h1><p>Shared native controls · English / <span lang="zh-HK">繁體中文</span></p><span class="bot-badge">Development reference</span></header>
++<section class="bot-card"><h2>Actions</h2><div class="bot-toolbar"><button class="bot-button" data-variant="primary">Save draft · 儲存草稿</button><button class="bot-button">Cancel · 取消</button><button class="bot-button" disabled>Unavailable</button><button class="bot-button" disabled aria-busy="true">Saving…</button></div></section>
++<section class="bot-card"><h2>Fields</h2><div class="grid"><div class="bot-field"><label for="caption">Caption · 文案</label><textarea class="bot-input" id="caption">Review the source before publishing.</textarea></div><div class="bot-field"><label for="language">Language · 語言</label><select class="bot-input" id="language"><option>English</option><option>繁體中文（香港）</option></select><label for="invalid">Validation error</label><input class="bot-input" id="invalid" aria-invalid="true" aria-describedby="error"><p id="error">Enter a title before continuing.</p></div></div></section>
++<section class="bot-card"><h2>Empty state</h2><div class="bot-empty">No content yet. Add a source to get started.</div></section>
++<section class="bot-card"><h2>Drawer contract</h2><p>Use a native dialog with bot-drawer, containing bot-drawer-sheet and head/body/actions sections. Call showModal() inside the canvas document, not the parent. The application owns labels, confirmation of unsaved changes, and focus restoration.</p></section>
++</main></body></html>

@@ -106,7 +106,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@agenticos-dev/bot-shell@0.1.0': bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2
+  '@agenticos-dev/bot-shell@0.1.0': 453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736
 
 importers:
 
@@ -124,7 +124,7 @@ importers:
         version: 0.1.0
       '@agenticos-dev/bot-shell':
         specifier: 0.1.0
-        version: 0.1.0(patch_hash=bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2)(svelte@5.56.3)
+        version: 0.1.0(patch_hash=453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736)(svelte@5.56.3)
       '@fontsource-variable/geist':
         specifier: 5.2.9
         version: 5.2.9
@@ -432,7 +432,7 @@ snapshots:
 
   '@agenticos-dev/bot-sdk@0.1.0': {}
 
-  '@agenticos-dev/bot-shell@0.1.0(patch_hash=bc285544fe1b61d1d70a07e50d082a01630e2cc7e6a82411bfa67894026780f2)(svelte@5.56.3)':
+  '@agenticos-dev/bot-shell@0.1.0(patch_hash=453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736)(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
 

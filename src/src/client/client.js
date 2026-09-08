@@ -71,7 +71,10 @@ import {
 const STEP_LABEL_KEY = { select: "stepSelect", localize: "stepLocalize", review: "stepReview", publish: "stepPublish", result: "stepResult" };
 const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
 
-const BASE_STYLE = `
+import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
+import sharedComponents from '@agenticos-dev/bot-shell/components.css';
+
+const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
