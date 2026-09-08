@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createSocialRuntime, browserBridge } from '../scripts/local-runtime.mjs';
 import { runInNewContext } from 'node:vm';
 
@@ -8,11 +10,14 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
   const names = ['server.js','storage.js','model.js','config.js','doors.js'];
   const files = Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(new URL('../src/'+name, import.meta.url), 'utf8')])));
   const origin = 'http://localhost:17921';
-  const session = await createSocialRuntime({files, sdkSource: process.env.BOT_SDK_SOURCE, origins:[origin]});
+  const root = await mkdtemp(join(tmpdir(),'social-persistence-test-'));
+  const options = {files, sdkSource: process.env.BOT_SDK_SOURCE, origins:[origin],stateDirectory:join(root,'state')};
+  let session;
   const call = async (method, args = []) => session.handle(new Request(origin+'/local-rpc', {
     method:'POST', headers:{origin,'content-type':'application/json','x-bot-local-session':session.token},body:JSON.stringify({method,args})
   }));
   try {
+    session = await createSocialRuntime(options);
     assert.equal((await (await call('summary')).json()).value.configured, true);
     assert.equal((await call('setSelection',['fixture-0',true])).status, 200);
     const rows = (await (await call('listItems',[{filter:'all'}])).json()).value.items;
@@ -53,5 +58,15 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     assert.equal(rights.rightsStatus, 'confirmed');
     await assert.rejects(browser.gadget.submitForReview(), /method_not_admitted/);
     for (const method of ['submitForReview','seedLocal','setConfig','refresh']) assert.equal((await call(method)).status,403);
-  } finally { await session.dispose(); }
+    const previousToken = session.token;
+    await session.dispose();
+    session = await createSocialRuntime(options);
+    assert.notEqual(session.token, previousToken);
+    const persisted = (await (await call('getBatch',[batch.id])).json()).value;
+    assert.equal(persisted.items[0].caption,caption);
+    assert.equal(persisted.items[0].revision,1);
+    assert.equal(persisted.items[0].rightsStatus,'confirmed');
+    assert.equal((await (await call('listItems',[{filter:'all'}])).json()).value.items.length,3);
+    await assert.rejects(browser.gadget.summary(), /local_session_required/);
+  } finally { await session?.dispose(); await rm(root,{recursive:true,force:true}); }
 });

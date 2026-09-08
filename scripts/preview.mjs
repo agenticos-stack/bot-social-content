@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
+import { prepareLocalState } from './local-state.mjs';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
@@ -38,8 +39,18 @@ const bundle = await build({
     loader: 'js', resolveDir: fileURLToPath(new URL('../preview/', import.meta.url))
   })); } }]
 });
+const signals = ['SIGINT', 'SIGTERM'];
+const priorSignalListeners = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
 const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
+  stateDirectory: await prepareLocalState(),
   origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
+// Pinned Miniflare 4.20260702.0 installs immediate process.exit signal hooks.
+// This foreground HTTP host owns graceful shutdown instead. Remove only the
+// known hooks installed by this runtime, never pre-existing process listeners.
+if (runtime) for (const signal of signals) for (const listener of process.listeners(signal)) {
+  if (!priorSignalListeners.get(signal).has(listener) && ['onSignalInt', 'onSignalTerm'].includes(listener.name))
+    process.removeListener(signal, listener);
+}
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   const nonce = randomBytes(16).toString("base64");
@@ -77,6 +88,14 @@ ${tokensCss}</style></head><body><div id="preview-root" data-mode="${mode}"></di
   response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — ${mode} preview</title><style>${brandCss}
 ${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
 });
-server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (SQLite resets when local runtime stops)`));
+server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (${runtime ? 'SQLite persists in .bot-local/social-content' : 'in-memory fixture'})`));
 server.on('error', async error => { console.error(error.message); await runtime?.dispose(); process.exitCode = 1; });
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(async () => { await runtime?.dispose(); process.exit(0); }));
+let stopping = false;
+for (const signal of signals) process.on(signal, () => {
+  if (stopping) return;
+  stopping = true;
+  server.close(async () => {
+    try { await runtime?.dispose(); process.exit(0); }
+    catch (error) { console.error('Shutdown failed; local state lock retained.', error.message); process.exit(1); }
+  });
+});

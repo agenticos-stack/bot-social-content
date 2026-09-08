@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsx scripts/build.mjs",
     "validate": "tsx scripts/validate.mjs",
-    "preview": "tsx scripts/preview.mjs",
+    "preview": "node --import tsx scripts/preview.mjs",
     "test": "tsx --test --test-concurrency=1 test/build.test.mjs test/preview.test.mjs"
   },
   "dependencies": {

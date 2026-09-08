@@ -2,7 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 
 // Development-only wrapper. The packaged server and its storage stay unchanged.
-export async function createSocialRuntime({ files, sdkSource, origins }) {
+export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory }) {
   if (!sdkSource) throw new Error('Local runtime requires BOT_SDK_SOURCE pointing to the SDK source checkout.');
   const { createLocalSession } = await import(pathToFileURL(resolve(sdkSource, 'packages/testkit/src/local-session.js')));
   const modules = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith('.js') && name !== 'client.js'));
@@ -12,6 +12,8 @@ export async function createSocialRuntime({ files, sdkSource, origins }) {
     import { normalizeConfig } from './config.js';
     export class Gadget extends App {
       async seedLocal() {
+        return this.ctx.storage.transactionSync(() => {
+        if (this.storage.getConfig()) return {seeded:0};
         this.storage.setConfig(normalizeConfig({ cadence: 'daily', fetchBudgetCredits: 0 }));
         this.storage.setSources([{binding:'LOCAL_SAMPLE',label:'Local sample (not connected)',provider:'instagram'}]);
         this.storage.setDestinations([{binding:'LOCAL_DRAFT',label:'Local draft only (not connected)',provider:'instagram'}]);
@@ -19,9 +21,10 @@ export async function createSocialRuntime({ files, sdkSource, origins }) {
           this.storage.upsertItem({id:'fixture-'+index,sourceBinding:'LOCAL_SAMPLE',sourceLabel:'Local sample',provider:'instagram',providerItemId:String(index),contentHash:'local-'+index,text,media:[],metrics:{},firstSeenAt:'2026-09-01T10:00:00.000Z',lastSeenAt:'2026-09-01T10:00:00.000Z'});
         }
         return {seeded:3};
+        });
       }
     }`;
-  return createLocalSession({ modules, origins, seed: [{method:'seedLocal',args:[]}],
+  return createLocalSession({ modules, origins, stateDirectory, seed: [{method:'seedLocal',args:[]}],
     allowedMethods: ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights'] });
 }
 

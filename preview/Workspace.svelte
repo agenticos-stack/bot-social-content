@@ -56,7 +56,7 @@
 
 <svelte:window onmessage={receive} />
 <header class="topbar">
-  <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title={localRuntime ? 'Local SQLite with sample data. Resets when the server stops. No live AI or publishing.' : 'Synthetic data and scripted chat. No live AI or publishing.'}>DEV PREVIEW</span></div>
+  <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title={localRuntime ? 'Local SQLite with sample data. Drafts survive server restarts. No live AI or publishing.' : 'Synthetic data and scripted chat. No live AI or publishing.'}>DEV PREVIEW</span></div>
   <div class="dev-controls">
     {#if localRuntime}<span class="runtime-mode" title="Reads and selection use SQLite. Setup, providers, scheduling and publishing are unavailable.">Local SQLite</span>{:else}
     <label for="fixture-scenario">Scenario</label>

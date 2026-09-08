@@ -77,8 +77,9 @@ SOCIAL_CONTENT_PREVIEW_PORT=17921 pnpm preview
 
 This runs the built archive's server in local workerd/DO SQLite, with a
 development-only seed wrapper and three synthetic source records. Reads and
-selection changes, draft creation and revision saves use SQLite; state survives browser reloads but resets when
-the process stops. There are no granted providers, armed schedules, external
+selection changes, draft creation and revision saves use SQLite in the ignored
+`.bot-local/social-content` directory. State survives browser reloads and server
+restarts. A lock refuses concurrent processes using the same database. There are no granted providers, armed schedules, external
 publishing, setup writes or live subscriptions. Unsupported calls fail explicitly.
 Chat remains explicitly scripted. Runtime mode hides fixture scenario controls;
 language changes reload the canvas without clearing saved selections. The
@@ -90,6 +91,29 @@ headline, then choose **Save changes**. Reload and open **Content â†’ Inspect â†
 Continue editing** to recover the saved draft. Existing rights checks, duplicate
 prevention and revision-conflict handling are unchanged. The seeded destination
 is explicitly labelled **Local draft only (not connected)**; it grants nothing.
+
+For a fresh local workspace, stop the preview, then run:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk node scripts/local-state.mjs --reset
+```
+
+Reset archives the database to a unique sibling `.backup-*` directory and prints
+its path. It does not delete data and refuses to run while the state is locked.
+The next preview start seeds a fresh workspace. Never commit `.bot-local`, and
+never point this development host at platform storage.
+
+For isolated parallel previews, set `SOCIAL_CONTENT_PREVIEW_STATE_DIRECTORY`
+to an explicit absolute directory under an existing local parent; use a distinct
+port as well. Omit it for the standard ignored project-local state.
+
+The foreground host overrides only the pinned Miniflare signal hooks it added,
+so shutdown awaits workerd disposal before releasing the lock. Verify this
+integration when upgrading Miniflare:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk node --test test/local-preview-lifecycle.test.mjs
+```
 
 The local POST bridge requires an exact loopback origin and a per-process token,
 admits only named methods, and accepts no caller-supplied workspace identity.
