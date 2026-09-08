@@ -242,18 +242,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
 .sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
 .sl-tag-field input { width: 100%; border: 0; height: 30px; }
-.sl-preview-dialog { width: min(480px, calc(100vw - 40px)); max-width: none; height: 100dvh; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); }
+.sl-preview-dialog { width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); }
 .sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); }
-.sl-preview-sheet { height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: center; gap: 10px; }
 .sl-preview-head strong { display: block; font-size: 13px; }
 .sl-preview-head span { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
-.sl-preview-close { margin-left: auto; border: 0; background: transparent; font-size: 16px; height: 32px; width: 32px; border-radius: 8px; }
+.sl-preview-close { margin-left: auto; flex-shrink: 0; border: 0; background: transparent; color: var(--sl-ink); font-size: 24px; height: 44px; width: 44px; border-radius: var(--sl-radius-row); }
 .sl-preview-close:hover { background: var(--sl-hover); }
-.sl-preview-scroll { overflow: auto; padding: 18px; }
-.sl-preview-media { aspect-ratio: 1.2/1; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 14px; display: grid; place-items: center; overflow: hidden; }
-.sl-preview-media img { width: 100%; height: 100%; object-fit: cover; }
-.sl-preview-caption { font-size: 12px; line-height: 1.7; }
+.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
+.sl-preview-media { height: clamp(140px, 28dvh, 260px); background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 20px; display: grid; place-items: center; overflow: hidden; }
+.sl-preview-media img { width: 100%; height: 100%; object-fit: contain; }
+.sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
+.sl-preview-head { padding: 12px 20px; }
+.sl-preview-head strong { font-size: 16px; }
+.sl-preview-head span { font-size: 11px; }
+.sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
+.sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
+.sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
+.sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 .sl-rights { margin-top: 14px; padding: 12px; border-radius: var(--sl-radius-control); }
 .sl-rights-confirmed { background: color-mix(in srgb, var(--sl-success) 14%, var(--sl-surface)); }
 .sl-rights-pending { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); }
@@ -261,7 +268,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-rights strong { display: block; font-size: 10.5px; }
 .sl-rights span { display: block; margin-top: 2px; font-size: 9.5px; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
-.sl-preview-actions button { flex: 1; }
+.sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
