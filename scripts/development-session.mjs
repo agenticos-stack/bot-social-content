@@ -17,7 +17,7 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
       owner=key;
       pending=Promise.resolve().then(()=>createRuntime(key, identity, request)).catch(error=>{pending=undefined;owner=undefined;throw error;});
     }
-    return {runtime:await pending,key};
+    return {runtime:await pending,key,identity};
   }
   return {
     async start(request){
@@ -31,9 +31,14 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
       return runtime.handle(new Request(origin+'/local-rpc',{method:'POST',headers:{origin,'content-type':'application/json','x-bot-local-session':runtime.token},body:request.body,duplex:'half'}));
     },
     async agent(request, input){
-      const {runtime}=await acquire(request,false);
+      const {runtime,identity}=await acquire(request,false);
       if(typeof runtime.agent?.handle !== 'function')throw new Error('The local agent session is unavailable.');
-      return runtime.agent.handle(input);
+      // The cookie captured when the runtime was first created can be stale
+      // minutes later (a rotated session token, a lease that needs a fresh
+      // ticket to reconnect). `acquire` re-authenticates on every call, so
+      // hand the agent the current request's cookie rather than the one from
+      // `start()`.
+      return runtime.agent.handle(input, identity.cookie);
     },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };
