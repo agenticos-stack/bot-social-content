@@ -3,6 +3,7 @@
   import BrandMark from './BrandMark.svelte';
   import Shell from '@agenticos-dev/bot-shell/GadgetSplitView.svelte';
   import { createFixtureChatAdapter } from '@agenticos-dev/bot-sdk';
+  const localRuntime = document.getElementById('preview-root')?.dataset.mode === 'local-runtime';
   let input = $state('');
   let messages = $state([]);
   let selected = $state([]);
@@ -28,7 +29,7 @@
   const adapter = createFixtureChatAdapter({
     context: { workspaceId: 'fixture-social-workspace', conversationId: 'fixture-social-chat' },
     handlers: { send: (request) => ({ ok: true, value: request.selected?.length
-      ? `I have ${request.selected.length} selected source post(s) in context. In a live session, the agent would use those references to refine your draft. This fixture does not generate content or publish. Open the Draft review sample to test editing and revision recovery.`
+      ? `I have ${request.selected.length} selected source post(s) in context. This is a scripted response, not a live model. ${localRuntime ? 'Your source selection is stored in local SQLite. Content generation and publishing are unavailable.' : 'Open the Saved draft sample to test editing and revision recovery.'}`
       : 'Choose a source card on the canvas, inspect it, then select it to share context here. This is a scripted SDK response, not a live model. Your message has not been sent to any external service.' }) }
   });
   onDestroy(() => adapter.close());
@@ -55,15 +56,17 @@
 
 <svelte:window onmessage={receive} />
 <header class="topbar">
-  <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title="Synthetic data and scripted chat. No live AI or publishing.">DEV PREVIEW</span></div>
+  <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title={localRuntime ? 'Local SQLite with sample data. Resets when the server stops. No live AI or publishing.' : 'Synthetic data and scripted chat. No live AI or publishing.'}>DEV PREVIEW</span></div>
   <div class="dev-controls">
+    {#if localRuntime}<span class="runtime-mode" title="Reads and selection use SQLite. Setup, providers, scheduling and publishing are unavailable.">Local SQLite</span>{:else}
     <label for="fixture-scenario">Scenario</label>
     <select id="fixture-scenario" value={scenario} onchange={event => changeScenario(event.currentTarget.value)} title="Switching scenarios resets canvas edits.">
       <option value="sources">Source library</option><option value="draft">Saved draft</option><option value="setup">First-time setup</option>
     </select>
+    {/if}
     <button class="chat-toggle" aria-expanded={chatOpen} onclick={() => { chatOpen = !chatOpen; mobilePane = chatOpen ? "chat" : "canvas"; }}>{chatOpen ? "Hide conversation" : "Show conversation"}</button>
     <label for="canvas-language">Canvas language</label>
-    <select id="canvas-language" bind:value={nextLocale} title="Changing language resets canvas edits. Chat is preserved.">
+    <select id="canvas-language" bind:value={nextLocale} title={localRuntime ? 'Reloads the canvas in this language. Saved selection and chat are preserved.' : 'Changing language resets canvas edits. Chat is preserved.'}>
       <option value="en">English</option>
       <option value="zh-HK">繁體中文（香港）</option>
     </select>
@@ -91,7 +94,7 @@
   {/snippet}
   {#snippet canvas()}
     <!-- Platform branding belongs to this development harness, never the packaged canvas. -->
-    <iframe bind:this={frame} src={frameUrl} title="Social Content canvas — synthetic fixture" onload={() => selected = []}></iframe>
+    <iframe bind:this={frame} src={frameUrl} title={localRuntime ? 'Social Content canvas — local SQLite sample' : 'Social Content canvas — synthetic fixture'}></iframe>
   {/snippet}
   <Shell {chat} {canvas} {chatOpen} chatSide="left" {mobilePane} canvasScroll="clip" chatLabel="Creative conversation" canvasLabel="Social Content canvas" />
 </main>

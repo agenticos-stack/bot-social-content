@@ -1,4 +1,4 @@
-// Fixture-only renderer of the built artifact. No API, credentials or live doors.
+// Local renderer of the built artifact. No platform credentials or live doors.
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -7,6 +7,8 @@ import { build } from 'esbuild';
 import { compile } from 'svelte/compiler';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { Readable } from 'node:stream';
+import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
@@ -15,6 +17,8 @@ const archive = await readBlueprintArchive(bytes.buffer.slice(bytes.byteOffset, 
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
 const overlay = process.env.BOT_SDK_SOURCE;
+const mode = process.env.SOCIAL_CONTENT_PREVIEW_MODE || 'fixture';
+if (!['fixture', 'local-runtime'].includes(mode)) throw new Error('Unknown preview mode');
 const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
@@ -34,30 +38,45 @@ const bundle = await build({
     loader: 'js', resolveDir: fileURLToPath(new URL('../preview/', import.meta.url))
   })); } }]
 });
-const server = createServer((request, response) => {
+const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
+  origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
+const server = createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   const nonce = randomBytes(16).toString("base64");
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
+  if (runtime && url.pathname === '/local-rpc') {
+    try {
+      const result = await runtime.handle(new Request('http://127.0.0.1/local-rpc', {
+        method: request.method, headers: request.headers,
+        ...(!['GET','HEAD'].includes(request.method) ? {body: Readable.toWeb(request), duplex: 'half'} : {})
+      }));
+      response.writeHead(result.status, Object.fromEntries(result.headers));
+      response.end(await result.text());
+    } catch { response.writeHead(500, {'Content-Type':'application/json'}).end('{"error":"local_transport_failed"}'); }
+    return;
+  }
   response.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src data:; img-src blob: data:; frame-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${url.pathname === '/canvas' ? "'self'" : "'none'"}`);
   if (request.method !== "GET") { response.writeHead(405).end(); return; }
   if (url.pathname === '/workspace.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle.outputFiles[0].contents); return; }
   if (url.pathname === "/client.js" || url.pathname === "/fixture.js") {
     response.setHeader("Content-Type", "text/javascript; charset=utf-8");
-    response.end(url.pathname === "/client.js" ? archive.files["client.js"] : fixture);
+    response.end(url.pathname === "/client.js" ? archive.files["client.js"] : runtime ? browserBridge(runtime.token) : fixture);
     return;
   }
   if (!["/", "/canvas"].includes(url.pathname)) { response.writeHead(404).end(); return; }
   const locale = url.searchParams.get("locale") === "zh-HK" ? "zh-HK" : "en";
+  if (runtime) response.setHeader('Content-Security-Policy', response.getHeader('Content-Security-Policy').replace("connect-src 'none'", "connect-src 'self'"));
   response.setHeader("Content-Type", "text/html; charset=utf-8");
   if (url.pathname === '/') {
     response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content — local workspace</title><style>${brandCss}
-${tokensCss}</style></head><body><div id="preview-root"></div><script nonce="${nonce}" type="module" src="/workspace.js"></script></body></html>`);
+${tokensCss}</style></head><body><div id="preview-root" data-mode="${mode}"></div><script nonce="${nonce}" type="module" src="/workspace.js"></script></body></html>`);
     return;
   }
-  response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — fixture preview</title><style>${brandCss}
+  response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — ${mode} preview</title><style>${brandCss}
 ${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
 });
-server.listen(port, "127.0.0.1", () => console.log(`Fixture preview: http://127.0.0.1:${port}/ (add ?locale=zh-HK or ?setup=1)`));
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));
+server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (SQLite resets when local runtime stops)`));
+server.on('error', async error => { console.error(error.message); await runtime?.dispose(); process.exitCode = 1; });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(async () => { await runtime?.dispose(); process.exit(0); }));

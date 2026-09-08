@@ -43,8 +43,8 @@ responses; it does not call a model. Source selection is passed from the canvas
 to chat through a source-window/origin-checked, bounded fixture message. Unknown
 fixture RPCs remain denied. The `Source library`, `Draft review`, and `Setup`
 controls load distinct synthetic scenarios and reset the canvas state. The mobile
-Conversation/Canvas control keeps the canvas mounted. Desktop chat width uses a
-keyboard-accessible range input. These preview additions are not archived into
+Conversation/Canvas control keeps the canvas mounted. Desktop chat is collapsible.
+These preview additions are not archived into
 the production app or connected to Studio.
 
 Use pnpm 12.2.1 (Node 24 recommended). `pnpm-lock.yaml` is canonical; npm's old
@@ -63,6 +63,37 @@ The override must point to the SDK branch implementing `chatSide`/`mobilePane`.
 Normal pnpm installation needs no sibling checkout. The four minimum-release-age
 exceptions name only the exact owner-published 0.1.0 SDK dependencies; no global
 age-policy disable or dependency build-script approval is used.
+
+### Experimental login-free SQLite runtime
+
+Use the SDK branch containing `packages/testkit/src/local-session.js`, with its
+dependencies installed. No platform login, session cookie or API token is needed:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk \
+SOCIAL_CONTENT_PREVIEW_MODE=local-runtime \
+SOCIAL_CONTENT_PREVIEW_PORT=17921 pnpm preview
+```
+
+This runs the built archive's server in local workerd/DO SQLite, with a
+development-only seed wrapper and three synthetic source records. Reads and
+selection changes use SQLite; state survives browser reloads but resets when
+the process stops. There are no granted providers, armed schedules, external
+publishing, setup writes or live subscriptions. Unsupported calls fail explicitly.
+Chat remains explicitly scripted. Runtime mode hides fixture scenario controls;
+language changes reload the canvas without clearing saved selections. The
+`Local SQLite` label distinguishes this mode. This remains an experimental
+storage/selection preview, not a complete workflow acceptance environment.
+
+The local POST bridge requires an exact loopback origin and a per-process token,
+admits only named methods, and accepts no caller-supplied workspace identity.
+The seed wrapper is not included in the `.gadget` archive.
+
+Run the focused real-runtime check explicitly (it skips without the source path):
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk node --test test/local-runtime.test.mjs
+```
 
 ## Source and output
 
