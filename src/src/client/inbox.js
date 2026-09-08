@@ -119,7 +119,7 @@ export function renderInbox(root, state, ctx) {
   ]); });
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
     el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),
-    cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : el("p", { class: "sl-field-note" }, state.filter === "new" ? t(locale, "inboxNewHint") : state.loading ? t(locale, "loading") : t(locale, "inboxNoMatches")),
+    cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : state.loading ? el("p", { class: "sl-field-note", role: "status" }, t(locale, "loading")) : null,
     state.nextCursor ? el("button", { type: "button", class: "sl-secondary", onclick: handlers.onLoadMoreBatches }, t(locale, "inboxLoadMore")) : null,
     state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null
   ]));
