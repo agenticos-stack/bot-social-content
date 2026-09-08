@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: false
+patchedDependencies:
+  '@agenticos-dev/bot-shell@0.1.0': patches/bot-shell-0.1.0.patch
+minimumReleaseAgeExclude:
+  # Owner-published, hash-verified SDK release used by this source preview.
+  - '@agenticos-dev/bot-archive-tools@0.1.0'
+  - '@agenticos-dev/bot-contract@0.1.0'
+  - '@agenticos-dev/bot-sdk@0.1.0'
+  - '@agenticos-dev/bot-shell@0.1.0'

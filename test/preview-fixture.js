@@ -33,8 +33,8 @@ const fixture = {
     };
   },
   async listItems({ filter, query = "" }) { return { items: items.filter((item) => (filter === "all" || !item.seen) && item.text.toLowerCase().includes(query.toLowerCase())), nextCursor: null }; },
-  async setSelection(id, selected) { items.find((item) => item.id === id).selected = selected; },
-  async clearSelection() { for (const item of items) item.selected = false; },
+  async setSelection(id, selected) { items.find((item) => item.id === id).selected = selected; shareSelection(); },
+  async clearSelection() { for (const item of items) item.selected = false; shareSelection(); },
   async markSeen(ids) { for (const item of items) if (ids.includes(item.id)) item.seen = true; },
   async subscribe() { return {}; }
 };
@@ -45,6 +45,11 @@ const previewBatch = new URL(location.href).searchParams.get("draft") === "1" ? 
   ]
 } : null;
 let conflictPending = new URL(location.href).searchParams.get("conflict") === "1";
+function shareSelection() {
+  if (globalThis.parent && globalThis.parent !== globalThis) globalThis.parent.postMessage({
+    type: 'social-preview-selection', records: items.filter(item => item.selected).map(item => ({id:item.id,label:item.text}))
+  }, new URL(location.href).origin);
+}
 globalThis.gadget = new Proxy(fixture, {
   get(target, key) {
     if (key === "then") return undefined;

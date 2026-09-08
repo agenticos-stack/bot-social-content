@@ -10,10 +10,10 @@ not need Worker source, a running API, credentials, or publication authority.
 From this repository root:
 
 ```sh
-npm ci --ignore-scripts
-npm test
-npm run build
-npm run validate
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
+pnpm build
+pnpm validate
 ```
 
 The package has no workspace dependencies. Its archive codec and bounded gadget
@@ -23,7 +23,7 @@ monorepo lockfile.
 
 ## Local fixture preview
 
-After building, run `npm run preview` and open
+After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for
 setup. Choose a free port with `SOCIAL_CONTENT_PREVIEW_PORT`; an occupied port
 fails instead of replacing its owner. Stop the foreground process with Ctrl-C.
@@ -34,6 +34,35 @@ publication/configuration calls explicitly fail; no API or live doors exist.
 The server binds loopback only, serves three fixed routes, and denies network
 connections through CSP. It is a component-review aid, not the Studio sandbox,
 authentication, backend persistence or real publishing acceptance test.
+
+### Shared SDK workspace
+
+The root preview now mounts the SDK shell with conversation left and canvas
+right. A local in-memory `createFixtureChatAdapter` supplies explicitly scripted
+responses; it does not call a model. Source selection is passed from the canvas
+to chat through a source-window/origin-checked, bounded fixture message. Unknown
+fixture RPCs remain denied. The `Source library`, `Draft review`, and `Setup`
+controls load distinct synthetic scenarios and reset the canvas state. The mobile
+Conversation/Canvas control keeps the canvas mounted. Desktop chat width uses a
+keyboard-accessible range input. These preview additions are not archived into
+the production app or connected to Studio.
+
+Use pnpm 12.2.1 (Node 24 recommended). `pnpm-lock.yaml` is canonical; npm's old
+lockfile is removed. The narrow `patches/bot-shell-0.1.0.patch` applies the SDK's
+pending left-chat/mobile-pane props to its published Apache-2.0 shell. It is the
+same change under review in the SDK source, not a separate chat engine. Remove
+the patch when adopting the SDK release containing those props.
+
+To test a local SDK source checkout instead of the pinned patched dependency:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk pnpm preview
+```
+
+The override must point to the SDK branch implementing `chatSide`/`mobilePane`.
+Normal pnpm installation needs no sibling checkout. The four minimum-release-age
+exceptions name only the exact owner-published 0.1.0 SDK dependencies; no global
+age-policy disable or dependency build-script approval is used.
 
 ## Source and output
 

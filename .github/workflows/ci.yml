@@ -18,8 +18,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.20.0
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: npm run build
-      - run: npm run validate
+      - run: npm install --global pnpm@12.2.1 --ignore-scripts --no-audit --no-fund
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm validate

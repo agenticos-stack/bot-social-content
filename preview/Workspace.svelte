@@ -1,0 +1,86 @@
+<script>
+  import { onDestroy, tick } from 'svelte';
+  import Shell from '@agenticos-dev/bot-shell/GadgetSplitView.svelte';
+  import { createFixtureChatAdapter } from '@agenticos-dev/bot-sdk';
+  let input = $state('');
+  let messages = $state([]);
+  let selected = $state([]);
+  let scenario = $state('sources');
+  let mobilePane = $state('canvas');
+  let chatWidth = $state(360);
+  let frame;
+  let transcript;
+  let busy = $state(false);
+  let error = $state('');
+  const initial = new URL(location.href).searchParams;
+  const locale = initial.get('locale') === 'zh-HK' ? 'zh-HK' : 'en';
+  let frameUrl = $derived(`/canvas?locale=${locale}${scenario === 'draft' ? '&draft=1' : scenario === 'setup' ? '&setup=1' : ''}`);
+  const adapter = createFixtureChatAdapter({
+    context: { workspaceId: 'fixture-social-workspace', conversationId: 'fixture-social-chat' },
+    handlers: { send: (request) => ({ ok: true, value: request.selected?.length
+      ? `I have ${request.selected.length} selected source post(s) in context. In a live session, the agent would use those references to refine your draft. This fixture does not generate content or publish. Open the Draft review sample to test editing and revision recovery.`
+      : 'Choose a source card on the canvas, inspect it, then select it to share context here. This is a scripted SDK response, not a live model. Your message has not been sent to any external service.' }) }
+  });
+  onDestroy(() => adapter.close());
+  function receive(event) {
+    if (event.source !== frame?.contentWindow || event.origin !== location.origin || event.data?.type !== 'social-preview-selection') return;
+    const records = event.data.records;
+    if (!Array.isArray(records) || records.length > 20 || records.some(r => !r || typeof r.id !== 'string' || !/^fixture-[0-2]$/.test(r.id) || typeof r.label !== 'string' || r.label.length > 200)) return;
+    selected = records.map(r => ({ type: 'source-post', id: r.id, label: r.label }));
+  }
+  function changeScenario(value) { scenario = value; selected = []; }
+  async function send(event) {
+    event.preventDefault();
+    if (!input.trim() || busy) return;
+    const text = input.trim(); input = ''; busy = true; error = '';
+    messages = [...messages, { role: 'user', text }];
+    try {
+      const result = await adapter.send({ text, selected: selected.map(({type,id}) => ({type,id})) });
+      if (result.ok) messages = [...messages, { role: 'assistant', text: result.value }];
+      else error = result.message;
+    } catch { error = 'The fixture response could not be completed. Try again.'; }
+    finally { busy = false; await tick(); transcript?.scrollTo({ top: transcript.scrollHeight }); }
+  }
+</script>
+
+<svelte:window onmessage={receive} />
+<header class="topbar">
+  <div class="identity"><span class="brand" aria-hidden="true">a<span>·</span></span><span class="brand-name">AgenticOS</span><span class="slash">/</span><strong>Social Content</strong><span class="edition">WORKSPACE</span></div>
+  <span class="mode"><span aria-hidden="true">●</span> Local fixture</span>
+</header>
+<div class="notice">A space to explore. Synthetic content · no model connected · publishing disabled.</div>
+<nav class="mobile-switch" aria-label="Workspace panel">
+  <button aria-pressed={mobilePane === 'chat'} onclick={() => mobilePane = 'chat'}>Conversation</button>
+  <button aria-pressed={mobilePane === 'canvas'} onclick={() => mobilePane = 'canvas'}>Canvas</button>
+</nav>
+<main style={`--bot-chat-width:${chatWidth}px`}>
+  {#snippet chat()}
+    <div class="chat-heading"><span class="eyebrow">YOUR CREATIVE PARTNER</span><div><h1>Let’s make it<br /><em>worth sharing.</em></h1><span class="spark" aria-hidden="true">✳</span></div><p>From a source worth saving to a story that feels like you.</p></div>
+    <div class="transcript" bind:this={transcript} role="log" aria-label="Fixture conversation" aria-live="polite">
+      <div class="assistant-intro"><span class="avatar" aria-hidden="true">a·</span><div><strong>Social Content <small>Fixture assistant</small></strong><p>Start with the canvas. Inspect a source, select what matters, and bring it into the conversation.</p><p class="muted">You stay in control of the draft—and when it goes out.</p></div></div>
+      {#if messages.length === 0}<div class="suggestions"><span class="eyebrow">TRY A STARTING POINT</span>{#each ['Help me shape a Hong Kong caption', 'Review the selected source', 'Explain the review and schedule flow'] as prompt (prompt)}<button onclick={() => input = prompt}>{prompt}<span aria-hidden="true">↗</span></button>{/each}</div>{/if}
+      {#each messages as message, index (index)}<article class:user-message={message.role === 'user'} class="message"><small>{message.role === 'user' ? 'You' : 'Fixture assistant'}</small><p>{message.text}</p></article>{/each}
+    </div>
+    <div class="composer-wrap">
+      {#if selected.length}<div class="context"><span class="context-dot" aria-hidden="true"></span><span>{selected.length} source{selected.length === 1 ? '' : 's'} in context</span><span class="context-name">{selected[0].label}</span></div>{/if}
+      <form onsubmit={send}><label class="sr-only" for="message">Message the fixture assistant</label><textarea id="message" bind:value={input} rows="3" maxlength="4000" placeholder="What would you like to create?" onkeydown={e => { if(e.key === 'Enter' && !e.shiftKey && !e.isComposing) send(e); }}></textarea><div class="composer-footer"><span>Fixture mode <span aria-hidden="true">·</span> no live AI</span><button class="send" disabled={!input.trim() || busy} aria-label="Send fixture message">↑</button></div></form>
+      {#if error}<p role="alert">{error}</p>{/if}
+      <p class="privacy">Nothing leaves this preview. Refresh clears the session.</p>
+    </div>
+  {/snippet}
+  {#snippet canvas()}
+    <div class="canvas-header"><div><span class="eyebrow">CONTENT STUDIO</span><h2>Your next story starts here.</h2></div><span class="canvas-state">Preview canvas</span></div>
+    <div class="canvas-tools"><nav aria-label="Fixture scenario">{#each [['sources','Source library'],['draft','Draft review'],['setup','Setup']] as [value,label] (value)}<button aria-pressed={scenario === value} onclick={() => changeScenario(value)}>{label}</button>{/each}</nav><label class="resize">Chat width<input aria-label="Chat panel width" type="range" min="300" max="460" step="10" bind:value={chatWidth} /></label></div>
+    <p class="scenario-note">Sample scenarios · switching resets canvas state</p>
+    <iframe bind:this={frame} src={frameUrl} title="Social Content canvas — synthetic fixture" onload={() => selected = []}></iframe>
+    <footer class="canvas-footer"><span>Source → Refine → Review → Schedule</span><span>Local preview only</span></footer>
+  {/snippet}
+  <Shell {chat} {canvas} chatSide="left" {mobilePane} canvasScroll="clip" chatLabel="Creative conversation" canvasLabel="Social Content canvas" />
+</main>
+
+<style>
+  :global(*){box-sizing:border-box} :global(body){margin:0;background:#f8f7f4;color:#282923;font-family:'Avenir Next',Avenir,'Segoe UI',sans-serif;font-size:14px} :global(button),:global(textarea),:global(input){font:inherit} :global(button){cursor:pointer} :global(button:disabled){cursor:not-allowed} :global(:focus-visible){outline:2px solid #93621b;outline-offset:3px} :global(.chat){background:#fbfaf7!important} :global(.canvas){background:#fff} :global(.canvas.canvas-clip > *){flex:none!important} :global(.canvas.canvas-clip > iframe){flex:1!important}
+  .topbar{height:68px;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:1px solid #e4e2db;background:#fff}.identity{display:flex;align-items:center;gap:16px}.brand{font-family:Georgia,serif;font-size:38px;font-weight:700;line-height:1}.brand span{color:#b97720}.brand-name{font-weight:700;letter-spacing:-.3px}.slash{color:#aaa89e}.identity strong{font-weight:500}.edition{font-size:9px;letter-spacing:1.6px;color:#76786d;border:1px solid #dddfd5;border-radius:4px;padding:5px 7px}.mode{font-size:11px;color:#4e6554;background:#edf3ed;padding:7px 10px;border-radius:20px}.mode span{font-size:8px;margin-right:5px}.notice{text-align:center;height:30px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#68675d;background:#f2efe7;border-bottom:1px solid #e5e1d8;letter-spacing:.2px}main{height:calc(100dvh - 98px);min-height:420px}.eyebrow{font-size:9px;letter-spacing:1.8px;font-weight:650;color:#797a6e}.chat-heading{padding:28px 28px 20px;border-bottom:1px solid #e8e5dc}.chat-heading>div{display:flex;justify-content:space-between;align-items:center}h1{font-family:Georgia,'Times New Roman',serif;font-weight:400;font-size:32px;line-height:1.14;letter-spacing:-1px;margin:14px 0}h1 em{font-weight:400;color:#927034}.spark{color:#b0843c;font-size:42px;font-weight:200}.chat-heading p{font-size:12px;line-height:1.7;color:#737468;margin:0;max-width:28ch}.transcript{flex:1;overflow:auto;padding:25px 24px;min-height:0}.assistant-intro{display:flex;gap:12px}.avatar{background:#e9e4d7;border:1px solid #dcd5c4;min-width:29px;height:29px;border-radius:9px;display:grid;place-items:center;font:bold 19px Georgia,serif}.assistant-intro strong{font-size:11px}.assistant-intro small{display:block;font-weight:400;color:#7b7c70;font-size:9px;margin-top:4px}.assistant-intro p,.message p{font-size:12px;line-height:1.8;margin:12px 0;white-space:pre-wrap}.muted{color:#77796d}.suggestions{margin:28px 0 0 41px}.suggestions .eyebrow{font-size:8px}.suggestions button{display:flex;justify-content:space-between;gap:12px;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid #e2dfd5;padding:13px 0;font-size:11px;line-height:1.5;color:#555a4d}.suggestions button:hover{color:#8d6425}.suggestions button span{color:#a28651}.message{padding:8px 0}.message small{font-size:10px;color:#727566}.user-message{border-radius:12px;background:#efede5;margin:14px 0;padding:12px 14px}.user-message p{margin:5px 0}.composer-wrap{padding:12px 20px 16px}.composer-wrap form{border:1px solid #c9c5b8;border-radius:14px;background:white;padding:12px;box-shadow:0 4px 18px #29231506}textarea{resize:none;border:0;width:100%;background:transparent;font-size:12px;line-height:1.6;color:#32362d;padding:3px;min-height:58px}textarea:focus{outline:0}.composer-wrap form:focus-within{outline:2px solid #b78c44;outline-offset:2px}.composer-footer{display:flex;align-items:center;justify-content:space-between;color:#85857a;font-size:9px}.send{width:30px;height:30px;border-radius:9px;background:#2f382c;color:white;border:0;font-size:20px}.send:disabled{background:#e6e7e0;color:#969c90}.privacy{font-size:9px;text-align:center;color:#7f8074;margin:10px 0 0}.context{display:flex;gap:6px;align-items:center;font-size:10px;margin:0 0 9px;color:#64704f}.context-dot{width:6px;height:6px;background:#9caa7e;border-radius:50%}.context-name{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:110px;color:#858777}.canvas-header{display:flex;align-items:center;justify-content:space-between;padding:26px 32px 19px;gap:15px}.canvas-header h2{font-family:Georgia,serif;font-weight:400;font-size:26px;letter-spacing:-.6px;margin:8px 0 0}.canvas-state{font-size:10px;color:#727a67;border:1px solid #dde2d6;padding:7px 9px;border-radius:6px}.canvas-tools{display:flex;justify-content:space-between;align-items:center;padding:0 32px;border-bottom:1px solid #e9e8e1;gap:12px}.canvas-tools nav{display:flex;gap:22px}.canvas-tools button{background:none;border:0;border-bottom:2px solid transparent;color:#7d8074;font-size:11px;padding:12px 0}.canvas-tools button[aria-pressed=true]{color:#30392b;border-color:#a67a35;font-weight:600}.resize{display:flex;gap:8px;font-size:9px;align-items:center;color:#74796b}.resize input{width:60px;accent-color:#987743}.scenario-note{font-size:9px;color:#7f8278;padding:9px 32px;margin:0;background:#fbfcf9}iframe{width:100%;border:0;min-height:0;display:block;background:#fff}.canvas-footer{display:flex;justify-content:space-between;padding:10px 28px;font-size:9px;color:#7c8371;border-top:1px solid #e7e9e1;background:#fafbf8}.mobile-switch{display:none}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  @media(max-width:1050px){.resize{display:none}.canvas-header{padding:20px}.canvas-tools{padding:0 20px}.canvas-header h2{font-size:23px}.canvas-state{display:none}.chat-heading{padding:24px 22px}h1{font-size:29px}.transcript{padding:20px}}
+  @media(max-width:760px){.topbar{height:58px;padding:0 16px}.identity{gap:10px}.brand-name,.edition,.slash{display:none}.identity strong{font-size:13px}.notice{font-size:9px;padding:0 12px;height:36px}.mobile-switch{display:flex;padding:6px 16px;gap:8px;background:#fff;border-bottom:1px solid #dedfd5}.mobile-switch button{flex:1;border:0;border-radius:7px;padding:9px;color:#707564;background:#f2f3ed}.mobile-switch button[aria-pressed=true]{background:#313a2b;color:white}main{height:calc(100dvh - 145px)}.canvas-tools nav{gap:18px}.canvas-header{padding:20px}.canvas-header h2{font-size:24px}.scenario-note{padding:9px 20px}.canvas-footer{padding:10px 16px;font-size:8px}.chat-heading h1 br{display:none}.chat-heading h1{font-size:26px}.chat-heading p{max-width:none}.chat-heading{padding:20px}.chat-heading .spark{font-size:30px}.chat-heading h1 em{margin-left:5px}.suggestions{margin-top:18px}}
+</style>

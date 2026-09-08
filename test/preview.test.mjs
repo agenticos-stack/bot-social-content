@@ -28,7 +28,9 @@ test("served preview includes the required mount before loading the real client"
       exited.then(() => { throw new Error("Preview exited before listening"); }),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Preview startup timed out")), 5000); })
     ]);
-    const response = await fetch(`http://127.0.0.1:${port}/?locale=zh-HK`);
+    const shell = await fetch(`http://127.0.0.1:${port}/`);
+    assert.match(await shell.text(), /id="preview-root"/);
+    const response = await fetch(`http://127.0.0.1:${port}/canvas?locale=zh-HK`);
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, /<main id="gadget-root"><\/main>/);
