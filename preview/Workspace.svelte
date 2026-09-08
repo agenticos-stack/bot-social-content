@@ -1,17 +1,19 @@
 <script>
   import { onDestroy, tick } from 'svelte';
   import BrandMark from './BrandMark.svelte';
+  import ConnectedSession from './ConnectedSession.svelte';
   import Shell from '@agenticos-dev/bot-shell/GadgetSplitView.svelte';
   import { createFixtureChatAdapter } from '@agenticos-dev/bot-sdk';
   const localRuntime = document.getElementById('preview-root')?.dataset.mode === 'local-runtime';
+  const connected = document.getElementById('preview-root')?.dataset.mode === 'connected';
   let input = $state('');
   let messages = $state([]);
   let selected = $state([]);
   let scenario = $state('sources');
   let mobilePane = $state('canvas');
   let chatOpen = $state(true);
-  let frame;
-  let transcript;
+  let frame = $state();
+  let transcript = $state();
   let busy = $state(false);
   let error = $state('');
   const initial = new URL(location.href).searchParams;
@@ -58,6 +60,7 @@
 <header class="topbar">
   <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title={localRuntime ? 'Local SQLite with sample data. Drafts survive server restarts. No live AI or publishing.' : 'Synthetic data and scripted chat. No live AI or publishing.'}>DEV PREVIEW</span></div>
   <div class="dev-controls">
+    {#if connected}<span class="runtime-mode">Local API</span>{:else}
     {#if localRuntime}<span class="runtime-mode" title="Reads and selection use SQLite. Setup, providers, scheduling and publishing are unavailable.">Local SQLite</span>{:else}
     <label for="fixture-scenario">Scenario</label>
     <select id="fixture-scenario" value={scenario} onchange={event => changeScenario(event.currentTarget.value)} title="Switching scenarios resets canvas edits.">
@@ -71,8 +74,12 @@
       <option value="zh-HK">繁體中文（香港）</option>
     </select>
     <button class="apply-language" disabled={nextLocale === locale} onclick={applyLocale}>Apply</button>
+    {/if}
   </div>
 </header>
+{#if connected}
+  <ConnectedSession />
+{:else}
 <nav class="mobile-switch" aria-label="Workspace panel">
   <button aria-pressed={mobilePane === 'chat'} onclick={() => { chatOpen = true; mobilePane = 'chat'; }}>Conversation</button>
   <button aria-pressed={mobilePane === 'canvas'} onclick={() => mobilePane = 'canvas'}>Canvas</button>
@@ -98,6 +105,7 @@
   {/snippet}
   <Shell {chat} {canvas} {chatOpen} chatSide="left" {mobilePane} canvasScroll="clip" chatLabel="Creative conversation" canvasLabel="Social Content canvas" />
 </main>
+{/if}
 
 <style>
   :global(*){box-sizing:border-box} :global(body){margin:0;background:var(--color-paper);color:var(--color-ink);font-family:var(--font-sans);font-size:14px} :global(button),:global(textarea),:global(input){font:inherit} :global(button){cursor:pointer} :global(button:disabled){cursor:not-allowed} :global(:focus-visible){outline:2px solid var(--color-act-hover);outline-offset:3px} :global(.chat){background:var(--color-panel)!important} :global(.canvas){background:var(--color-panel)} :global(.canvas.canvas-clip > *){flex:none!important} :global(.canvas.canvas-clip > iframe){flex:1!important}

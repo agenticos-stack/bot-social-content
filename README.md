@@ -23,6 +23,39 @@ monorepo lockfile.
 
 ## Local fixture preview
 
+### Authenticated local-source development
+
+This mode reads the working source directly. It does **not** require building,
+uploading, publishing or installing a `.gadget` archive:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk \
+SOCIAL_CONTENT_PREVIEW_MODE=connected \
+SOCIAL_CONTENT_PREVIEW_PORT=17923 \
+SOCIAL_CONTENT_API_ORIGIN=http://127.0.0.1:8789 \
+SOCIAL_CONTENT_FRONTEND_ORIGIN=http://social.localhost:18000 \
+pnpm preview
+```
+
+Use an isolated local API with the existing development authentication enabled
+and this exact frontend origin configured. Sign in, then **Start development
+session**. Reopening resumes the same local runtime. No API conversation or
+platform gadget record is created. Restart the preview after source changes;
+automatic hot reload is not implemented for this mode yet.
+
+The canvas runs in an opaque sandbox and talks through a MessageChannel to the
+authenticated host. The host rechecks user and active organization on every
+runtime call; cookies and host runtime credentials never enter the canvas.
+Storage lives under ignored `.bot-local/connected/`, keyed by app, organization
+and user. Existing offline drafts are not copied or changed. One account/org
+owns a running host; restart it before switching identities.
+
+Currently connected: local API authentication and local-source canvas/SQLite
+with sample data and admitted draft methods. **Not connected:** live agent
+execution, skills/MCP, provider calls, scheduling and publishing. Those need a
+development transport that routes governed API calls to this same local runtime,
+not the platform's installed-gadget resolver. Packaging remains a release step.
+
 After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for
 setup. Choose a free port with `SOCIAL_CONTENT_PREVIEW_PORT`; an occupied port
