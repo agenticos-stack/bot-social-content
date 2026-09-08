@@ -107,6 +107,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .sl-app { max-width: 1080px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 36px) 96px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
+.sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
+.sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
+.sl-main-actions { margin-left:auto; display:flex; gap:4px; }
+.sl-main-actions .sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; font-size:20px; display:grid; place-items:center; }
+.sl-icon-action:hover { background:var(--sl-hover); }
+.sl-icon-action:disabled { opacity:.45; cursor:not-allowed; }
+@media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
 .sl-stepper { display: flex; gap: 20px; margin: 18px 0; border-bottom: 1px solid var(--sl-line); flex-wrap: wrap; }
 .sl-step-tab { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; padding: 0 0 10px; border-bottom: 2px solid transparent; display: flex; align-items: center; gap: 6px; }
@@ -332,6 +340,7 @@ function App() {
   const leaveDialog = buildPreviewDialog();
 
   let summary = null;
+  let activeSection = null;
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
@@ -361,6 +370,7 @@ function App() {
       try {
         const summaries = await rpc.listBatchSummaries({ limit: 50 });
         inboxState = setInboxSummaries(inboxState, summaries);
+        if (activeSection === null) activeSection = inboxState.summaries.some(b => b.draftCount || b.reviewCount || b.attentionCount) ? 'content' : 'sources';
       } catch (error) {
         inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, "batchLoadFailed") };
       }
@@ -907,7 +917,28 @@ function App() {
     renderStepper();
     if (!summary?.configured) return; // setup screen owns viewHost until configured
     if (!wizard.batch) {
-          renderCollection(viewHost, collectionState, { locale, summary, handlers: collectionHandlers, inboxState, renderInbox });
+      const section = activeSection || 'sources';
+      const body = el('div');
+      const navigation = el('nav', { class: 'sl-main-nav', 'aria-label': t(locale, 'appTitle') }, [
+        ...[['sources', locale === 'zh-HK' ? '來源' : 'Sources'], ['content', locale === 'zh-HK' ? '內容' : 'Content']].map(([key, label]) => el('button', {
+          type: 'button', 'aria-pressed': String(section === key), onclick: () => { activeSection = key; renderCurrentView(); }
+        }, label)),
+        el('div', { class: 'sl-main-actions' }, [
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'refresh'), 'aria-label': t(locale, 'refresh'), disabled: collectionState.loading || inboxState.loading,
+            onclick: async () => {
+              if (section === 'sources') return collectionHandlers.onRefresh();
+              inboxState = setInboxLoading(inboxState, true); renderCurrentView();
+              try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); }
+              catch (error) { inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') }; }
+              renderCurrentView();
+            }
+          }, el('span', { 'aria-hidden': 'true' }, '↻')),
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, el('span', { 'aria-hidden': 'true' }, '⚙'))
+        ])
+      ]);
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
+      replace(viewHost, [navigation, body]);
       return;
     }
     if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });

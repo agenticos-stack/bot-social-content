@@ -309,25 +309,7 @@ export function renderCollection(root, state, ctx) {
       { type: "button", class: `sl-filter-btn${state.filter === "all" ? " sl-filter-active" : ""}`, onclick: () => handlers.onFilter("all") },
       t(locale, "filterAll")
     ),
-    el("div", { class: "sl-sync-refresh" }, [
-      el("span", null, formatChecked(locale, state.lastCheckedAt)),
-      el(
-        "button",
-        { type: "button", disabled: state.loading, onclick: handlers.onRefresh },
-        state.loading ? t(locale, "refreshing") : t(locale, "refresh")
-      ),
-      // THE WAY BACK. Setup used to be a one-way door: it ran only while the
-      // gadget was unconfigured, so an owner who chose the wrong timezone on
-      // day one could never change it — not from here, and not from the
-      // workspace page, which owns door grants and schedules but not the
-      // gadget's own config. Last in the row because it is the least frequent
-      // control here and the only one that leaves the collection.
-      el(
-        "button",
-        { type: "button", class: "sl-settings-btn", onclick: handlers.onOpenSettings },
-        t(locale, "settingsOpen")
-      )
-    ])
+
   ]);
 
   const sources = Array.isArray(summary?.sources) ? summary.sources : [];
