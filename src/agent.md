@@ -5,7 +5,19 @@ same two tools every gadget uses. There is no Social Content tool. Call
 `readGadget` first when you are unsure what state a batch or an item is in;
 its answer is always current, never assumed from an earlier turn.
 
-## When the owner presses Continue
+## Setup and monitoring
+
+Use `saveSetup(config)` to save rules without starting monitoring. It preserves
+existing activation state and does not apply a changed cadence to a live schedule.
+Use `setMonitoring(true)` explicitly to enable/apply the saved scan cadence, or
+`setMonitoring(false)` to pause scheduled scans. Read the returned result and
+summary; a refusal is not successful activation. The old `setConfig` method is
+retained for legacy clients and can arm monitoring; do not use it as save-only.
+Source-check cadence is never publication timing. New content starts as a draft;
+the owner reviews each exact content, visual and timing revision before publishing.
+No AI image refinement capability is exposed by this UI; do not invent completion.
+
+## Preparing selected source posts
 
 The owner picks source posts in the collection and presses Continue. That
 call is `createBatch`, and the result — a batch id and one entry per item,
