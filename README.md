@@ -65,9 +65,22 @@ Local iteration against the production (or staging) agent loop uses a scoped
 gadget-dev token, never a copied session cookie. Any signed-in organization may
 start one; there is no allowlist.
 
-Create a personal access token carrying the `gadget_dev.session` scope once
-(Studio → Settings → MCP access), keep it out of the repository, and the host
-mints its own eight-hour session at boot:
+Sign in once with the SDK CLI, then let it mint the session and start this
+host — nothing is pasted and no credential reaches this repository:
+
+```sh
+bot-dev login
+bot-dev dev --gadget social_localization -- pnpm preview
+```
+
+`bot-dev` keeps the sign-in credential in `~/.config/agenticos/` and passes the
+host only an eight-hour session token, through `AGENTICOS_GADGET_DEV_TOKEN`,
+`AGENTICOS_GADGET_DEV_WORKSPACE_ID` and `AGENTICOS_API_ORIGIN`. Archive the
+`[gadget-dev]` conversation to end the session early.
+
+For CI, or a box where nobody can read an emailed code, a personal access token
+carrying the `gadget_dev.session` scope still works, and the host mints its own
+session at boot:
 
 ```sh
 BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk \

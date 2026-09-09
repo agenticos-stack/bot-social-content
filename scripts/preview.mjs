@@ -41,15 +41,24 @@ const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.ur
 const overlay = process.env.BOT_SDK_SOURCE;
 if (!['fixture', 'local-runtime', 'connected', 'connected-prod'].includes(mode)) throw new Error('Unknown preview mode');
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
-const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN;
+const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN || process.env.AGENTICOS_API_ORIGIN;
 const remote = mode === 'connected-prod';
 // A developer key mints the session here; a token and workspace id pasted from
 // a browser remain supported for a one-off. Exactly one of the two, because a
 // key silently overriding a pasted pair would connect to a workspace the
 // operator did not name.
+// `bot-dev dev` mints the session and passes it in the child environment under
+// generic names, because a host consumes a session it did not mint and naming
+// the variables after this gadget would make every gadget invent its own
+// spelling of the same three facts. The SOCIAL_CONTENT_* names remain for a
+// host started by hand.
 const developerKey = remote ? readDeveloperKey(process.env.SOCIAL_CONTENT_DEV_KEY) : null;
-let devToken = remote ? (process.env.SOCIAL_CONTENT_DEV_TOKEN || '').trim() : '';
-let devWorkspaceId = remote ? (process.env.SOCIAL_CONTENT_DEV_WORKSPACE_ID || '').trim() : '';
+let devToken = remote
+  ? (process.env.AGENTICOS_GADGET_DEV_TOKEN || process.env.SOCIAL_CONTENT_DEV_TOKEN || '').trim()
+  : '';
+let devWorkspaceId = remote
+  ? (process.env.AGENTICOS_GADGET_DEV_WORKSPACE_ID || process.env.SOCIAL_CONTENT_DEV_WORKSPACE_ID || '').trim()
+  : '';
 if (remote) {
   assertRemoteApiOrigin(apiOrigin);
   if (developerKey) {
