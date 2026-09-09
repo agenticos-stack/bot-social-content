@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "id": "ig_media_1001",
+      "caption": "New arrivals for the season! Check out our latest collection.",
+      "timestamp": "2026-08-20T09:15:00+0000",
+      "permalink": "https://www.instagram.com/p/synthetic_1001/",
+      "media_type": "IMAGE",
+      "media_url": "https://cdn.example.test/synthetic/ig-1001.jpg",
+      "username": "synthetic_brand",
+      "like_count": 42,
+      "comments_count": 5
+    },
+    {
+      "id": "ig_media_1002",
+      "caption": "Behind the scenes at our workshop today.",
+      "timestamp": "2026-08-21T11:00:00+0000",
+      "permalink": "https://www.instagram.com/p/synthetic_1002/",
+      "media_type": "VIDEO",
+      "media_url": "https://cdn.example.test/synthetic/ig-1002.mp4",
+      "thumbnail_url": "https://cdn.example.test/synthetic/ig-1002-thumb.jpg",
+      "username": "synthetic_brand"
+    },
+    {
+      "id": "ig_media_1003",
+      "caption": "A look at our latest collection, in three photos.",
+      "timestamp": "2026-08-22T08:30:00+0000",
+      "permalink": "https://www.instagram.com/p/synthetic_1003/",
+      "media_type": "CAROUSEL_ALBUM",
+      "username": "synthetic_brand",
+      "children": {
+        "data": [
+          { "id": "ig_child_1", "media_type": "IMAGE", "media_url": "https://cdn.example.test/synthetic/ig-1003-a.jpg" },
+          { "id": "ig_child_2", "media_type": "IMAGE", "media_url": "https://cdn.example.test/synthetic/ig-1003-b.jpg" },
+          { "id": "ig_child_3", "media_type": "VIDEO", "media_url": "https://cdn.example.test/synthetic/ig-1003-c.mp4" }
+        ]
+      }
+    }
+  ],
+  "paging": {
+    "cursors": { "after": "synthetic_after_cursor" },
+    "next": "https://graph.facebook.com/v20.0/synthetic_next_page"
+  }
+}

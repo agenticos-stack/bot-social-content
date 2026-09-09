@@ -75,6 +75,12 @@ import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
 
 const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
+.sl-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sl-setup-section { min-width: 0; border: 1px solid var(--sl-line); border-radius: 12px; padding: 20px; margin: 0 0 20px; background: var(--sl-surface); }
+.sl-setup-section legend { font-size: 16px; font-weight: 650; padding: 0 6px; }
+.sl-setup-section .sl-field { margin-block: 16px; }
+.sl-setup-section textarea { width: 100%; min-height: 90px; resize: vertical; font: inherit; }
+.sl-setup-actions { flex-wrap: wrap; gap: 10px; }
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
@@ -252,7 +258,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
 .sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
-.sl-setup-form { display: grid; gap: 4px; max-width: 560px; }
+.sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
+.sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
+.sl-setup-section .sl-field label { font-size: 13px; }
+.sl-setup-section input, .sl-setup-section select { min-height: 42px; }
+.sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
 .sl-tag-field { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px; }
 .sl-tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
@@ -310,7 +320,7 @@ function buildShell() {
   style.textContent = BASE_STYLE;
   document.head.appendChild(style);
   const root = el("main", { class: "sl-app" });
-  const stepperHost = el("nav", { class: "sl-stepper", "aria-label": "Localization progress", hidden: true });
+  const stepperHost = el("nav", { class: "sl-stepper", "aria-label": "Social Content progress", hidden: true });
   const viewHost = el("div", { class: "sl-view-host" });
   root.append(stepperHost, viewHost);
   document.getElementById("gadget-root").appendChild(root);
@@ -696,10 +706,14 @@ function App() {
       renderCurrentView();
     },
     onMobilePane: (pane) => { wizard = setMobilePane(wizard, pane); renderCurrentView(); },
-    onDraftChange: (id, patch) => {
+    onDraftChange: (id, patch, redraw = true) => {
       const field = document.activeElement;
       const selection = field?.classList?.contains("sl-zh-edit") ? [field.selectionStart, field.selectionEnd] : null;
       wizard = updateDraft(wizard, id, patch);
+      if (!redraw) {
+        viewHost.querySelector?.(".sl-selection .sl-primary")?.setAttribute("disabled", "");
+        return;
+      }
       renderCurrentView();
       if (selection) {
         const replacement = document.querySelector(".sl-zh-edit");
@@ -729,7 +743,10 @@ function App() {
           expectedRevision: item.revision ?? 0,
           caption: submittedDraft.caption,
           posterLayout: { template: submittedDraft.template, headline: submittedDraft.headline, subline: submittedDraft.subline, background: { kind: "solid", value: submittedDraft.background }, textColor: submittedDraft.textColor, align: submittedDraft.align },
-          confirmedClaims: submittedDraft.confirmedClaims
+          confirmedClaims: submittedDraft.confirmedClaims,
+          publicationIntent: submittedDraft.publicationIntent,
+          refinementBrief: submittedDraft.refinementBrief,
+          acceptedVisualMode: submittedDraft.acceptedVisualMode
         });
         if (result?.ok) wizard = applySavedRevision(wizard, id, result, submittedDraft);
         // A `{ ok: false }` refusal (a validation `block` issue, or a
@@ -966,6 +983,8 @@ function App() {
     const editing = options.editing === true;
     let draft = editing ? draftFromConfig(summary?.config) : createSetupDraft();
     let saving = false;
+    let savedDraft = editing ? JSON.stringify(draft) : null;
+    let notice = null;
     // Finding C: a failed `setConfig` used to reset `saving` and redraw the
     // identical form with nothing telling the owner it had failed — the
     // click looked like it did nothing. This is what makes a failure
@@ -986,6 +1005,9 @@ function App() {
         saving,
         error,
         editing,
+        summary,
+        dirty: JSON.stringify(draft) !== savedDraft,
+        notice,
         openSources,
         // Namespaced, NOT `busy`/`error`. A first version passed `error`
         // twice in this literal, so the public-account error silently
@@ -1044,23 +1066,56 @@ function App() {
 
       // Leaves the form without writing anything, back to the collection the
       // owner came from. Only rendered while `editing`.
-      onCancel: () => {
+      onCancel: async () => {
         if (saving) return;
-        renderCurrentView();
+        if (JSON.stringify(draft) !== savedDraft) {
+          const decision = await confirmUnsavedNavigation(leaveDialog, locale);
+          if (decision === "keep") return;
+          if (decision === "save") {
+            await setupHandlers.onSubmit();
+            if (error) return;
+          }
+        }
+        if (summary?.configured) await loadCollection("new");
       },
       onChange: (patch) => {
-        draft = { ...draft, ...patch };
+        if (saving) return;
+        draft = { ...draft, ...patch, ...(patch.refinementBrief ? { refinementBrief: { ...draft.refinementBrief, ...patch.refinementBrief } } : {}) };
         error = null;
-        draw();
+        notice = null;
+        // Do not replace the clicked Save button during the input's blur/change
+        // event: replacement would consume the user's first click.
+        viewHost.querySelector?.("[data-monitor-enable]")?.setAttribute("disabled", "");
+        const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
+        if (savedNotice) savedNotice.textContent = "";
+        viewHost.querySelector?.(".sl-setup-error")?.remove();
       },
       onAdd: (field, value) => {
         draft = addListEntry(draft, field, value);
         error = null;
+        notice = null;
         draw();
       },
       onRemove: (field, value) => {
         draft = removeListEntry(draft, field, value);
         error = null;
+        notice = null;
+        draw();
+      },
+      onMonitoring: async (enabled) => {
+        if (saving || (enabled && JSON.stringify(draft) !== savedDraft)) return;
+        saving = true;
+        error = null;
+        notice = null;
+        draw();
+        try {
+          const result = await rpc.setMonitoring(enabled);
+          if (!result?.ok) error = result?.message || t(locale, "genericError");
+          await refreshSummary();
+        } catch (thrown) {
+          error = thrown instanceof Error ? thrown.message : String(thrown);
+        }
+        saving = false;
         draw();
       },
       onSubmit: async () => {
@@ -1069,9 +1124,14 @@ function App() {
         error = null;
         try {
           draw();
-          await rpc.setConfig(toConfigPayload(draft));
+          const result = await rpc.saveSetup(toConfigPayload(draft));
+          if (result?.ok === false) throw new Error(result.message || t(locale, "setupError"));
           await refreshSummary();
-          await loadCollection("new");
+          draft = draftFromConfig(summary.config);
+          savedDraft = JSON.stringify(draft);
+          notice = t(locale, "setupSaved");
+          saving = false;
+          draw();
         } catch (thrown) {
           // Logged for the sandbox's own forwarded console (client.js's
           // `toast` comment above notes it reaches the host that way) AND
