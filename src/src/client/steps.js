@@ -71,7 +71,10 @@ function draftFor(item) {
     background: layout.background?.value || DEFAULT_BACKGROUND,
     textColor: layout.textColor || DEFAULT_TEXT_COLOR,
     align: layout.align || "left",
-    confirmedClaims: Array.isArray(item.confirmedClaims) ? item.confirmedClaims.slice() : []
+    confirmedClaims: Array.isArray(item.confirmedClaims) ? item.confirmedClaims.slice() : [],
+    publicationIntent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" },
+    refinementBrief: item.refinementBrief,
+    acceptedVisualMode: item.refinementBrief?.visualTreatment ?? "keep_original"
   };
 }
 
@@ -122,7 +125,9 @@ export function updateDraft(state, batchItemId, patch) {
   if (state.submitting) return state;
   const current = state.drafts[batchItemId];
   if (!current) return state;
-  return { ...state, drafts: { ...state.drafts, [batchItemId]: { ...current, ...patch } } };
+  return { ...state, drafts: { ...state.drafts, [batchItemId]: { ...current, ...patch,
+    ...(patch.publicationIntent ? { publicationIntent: { ...current.publicationIntent, ...patch.publicationIntent } } : {})
+  } } };
 }
 
 export function draftIsDirty(state, batchItemId) {
@@ -233,7 +238,8 @@ export function createSetupDraft() {
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
-    claimsRequiringConfirmation: []
+    claimsRequiringConfirmation: [],
+    refinementBrief: { version: 1, targetLanguage: "zh-HK", register: "written", tone: "", allowedChanges: [], visualTreatment: "keep_original" }
   };
 }
 
@@ -253,21 +259,24 @@ export function createSetupDraft() {
 export function draftFromConfig(config) {
   const base = createSetupDraft();
   if (!config || typeof config !== "object") return base;
-  const list = (value) => (Array.isArray(value) ? value.filter((entry) => typeof entry === "string") : null);
+  const list = (value) => (Array.isArray(value) ? value.slice() : null);
   const text = (value) => (typeof value === "string" && value.trim() ? value : null);
   return {
-    cadence: text(config.cadence) ?? base.cadence,
-    timezone: text(config.timezone) ?? base.timezone,
+    ...base,
+    baseConfig: config,
+    cadence: config.cadence ?? base.cadence,
+    timezone: text(config.timeZone) ?? text(config.timezone) ?? base.timezone,
     rightsPolicy: text(config.rightsPolicy) ?? base.rightsPolicy,
-    notificationPolicy: text(config.notificationPolicy) ?? base.notificationPolicy,
+    notificationPolicy: text(config.notifications?.mode) ?? text(config.notificationPolicy) ?? base.notificationPolicy,
     // `quietHours` is one nullable object on the wire and two fields in the
     // form; a null there means "no quiet hours", which is two empty strings.
-    quietHoursStart: text(config.quietHours?.start) ?? "",
-    quietHoursEnd: text(config.quietHours?.end) ?? "",
+    quietHoursStart: text(config.notifications?.quietHours?.start) ?? text(config.quietHours?.start) ?? "",
+    quietHoursEnd: text(config.notifications?.quietHours?.end) ?? text(config.quietHours?.end) ?? "",
     protectedTerms: list(config.protectedTerms) ?? base.protectedTerms,
     protectedHashtags: list(config.protectedHashtags) ?? base.protectedHashtags,
     disclaimers: list(config.disclaimers) ?? base.disclaimers,
-    claimsRequiringConfirmation: list(config.claimsRequiringConfirmation) ?? base.claimsRequiringConfirmation
+    claimsRequiringConfirmation: list(config.claimsRequiringConfirmation) ?? base.claimsRequiringConfirmation,
+    refinementBrief: config.refinementBrief ?? base.refinementBrief
   };
 }
 
@@ -285,17 +294,21 @@ export function removeListEntry(draft, field, value) {
 /** Shapes the setup draft into the setConfig() payload — locale is fixed en -> zh-HK per REQ-007. */
 export function toConfigPayload(draft) {
   return {
-    cadence: draft.cadence,
+    ...draft.baseConfig,
+    cadence: typeof draft.cadence === "object" && draft.cadence.kind !== "interval" ? { ...draft.cadence, timezone: draft.timezone } : draft.cadence,
+    timeZone: draft.timezone,
     timezone: draft.timezone,
     rightsPolicy: draft.rightsPolicy,
     sourceLocale: "en",
     targetLocale: "zh-HK",
     notificationPolicy: draft.notificationPolicy,
+    notifications: { mode: draft.notificationPolicy, ...(draft.quietHoursStart && draft.quietHoursEnd ? { quietHours: { start: draft.quietHoursStart, end: draft.quietHoursEnd } } : {}) },
     quietHours: draft.quietHoursStart && draft.quietHoursEnd ? { start: draft.quietHoursStart, end: draft.quietHoursEnd } : null,
     protectedTerms: draft.protectedTerms,
     protectedHashtags: draft.protectedHashtags,
     disclaimers: draft.disclaimers,
-    claimsRequiringConfirmation: draft.claimsRequiringConfirmation
+    claimsRequiringConfirmation: draft.claimsRequiringConfirmation,
+    refinementBrief: draft.refinementBrief
   };
 }
 
@@ -322,8 +335,8 @@ function renderTagList(locale, field, values, onAdd, onRemove) {
   });
   const chips = values.map((value) =>
     el("span", { class: "sl-tag" }, [
-      value,
-      el("button", { type: "button", "aria-label": t(locale, "setupRemove", { value }), onclick: () => onRemove(value) }, "×")
+      typeof value === "string" ? value : value.value,
+      el("button", { type: "button", "aria-label": t(locale, "setupRemove", { value: typeof value === "string" ? value : value.value }), onclick: () => onRemove(value) }, "×")
     ])
   );
   return el("div", { class: "sl-tag-field" }, [el("div", { class: "sl-tag-list" }, chips), input]);
@@ -412,186 +425,93 @@ function renderOpenSources(locale, state, handlers) {
  * once.
  */
 export function renderSetup(root, draft, ctx) {
-  const { locale, saving, error, handlers, editing = false } = ctx;
-  const cadenceOptions = ["hourly", "daily", "weekly"];
-  const notifyOptions = ["immediate", "daily", "off"];
-
-  const form = el(
-    "form",
-    {
-      class: "sl-setup-form",
-      // Belt and braces only: the sandbox blocks submission before this could
-      // fire (see the primary button below). Kept so that a frame ever granted
-      // `allow-forms` still cannot navigate away.
-      onsubmit: (event) => {
-        event.preventDefault();
-      }
-    },
-    [
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupCadence")),
-        el("p", { class: "sl-field-note" }, t(locale, "setupCadenceHint")),
-        el(
-          "select",
-          { onchange: (event) => handlers.onChange({ cadence: event.currentTarget.value }) },
-          cadenceOptions.map((value) =>
-            el("option", { value, selected: draft.cadence === value }, t(locale, `setupCadence${value[0].toUpperCase()}${value.slice(1)}`))
-          )
-        )
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupTimezone")),
-        el("input", { type: "text", value: draft.timezone, onchange: (event) => handlers.onChange({ timezone: event.currentTarget.value }) })
-      ]),
-      // Before the rights policy, and next to nothing by accident: adding a
-      // public account is what makes the rights question live, so the owner
-      // meets the accounts first and the policy immediately after.
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "openSourceLabel")),
-        el("p", { class: "sl-field-note" }, t(locale, "openSourceDesc")),
-        renderOpenSources(locale, ctx, handlers)
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupRightsPolicy")),
-        el("p", { class: "sl-field-note" }, t(locale, "setupRightsPolicyHint")),
-        // Said where the choice is made, because the choice does not apply to
-        // every source. The server enforces this per source regardless of what
-        // is picked here (a rule that lived only on screen would be one an
-        // agent could skip) — this sentence stops the setting looking broken
-        // when a public account keeps asking anyway.
-        (ctx.openSources || []).length
-          ? el("p", { class: "sl-field-note" }, t(locale, "openSourceRightsNote"))
-          : null,
-        el("label", { class: "sl-radio" }, [
-          el("input", {
-            type: "radio",
-            name: "rightsPolicy",
-            checked: draft.rightsPolicy === "require_confirmation",
-            onchange: () => handlers.onChange({ rightsPolicy: "require_confirmation" })
-          }),
-          t(locale, "setupRightsRequireConfirmation")
-        ]),
-        el("label", { class: "sl-radio" }, [
-          el("input", {
-            type: "radio",
-            name: "rightsPolicy",
-            checked: draft.rightsPolicy === "trust_connected",
-            onchange: () => handlers.onChange({ rightsPolicy: "trust_connected" })
-          }),
-          t(locale, "setupRightsTrustConnected")
-        ])
-      ]),
-      el("section", { class: "sl-field" }, [el("label", null, t(locale, "setupLocale")), el("p", { class: "sl-field-note" }, t(locale, "setupLocaleFixed"))]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupNotifications")),
-        el(
-          "select",
-          { onchange: (event) => handlers.onChange({ notificationPolicy: event.currentTarget.value }) },
-          notifyOptions.map((value) =>
-            el(
-              "option",
-              { value, selected: draft.notificationPolicy === value },
-              t(locale, `setupNotify${value[0].toUpperCase()}${value.slice(1)}`)
-            )
-          )
-        )
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupProtectedTerms")),
-        el("p", { class: "sl-field-note" }, t(locale, "setupProtectedTermsHint")),
-        renderTagList(
-          locale,
-          "protectedTerms",
-          draft.protectedTerms,
-          (value) => handlers.onAdd("protectedTerms", value),
-          (value) => handlers.onRemove("protectedTerms", value)
-        )
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupHashtags")),
-        renderTagList(
-          locale,
-          "protectedHashtags",
-          draft.protectedHashtags,
-          (value) => handlers.onAdd("protectedHashtags", value),
-          (value) => handlers.onRemove("protectedHashtags", value)
-        )
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupDisclaimers")),
-        renderTagList(
-          locale,
-          "disclaimers",
-          draft.disclaimers,
-          (value) => handlers.onAdd("disclaimers", value),
-          (value) => handlers.onRemove("disclaimers", value)
-        )
-      ]),
-      el("section", { class: "sl-field" }, [
-        el("label", null, t(locale, "setupClaims")),
-        renderTagList(
-          locale,
-          "claimsRequiringConfirmation",
-          draft.claimsRequiringConfirmation,
-          (value) => handlers.onAdd("claimsRequiringConfirmation", value),
-          (value) => handlers.onRemove("claimsRequiringConfirmation", value)
-        )
-      ]),
-      // The submit handler always catches (client.js's `onSubmit`) and, on
-      // failure, sets this so the owner sees SOMETHING went wrong without
-      // needing the sandboxed iframe's own devtools console (SEC-002: the
-      // top Studio frame cannot read it). `setupError` was translated
-      // (i18n.js) from the start but never rendered anywhere until now —
-      // that gap is Finding C: a failed submit reset `saving` and re-drew
-      // the same form with no visible sign anything had gone wrong.
-      error ? el("p", { class: "sl-setup-error", role: "alert" }, t(locale, "setupError")) : null,
-      // NOT `type: "submit"`, and nothing in this client may be.
-      //
-      // The gadget runs in an iframe sandboxed `allow-scripts allow-popups
-      // allow-popups-to-escape-sandbox`, under a CSP carrying `form-action
-      // 'none'`. A sandboxed frame without `allow-forms` BLOCKS form
-      // submission before the `submit` event is dispatched — so an `onsubmit`
-      // handler never runs, the click looks like it did nothing at all (no
-      // request, no error, no state change), and the browser's own
-      // explanation goes to the iframe's console, which the host frame cannot
-      // read (SEC-002). That was Finding C, and it cost two verification
-      // walks: every unit test dispatched `submit` on the form directly, which
-      // no browser here ever does.
-      //
-      // Every action in this client is therefore a click handler. A native
-      // button already answers Enter and Space, so keyboard use is unchanged.
-      // One right-aligned group rather than two buttons each pushing
-      // themselves: `.sl-primary` carries `margin-left: auto`, and a second
-      // auto margin beside it would split the free space and strand Cancel in
-      // the middle of the row.
-      el("div", { class: "sl-setup-actions" }, [
-        // Cancel first, so the destructive-to-nothing choice sits left of the
-        // one that writes — and only while editing: on first run there is
-        // nothing to go back to, and a Cancel returning to an empty collection
-        // would be a dead end wearing a friendly label.
-        editing
-          ? el(
-              "button",
-              { type: "button", class: "sl-secondary", disabled: saving, onclick: () => handlers.onCancel() },
-              t(locale, "settingsCancel")
-            )
-          : null,
-        el(
-          "button",
-          { type: "button", class: "sl-primary", disabled: saving, onclick: () => handlers.onSubmit() },
-          saving ? t(locale, "setupSaving") : t(locale, editing ? "settingsSave" : "setupSubmit")
-        )
-      ])
-    ]
-  );
-
-  replace(root, [
-    el("div", { class: "sl-titleline" }, [
-      el("h1", null, t(locale, editing ? "settingsTitle" : "setupTitle")),
-      el("p", null, t(locale, editing ? "settingsDesc" : "setupDesc"))
-    ]),
-    form
+  const { locale, saving, error, handlers, editing = false, summary = {}, dirty = true } = ctx;
+  const note = (key) => el("p", { class: "sl-field-note" }, t(locale, key));
+  const field = (key, control) => {
+    const id = "sl-" + key;
+    const input = control.querySelector?.("input, textarea, select") || control;
+    input.setAttribute("id", id);
+    input.setAttribute("name", key);
+    return el("div", { class: "sl-field" }, [el("label", { for: id }, t(locale, key)), control]);
+  };
+  const section = (key, children) => el("fieldset", { class: "sl-setup-section" }, [
+    el("legend", null, t(locale, key)), ...children
   ]);
+  const select = (value, options, onChange) => el("select", { onchange: e => onChange(e.currentTarget.value) },
+    options.map(([id, label]) => el("option", { value: id, selected: id === value }, t(locale, label))));
+  const tags = (key, fieldName) => field(key, renderTagList(locale, fieldName, draft[fieldName],
+    value => handlers.onAdd(fieldName, value), value => handlers.onRemove(fieldName, value)));
+  const accounts = (key, rows) => el("div", { class: "sl-field" }, [
+    el("strong", null, t(locale, key)),
+    rows?.length ? el("ul", null, rows.map(row => el("li", null, row.label || row.displayName || row.provider)))
+      : note("setupNoConnections")
+  ]);
+  const brief = draft.refinementBrief || {};
+  const updateBrief = patch => handlers.onChange({ refinementBrief: patch });
+  const customCadence = typeof draft.cadence === "object";
+  const monitoring = summary.config?.monitoringEnabled;
+  const sourceSection = section("setupSourcesSection", [
+    note("setupSourcesNote"),
+    accounts("setupConnectedSources", (summary.sources || []).filter(row => row.origin !== "open")),
+    accounts("setupDestinations", summary.destinations),
+    field("openSourceLabel", renderOpenSources(locale, ctx, handlers)),
+    note("openSourceDesc")
+  ]);
+  const rulesSection = section("setupRulesSection", [
+    note("setupRulesNote"),
+    field("setupTone", el("input", { type: "text", maxlength: 120, value: brief.tone || "", onchange: e => updateBrief({ tone: e.currentTarget.value }) })),
+    field("setupAllowedChanges", el("textarea", { value: (brief.allowedChanges || []).map(v => typeof v === "string" ? v : v.value).join("\n"), onchange: e => updateBrief({ allowedChanges: e.currentTarget.value.split("\n").filter(Boolean) }) })),
+    field("setupVisual", select(brief.visualTreatment || "keep_original", [
+      ["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"],
+      ...(brief.visualTreatment === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])
+    ], value => updateBrief({ visualTreatment: value }))),
+    note("setupVisualNote"),
+    field("setupRightsPolicy", select(draft.rightsPolicy, [
+      ["require_confirmation", "setupRightsRequireConfirmation"], ["trust_connected", "setupRightsTrustConnected"]
+    ], rightsPolicy => handlers.onChange({ rightsPolicy }))),
+    note("openSourceRightsNote"),
+    field("setupLocale", el("p", null, t(locale, "setupLocaleFixed"))),
+    tags("setupProtectedTerms", "protectedTerms"), tags("setupHashtags", "protectedHashtags"),
+    tags("setupDisclaimers", "disclaimers"), tags("setupClaims", "claimsRequiringConfirmation")
+  ]);
+  const monitoringSection = section("setupMonitoringSection", [
+    note("setupMonitoringNote"),
+    el("p", { role: "status" }, t(locale, monitoring === false || !summary.configured ? "setupMonitoringPaused" : monitoring === true ? "setupMonitoringActive" : "setupMonitoringLegacy")),
+    field("setupCadence", select(customCadence ? "custom" : draft.cadence, [
+      ...(customCadence ? [["custom", "setupCustomCadence"]] : []),
+      ["hourly", "setupCadenceHourly"], ["daily", "setupCadenceDaily"], ["weekly", "setupCadenceWeekly"]
+    ], cadence => { if (cadence !== "custom") handlers.onChange({ cadence }); })),
+    field("setupTimezone", el("input", { type: "text", value: draft.timezone, onchange: e => handlers.onChange({ timezone: e.currentTarget.value }) })),
+    field("setupNotifications", select(draft.notificationPolicy, [
+      ["immediate", "setupNotifyImmediate"], ["daily", "setupNotifyDaily"], ["off", "setupNotifyOff"]
+    ], notificationPolicy => handlers.onChange({ notificationPolicy }))),
+    field("setupQuietStart", el("input", { type: "time", value: draft.quietHoursStart, onchange: e => handlers.onChange({ quietHoursStart: e.currentTarget.value }) })),
+    field("setupQuietEnd", el("input", { type: "time", value: draft.quietHoursEnd, onchange: e => handlers.onChange({ quietHoursEnd: e.currentTarget.value }) })),
+    dirty || !summary.configured ? note("setupSaveFirst") : null,
+    el("div", { class: "sl-setup-actions" }, [
+      el("button", { type: "button", class: "sl-secondary", "data-monitor-enable": "true", disabled: saving || dirty || !summary.configured, onclick: () => handlers.onMonitoring(true) }, t(locale, "setupEnable")),
+      el("button", { type: "button", class: "sl-secondary", disabled: saving || !summary.configured || monitoring === false, onclick: () => handlers.onMonitoring(false) }, t(locale, "setupPause"))
+    ])
+  ]);
+  // The host sandbox forbids form submission. Native type=button actions
+  // retain Enter/Space keyboard activation without changing sandbox policy.
+  const form = el("form", { class: "sl-setup-form", onsubmit: e => e.preventDefault() }, [
+    el("fieldset", { disabled: saving || ctx.openBusy, class: "sl-setup-fields" }, [
+      sourceSection, rulesSection,
+      section("setupPublicationSection", [note("setupPublicationNote")]),
+      monitoringSection,
+      error ? el("p", { class: "sl-setup-error", role: "alert" }, error) : null,
+      ctx.notice ? el("p", { role: "status", class: "sl-setup-notice" }, ctx.notice) : null,
+      el("div", { class: "sl-setup-actions" }, [
+        editing ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "settingsCancel")) : null,
+        el("button", { type: "button", class: "sl-primary", disabled: saving, onclick: () => handlers.onSubmit() }, t(locale, saving ? "setupSaving" : "saveChanges")),
+        summary.configured ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "setupDone")) : null
+      ])
+    ])
+  ]);
+  replace(root, [el("div", { class: "sl-titleline" }, [
+    el("h1", null, t(locale, editing ? "settingsTitle" : "setupTitle")), note("setupFlow")
+  ]), form]);
 }
 
 function renderHighlightedSource(text, policy) {
@@ -699,6 +619,27 @@ function posterTemplatesList() {
   return POSTER_TEMPLATES;
 }
 
+function renderPublicationControls(item, draft, locale, handlers) {
+  const intent = draft.publicationIntent;
+  const change = (patch, redraw = true) => handlers.onDraftChange(item.id, { publicationIntent: { ...patch, latePolicy: "hold" } }, redraw);
+  const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
+  return el("fieldset", { class: "sl-setup-section" }, [
+    el("legend", null, t(locale, "publicationTiming")),
+    ...[["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
+      el("label", { class: "sl-radio" }, [el("input", { type: "radio", name: "publicationMode", checked: intent.publishMode === mode,
+        onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }), t(locale, key)])),
+    ...(intent.publishMode === "schedule" ? [
+      field("publicationLocalTime", el("input", { type: "datetime-local", value: intent.publishLocalTime || "", oninput: e => change({ publishLocalTime: e.currentTarget.value }, false) })),
+      field("publicationTimezone", el("input", { type: "text", value: intent.timezone || "", oninput: e => change({ timezone: e.currentTarget.value }, false) })),
+      field("publicationOffset", el("input", { type: "number", min: -840, max: 840, value: intent.utcOffsetMinutes ?? "", oninput: e => change({ utcOffsetMinutes: e.currentTarget.value === "" ? null : Number(e.currentTarget.value) }, false) }))
+    ] : []),
+    el("p", { class: "sl-field-note" }, t(locale, "publicationHint")),
+    field("setupVisual", el("select", { onchange: e => handlers.onDraftChange(item.id, { acceptedVisualMode: e.currentTarget.value }) },
+      [["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"], ...(draft.acceptedVisualMode === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])].map(([value, key]) => el("option", { value, selected: draft.acceptedVisualMode === value }, t(locale, key))))),
+    el("p", { class: "sl-field-note" }, t(locale, "setupVisualNote"))
+  ]);
+}
+
 export function renderLocalize(root, state, ctx) {
   const { locale, policy, handlers } = ctx;
   const batch = state.batch;
@@ -801,6 +742,7 @@ export function renderLocalize(root, state, ctx) {
     dual,
     issueList,
     posterHost,
+    renderPublicationControls(activeItem, draft, locale, handlers),
     footer
   ])]);
 }

@@ -88,7 +88,7 @@ export const SOCIAL_LOCALIZATION_DEFINITION = {
   views: [
     {
       key: "localization",
-      label: "Localization",
+      label: "Social Content",
       layout: "full",
       widgets: [
         { id: "summary", type: "rich_text", title: "Social Content", binding: "summary" }

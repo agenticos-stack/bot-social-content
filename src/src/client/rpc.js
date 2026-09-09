@@ -13,6 +13,10 @@ export function createRpc(gadget) {
   return {
     summary: () => gadget.summary(),
     setConfig: (config) => gadget.setConfig(config),
+    saveSetup: (config) => gadget.saveSetup(config),
+    setMonitoring: (enabled) => gadget.setMonitoring(enabled),
+    addOpenSource: (link) => gadget.addOpenSource(link),
+    removeOpenSource: (binding) => gadget.removeOpenSource(binding),
     refresh: () => gadget.refresh(),
     listItems: (params) => gadget.listItems(params),
     getItem: (id) => gadget.getItem(id),

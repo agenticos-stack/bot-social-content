@@ -11,10 +11,12 @@
 // unknown key or locale falls back to the English string so a missing
 // translation degrades to readable English rather than a blank control.
 
+import { SETUP_COPY } from "./setup-copy.js";
 export const LOCALES = Object.freeze(["en", "zh-HK"]);
 
 export const STRINGS = Object.freeze({
   en: {
+    ...SETUP_COPY.en,
     saveChanges: "Save changes",
     paneSource: "Source",
     paneDraft: "Draft",
@@ -158,13 +160,13 @@ export const STRINGS = Object.freeze({
 
     // --- Steps -------------------------------------------------------------
     stepSelect: "Select source",
-    stepLocalize: "Localize",
+    stepLocalize: "Refine",
     stepReview: "Review",
     stepPublish: "Publish",
     stepResult: "Result",
 
     // --- Localize (step 2) --------------------------------------------------
-    localizeTitle: "Localize",
+    localizeTitle: "Refine content",
     localizeDesc: "Written Hong Kong Chinese, side by side with the source. Protected literals stay exactly as published.",
     sourceHeader: "English · source",
     zhHeader: "Written Chinese (zh-HK) · editable",
@@ -240,6 +242,7 @@ export const STRINGS = Object.freeze({
     providerFacebook: "Facebook"
   },
   "zh-HK": {
+    ...SETUP_COPY["zh-HK"],
     saveChanges: "儲存修改",
     paneSource: "來源",
     paneDraft: "草稿",
@@ -378,12 +381,12 @@ export const STRINGS = Object.freeze({
     mediaUnavailable: "預覽暫時無法顯示",
 
     stepSelect: "選取來源",
-    stepLocalize: "本地化",
+    stepLocalize: "修訂",
     stepReview: "審閱",
     stepPublish: "發布",
     stepResult: "結果",
 
-    localizeTitle: "本地化",
+    localizeTitle: "修訂內容",
     localizeDesc: "書面香港中文，與來源並列顯示。受保護的內容將維持原文，不作更動。",
     sourceHeader: "英文 · 原文",
     zhHeader: "書面中文（香港）· 可編輯",

@@ -86,7 +86,7 @@ export function doorGrantStatus(env) {
  * Calls one pinned action on a granted connector door.
  *
  * `binding` is the owner-chosen label slug the door was granted under
- * (`env.INSTAGRAM_SOURCE`); `method` is the pinned
+ * (`env.IG_ESSENTIAL_FOODS`, TASK-101, PR #1484); `method` is the pinned
  * action's own name. As shipped, the only READ actions are
  * `instagram_list_media` and `facebook_list_page_posts` (full underscored
  * slugs, not `list_media`/`list_page_posts`) — see `listInstagramMedia` /

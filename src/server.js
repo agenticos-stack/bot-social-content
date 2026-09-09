@@ -141,6 +141,39 @@ const PREVIEW_MAX_BYTES = 1024 * 1024; // SEC-004
 const PREVIEW_CHUNK_BYTES = 1024 * 1024; // CON-007: chunk anything above 1 MiB
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * The schedule door deliberately returns a human-readable cadence string, not
+ * its stored object. Keep the comparison at this boundary in the same shape
+ * as that public door contract; the object fallback preserves compatibility
+ * with older local harnesses that returned the stored cadence directly.
+ */
+function cadenceDescription(cadence) {
+  if (!cadence || typeof cadence !== "object") return null;
+  if (cadence.kind === "interval" && Number.isInteger(cadence.everyMinutes)) {
+    return `every ${cadence.everyMinutes} minutes`;
+  }
+  if (cadence.kind === "daily" && typeof cadence.at === "string" && typeof cadence.timezone === "string") {
+    return `daily at ${cadence.at} ${cadence.timezone}`;
+  }
+  if (
+    cadence.kind === "weekly" &&
+    Number.isInteger(cadence.weekday) &&
+    cadence.weekday >= 0 &&
+    cadence.weekday < WEEKDAY_NAMES.length &&
+    typeof cadence.at === "string" &&
+    typeof cadence.timezone === "string"
+  ) {
+    return `every ${WEEKDAY_NAMES[cadence.weekday]} at ${cadence.at} ${cadence.timezone}`;
+  }
+  return null;
+}
+
+function cadenceMatches(schedule, cadence) {
+  if (typeof schedule?.cadence === "string") return schedule.cadence === cadenceDescription(cadence);
+  return JSON.stringify(schedule?.cadence) === JSON.stringify(cadence);
+}
 
 /**
  * Provider -> everything that is provider-specific about reading it: the
@@ -269,6 +302,10 @@ export class Gadget extends DurableObject {
       const mediaLimits = description?.mediaLimits;
       return {
         binding: row.binding,
+        origin: row.origin ?? "binding",
+        displayName: row.displayName ?? null,
+        lastServedBy: row.lastServedBy ?? null,
+        lastCostCredits: row.lastCostCredits ?? null,
         label: row.label,
         provider: row.provider,
         glyphKey: readString(description?.glyphKey),
@@ -301,25 +338,95 @@ export class Gadget extends DurableObject {
    * validated strictly (REQ-002: 1 to 20, unique bindings).
    */
   async setConfig(input) {
+    // Compatibility: old installed clients coupled Save to starting monitoring.
+    try { return await this.saveConfiguration(input, true); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  }
+
+  async saveSetup(input) {
+    if (this.monitoringChanging) return { ok: false, message: "Wait for the monitoring change to finish before saving." };
+    try { return await this.saveConfiguration(input, false); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  }
+
+  async saveConfiguration(input, legacyActivation) {
     const record = input && typeof input === "object" ? input : {};
-    const config = normalizeConfig(record);
-    const derived =
-      record.sources === undefined || record.destinations === undefined ? await this.deriveBindingsFromGrants() : null;
+    const previous = this.storage.getConfig();
+    const config = {
+      ...normalizeConfig(record),
+      // A caller cannot enable monitoring by smuggling this field into Save.
+      monitoringEnabled: previous ? previous.monitoringEnabled !== false : legacyActivation
+    };
+    const derived = (legacyActivation || !previous) && (record.sources === undefined || record.destinations === undefined)
+      ? await this.deriveBindingsFromGrants() : null;
     const sources =
       record.sources !== undefined
         ? await this.describedBindings(normalizeBindingList(record.sources, "sources"))
-        : derived.sources;
+        : derived?.sources;
     const destinations =
       record.destinations !== undefined
         ? await this.describedBindings(normalizeBindingList(record.destinations, "destinations"))
-        : derived.destinations;
+        : derived?.destinations;
 
     this.storage.setConfig(config);
-    this.storage.setSources(sources);
-    this.storage.setDestinations(destinations);
-    await this.armSchedule(config.cadence, config.timeZone);
+    if (sources) this.storage.setSources(sources);
+    if (destinations) this.storage.setDestinations(destinations);
+    if (legacyActivation) await this.armSchedule(config.cadence, config.timeZone);
 
     return this.summary();
+  }
+
+  async setMonitoring(enabled) {
+    if (this.monitoringChanging) return { ok: false, message: "A monitoring change is already in progress." };
+    this.monitoringChanging = true;
+    try { return await this.changeMonitoring(enabled); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+    finally { this.monitoringChanging = false; }
+  }
+
+  async changeMonitoring(enabled) {
+    const config = this.storage.getConfig();
+    if (!config || typeof enabled !== "boolean") {
+      return { ok: false, message: "Save setup first, then explicitly enable or pause monitoring." };
+    }
+    if (!enabled) {
+      // Stop execution first, even if cancelling a remote schedule needs approval.
+      this.storage.setConfig({ ...config, monitoringEnabled: false });
+      try {
+        for (const row of await scheduleList(this.env)) {
+          if (row.hook !== SCAN_HOOK_NAME || row.status === "cancelled") continue;
+          const cancelled = await scheduleCancel(this.env, row.id);
+          if (cancelled?.cancelled !== true) {
+            return {
+              ok: false,
+              message: "Monitoring is paused locally. Resolve the existing schedule before cleaning it up."
+            };
+          }
+        }
+      } catch (error) {
+        return { ok: false, message: `Monitoring is paused locally. Schedule cleanup: ${errorMessage(error)}` };
+      }
+      return { ok: true, summary: await this.summary() };
+    }
+    try {
+      const schedules = (await scheduleList(this.env)).filter(row => row.hook === SCAN_HOOK_NAME && row.status !== "cancelled");
+      if (schedules.length === 1 && schedules[0].status === "active" && cadenceMatches(schedules[0], config.cadence)) {
+        this.storage.setConfig({ ...config, monitoringEnabled: true });
+        return { ok: true, summary: await this.summary() };
+      }
+      // Do not create a second live scan schedule when applying a changed cadence.
+      this.storage.setConfig({ ...config, monitoringEnabled: false });
+      for (const row of schedules) {
+        const cancelled = await scheduleCancel(this.env, row.id);
+        if (cancelled?.cancelled !== true) return { ok: false, message: "Monitoring is paused. Resolve the existing schedule before applying a new cadence." };
+      }
+      const schedule = await scheduleCreate(this.env, SCAN_HOOK_NAME, config.cadence);
+      if (!schedule?.id) return { ok: false, message: "Monitoring is not enabled. Complete the schedule decision in the workspace, then retry." };
+      this.storage.setConfig({ ...config, monitoringEnabled: true });
+      return { ok: true, summary: await this.summary() };
+    } catch (error) {
+      return { ok: false, message: errorMessage(error) };
+    }
   }
 
   /**
@@ -571,6 +678,9 @@ export class Gadget extends DurableObject {
    * `UNIQUE(source_binding, provider_item_id)` upsert) still holds either way.
    */
   async scan(firing) {
+    if (this.storage.getConfig()?.monitoringEnabled === false) {
+      return { skipped: true, reason: "Monitoring is paused." };
+    }
     const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
     return this.runScan(runId, firingInstant(firing));
   }
@@ -1096,7 +1206,7 @@ export class Gadget extends DurableObject {
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
       confirmedClaims: latest?.confirmedClaims ?? [],
-      refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(null),
+      refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
       originalMediaRefs: latest?.originalMediaRefs ?? [],
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
@@ -1416,6 +1526,10 @@ export class Gadget extends DurableObject {
       return { ok: false, code: "revision_missing", message: "Nothing to submit yet. Save a revision first." };
     }
     const caption = revision.caption ?? "";
+    const publication = normalizePublicationIntent(revision.publicationIntent ?? undefined);
+    if (!publication.ok) {
+      return { ok: false, code: publication.code, message: publication.message };
+    }
 
     const config = this.storage.getConfig();
     const protectedLiterals = detectProtectedLiterals(caption, {
@@ -1444,7 +1558,11 @@ export class Gadget extends DurableObject {
           sourcePublishedAt: origin.sourcePublishedAt,
           retrievedAt: origin.retrievedAt
         },
-        protectedLiterals
+        protectedLiterals,
+        // The Social Hub owns schedule validation and time resolution. Carry
+        // the normalized, owner-reviewed intent through the door instead of
+        // silently downgrading every revision to save_draft.
+        schedule: publication.intent
       });
     } catch (error) {
       return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
