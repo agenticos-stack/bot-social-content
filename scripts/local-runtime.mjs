@@ -2,7 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 
 // Development-only wrapper. The packaged server and its storage stay unchanged.
-export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory }) {
+export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory, doors }) {
   if (!sdkSource) throw new Error('Local runtime requires BOT_SDK_SOURCE pointing to the SDK source checkout.');
   const { createLocalSession } = await import(pathToFileURL(resolve(sdkSource, 'packages/testkit/src/local-session.js')));
   const modules = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith('.js') && name !== 'client.js'));
@@ -24,8 +24,28 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
         });
       }
     }`;
-  return createLocalSession({ modules, origins, stateDirectory, seed: [{method:'seedLocal',args:[]}],
-    allowedMethods: ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights'] });
+  /**
+   * What the browser may call.
+   *
+   * The first list needs no door: browsing what has already been scanned,
+   * selecting, batching, revising, confirming rights. It is what this runtime
+   * has always admitted, and it stays the whole list when no door is
+   * connected — those methods would only fail on a missing `env` member.
+   *
+   * The second is admitted ONLY with doors, because each one goes through one:
+   * setup writes bindings and arms a schedule, scanning reads a source,
+   * submission hands the approved version to the publisher. Admitting them
+   * without doors would move a clear "this is unavailable" to a confusing
+   * failure inside the gadget.
+   *
+   * Admission is not authority either way — the platform still decides whether
+   * any door call proceeds, and `submitForReview` is gated there as it is for
+   * an installed gadget.
+   */
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights'];
+  const needsDoors = ['setConfig','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','submitForReview','readPublishState','getMedia'];
+  return createLocalSession({ modules, origins, stateDirectory, doors, seed: [{method:'seedLocal',args:[]}],
+    allowedMethods: doors ? [...browsing, ...needsDoors] : browsing });
 }
 
 export function browserBridge(token) {
