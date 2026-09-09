@@ -17,6 +17,7 @@ import { createConnectedAgent, socialMethodNames, sourceDigest } from './connect
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
 import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from './platform-origin.mjs';
+import { describeExpiry, mintGadgetDevSession, readDeveloperKey } from './gadget-dev-mint.mjs';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
@@ -42,11 +43,31 @@ if (!['fixture', 'local-runtime', 'connected', 'connected-prod'].includes(mode))
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
 const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN;
 const remote = mode === 'connected-prod';
-const devToken = remote ? process.env.SOCIAL_CONTENT_DEV_TOKEN : '';
-const devWorkspaceId = remote ? process.env.SOCIAL_CONTENT_DEV_WORKSPACE_ID : '';
+// A developer key mints the session here; a token and workspace id pasted from
+// a browser remain supported for a one-off. Exactly one of the two, because a
+// key silently overriding a pasted pair would connect to a workspace the
+// operator did not name.
+const developerKey = remote ? readDeveloperKey(process.env.SOCIAL_CONTENT_DEV_KEY) : null;
+let devToken = remote ? (process.env.SOCIAL_CONTENT_DEV_TOKEN || '').trim() : '';
+let devWorkspaceId = remote ? (process.env.SOCIAL_CONTENT_DEV_WORKSPACE_ID || '').trim() : '';
 if (remote) {
-  if (typeof devToken !== 'string' || !devToken.trim()) throw new Error('Set SOCIAL_CONTENT_DEV_TOKEN to the token returned by POST /v2/gadget-dev/sessions.');
   assertRemoteApiOrigin(apiOrigin);
+  if (developerKey) {
+    if (devToken || devWorkspaceId) throw new Error('Set SOCIAL_CONTENT_DEV_KEY or SOCIAL_CONTENT_DEV_TOKEN/SOCIAL_CONTENT_DEV_WORKSPACE_ID, not both.');
+    const minted = await mintGadgetDevSession({
+      apiOrigin,
+      developerKey,
+      gadgetKey: SOCIAL_LOCALIZATION_DEFINITION.key,
+      title: SOCIAL_LOCALIZATION_DEFINITION.title
+    });
+    devToken = minted.devToken;
+    devWorkspaceId = minted.workspaceId;
+    // The workspace id is a room the operator can open and archive; the token
+    // is a credential and is never printed.
+    console.log(`gadget-dev session ${devWorkspaceId} on ${apiOrigin}, valid until ${describeExpiry(minted.expiresAtMs)}`);
+  } else if (!devToken) {
+    throw new Error('Set SOCIAL_CONTENT_DEV_KEY to a personal access token with the gadget_dev.session scope, or SOCIAL_CONTENT_DEV_TOKEN to a token already minted.');
+  }
   assertGadgetDevWorkspaceId(devWorkspaceId);
 }
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
