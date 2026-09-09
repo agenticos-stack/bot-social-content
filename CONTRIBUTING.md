@@ -61,6 +61,17 @@ session, starts this host with it, and prints which doors are reachable.
 - `read` and `generate` proceed, scoped and audited. Scanning is a read.
 - Every door call is recorded, including from a development session.
 
+## The current plan
+
+The design work for monitor → derive → publish lives in the API repo, at
+`design-plans/feature-content-grounding-ledger-1.md`. Read its "How to start"
+section before picking anything up: the first task there may invalidate the
+second, and it says so.
+
+Its short version: validation moves from "is this faithful to the source" to
+"what does each claim stand on". Generation stays with the agent — the gadget
+records citations, never the corpus.
+
 ## Where to start
 
 The four review items recorded in the API's 2026-09-07 evidence note —
