@@ -62,20 +62,31 @@ configured. Packaging remains a release step.
 ### Production platform (gadget-dev token)
 
 Local iteration against the production (or staging) agent loop uses a scoped
-gadget-dev token, never a copied session cookie. Mint the token from Studio
-once `POST /v2/gadget-dev/sessions` is deployed (API PR #1768) in an
-allowlisted organization, then:
+gadget-dev token, never a copied session cookie. Any signed-in organization may
+start one; there is no allowlist.
+
+Create a personal access token carrying the `gadget_dev.session` scope once
+(Studio → Settings → MCP access), keep it out of the repository, and the host
+mints its own eight-hour session at boot:
 
 ```sh
 BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk \
 SOCIAL_CONTENT_PREVIEW_MODE=connected-prod \
 SOCIAL_CONTENT_PREVIEW_PORT=17923 \
 SOCIAL_CONTENT_API_ORIGIN=https://api.agenticos.hk \
-SOCIAL_CONTENT_DEV_TOKEN=… \
-SOCIAL_CONTENT_DEV_WORKSPACE_ID=chat_… \
+SOCIAL_CONTENT_DEV_KEY=ag_mcp_… \
 SOCIAL_CONTENT_FRONTEND_ORIGIN=http://social.localhost:18000 \
 pnpm preview
 ```
+
+The host prints the workspace id and the expiry, never the key or the token it
+mints. Archive that room to revoke the session; revoke the key in Studio to end
+every future one.
+
+For a one-off against a session somebody else started, paste it instead —
+`SOCIAL_CONTENT_DEV_TOKEN` with `SOCIAL_CONTENT_DEV_WORKSPACE_ID=chat_…`. Set
+one or the other; setting both is refused, because a key silently overriding a
+pasted pair would connect to a workspace you did not name.
 
 `SOCIAL_CONTENT_API_ORIGIN` must be exactly `https://api.agenticos.hk` or
 `https://staging-api.agenticos.hk`. The host mints socket tickets at

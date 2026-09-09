@@ -17,7 +17,7 @@
     "build": "tsx scripts/build.mjs",
     "validate": "tsx scripts/validate.mjs",
     "preview": "node --import tsx scripts/preview.mjs",
-    "test": "tsx --test --test-concurrency=1 test/build.test.mjs test/preview.test.mjs test/connected-api.test.mjs test/connected-agent.test.mjs test/development-session.test.mjs"
+    "test": "tsx --test --test-concurrency=1 test/build.test.mjs test/preview.test.mjs test/connected-api.test.mjs test/connected-agent.test.mjs test/development-session.test.mjs test/gadget-dev-mint.test.mjs"
   },
   "dependencies": {
     "@agenticos-dev/bot-contract": "0.1.0"
