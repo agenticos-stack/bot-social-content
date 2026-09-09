@@ -1,4 +1,6 @@
-const routes = new Map([
+import { assertLocalApiOrigin, assertLocalFrontendOrigin, assertRemoteApiOrigin } from './platform-origin.mjs';
+
+const localRoutes = new Map([
   ['/api/auth/get-session', ['GET']],
   ['/api/auth/dev-sign-in', ['POST']],
   ['/api/auth/sign-out', ['POST']],
@@ -8,6 +10,11 @@ const routes = new Map([
   ['/api/dev/agent', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
+const remoteRoutes = new Map([
+  ['/api/dev/session', ['POST']],
+  ['/api/dev/rpc', ['POST']],
+  ['/api/dev/agent', ['POST']]
+]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
 export function redactCredentials(value) {
   if (Array.isArray(value)) return value.map(redactCredentials);
@@ -15,14 +22,19 @@ export function redactCredentials(value) {
   return Object.fromEntries(Object.entries(value).filter(([key])=>!tokenKeys.has(key)).map(([key,value])=>[key,redactCredentials(value)]));
 }
 
-/** Local BFF only. Authentication remains the API's existing Better Auth flow. */
-export function createConnectedApi({apiOrigin, frontendOrigin, development, fetcher = fetch}) {
-  const api = new URL(apiOrigin);
-  const frontend = new URL(frontendOrigin);
-  if (api.origin !== apiOrigin || api.protocol !== 'http:' || !['127.0.0.1','localhost'].includes(api.hostname))
-    throw new Error('Connected preview requires an explicit loopback HTTP API origin.');
-  if (frontend.origin !== frontendOrigin || frontend.protocol !== 'http:' || !['social.localhost','127.0.0.1','localhost'].includes(frontend.hostname))
-    throw new Error('Connected preview requires an explicit local frontend origin.');
+/** Local BFF only. Authentication remains the API's existing Better Auth flow
+ *  on loopback, or a host-held gadget-dev token against production/staging.
+ *  The browser never receives that token. */
+export function createConnectedApi({apiOrigin, frontendOrigin, development, fetcher = fetch, platform = 'local'}) {
+  if (platform === 'remote') {
+    assertRemoteApiOrigin(apiOrigin);
+    assertLocalFrontendOrigin(frontendOrigin);
+  } else {
+    assertLocalApiOrigin(apiOrigin);
+    assertLocalFrontendOrigin(frontendOrigin);
+  }
+  const routes = platform === 'remote' ? remoteRoutes : localRoutes;
+  const unavailable = platform === 'remote' ? 'The production API is unavailable.' : 'The local API is unavailable.';
   return async function handle(request) {
     const url = new URL(request.url);
     const fail = (status,error)=>Response.json({error:{message:error}},{status,headers:{'cache-control':'no-store'}});
@@ -60,6 +72,7 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
       try{return Response.json({data:await development.start(request)},{headers:{'cache-control':'no-store'}});}
       catch {return fail(409,'Could not start local runtime. Check your local session and the development server.');}
     }
+    if (platform === 'remote') return fail(404,'Route unavailable in connected preview.');
     const path=url.pathname.startsWith('/api/agenticos/')?url.pathname.slice('/api/agenticos'.length):url.pathname;
     try {
       const upstream=await fetcher(apiOrigin+path+url.search,{method:request.method,headers,body,redirect:'manual',signal:AbortSignal.timeout(15000)});
@@ -69,6 +82,6 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
       // Never forward bearer response headers, credential JSON fields or redirects.
       const payload=redactCredentials(await upstream.json());
       return Response.json(payload,{status:upstream.status,headers:safeHeaders});
-    } catch { return fail(502,'The local API is unavailable.'); }
+    } catch { return fail(502,unavailable); }
   };
 }

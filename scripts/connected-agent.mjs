@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { newWebSocketRpcSession, RpcTarget } from 'capnweb';
+import {
+  agentSocketUrl,
+  assertGadgetDevWorkspaceId,
+  assertLocalApiOrigin,
+  assertLocalFrontendOrigin,
+  assertRemoteApiOrigin
+} from './platform-origin.mjs';
 
 const SESSION_FILE = 'agent-session.json';
 const MAX_MESSAGE_LENGTH = 16_000;
@@ -26,10 +33,11 @@ const TURN_RUNNING_PATTERN = /stop the current turn/i;
 /**
  * The host-side half of the local development bridge.
  *
- * The browser never receives the API cookie or the capnweb ticket. This
- * process mints the ticket with the authenticated cookie, owns the socket,
- * and hands the API a callback capability for the working source. The
- * runtime's DO and this agent session are deliberately separate identities.
+ * The browser never receives the API cookie, the gadget-dev token, or the
+ * capnweb ticket. This process mints the ticket (cookie on loopback, bearer
+ * token against production/staging), owns the socket, and hands the API a
+ * callback capability for the working source. The runtime's DO and this
+ * agent session are deliberately separate identities.
  *
  * The registration this holds is a 30-minute lease, not a standing grant: it
  * renews itself a few minutes before `expiresAt` while the socket is
@@ -43,6 +51,8 @@ export async function createConnectedAgent({
   apiOrigin,
   frontendOrigin,
   cookie,
+  devToken,
+  workspaceId: boundWorkspaceId,
   stateDirectory,
   title,
   sourceHash,
@@ -53,12 +63,15 @@ export async function createConnectedAgent({
   openSocket = (url) => new WebSocket(url),
   openSession = (socket) => newWebSocketRpcSession(socket)
 }) {
-  const api = new URL(apiOrigin);
-  const frontend = new URL(frontendOrigin);
-  if (api.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(api.hostname))
-    throw new Error('Connected agent requires a loopback HTTP API origin.');
-  if (frontend.protocol !== 'http:' || !['social.localhost', '127.0.0.1', 'localhost'].includes(frontend.hostname))
-    throw new Error('Connected agent requires a local frontend origin.');
+  const remote = Boolean(devToken);
+  if (remote) {
+    if (cookie) throw new Error('A gadget-dev token cannot be combined with a session cookie.');
+    assertRemoteApiOrigin(apiOrigin);
+    assertGadgetDevWorkspaceId(boundWorkspaceId);
+  } else {
+    assertLocalApiOrigin(apiOrigin);
+    assertLocalFrontendOrigin(frontendOrigin);
+  }
   if (typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Invalid source digest.');
 
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
@@ -108,14 +121,21 @@ export async function createConnectedAgent({
     try { stale.socket.close(); } catch { /* already gone */ }
   }
 
-  async function connect(currentCookie) {
-    if (typeof currentCookie !== 'string' || !currentCookie) throw new Error('An authenticated local session is required.');
-    const resolvedWorkspaceId = await ensureConversation({ apiOrigin, frontendOrigin, cookie: currentCookie, statePath: sessionPath, title, fetchImpl });
-    const ticket = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/rpc-ticket`, {
-      frontendOrigin, cookie: currentCookie, method: 'POST', body: {}, fetchImpl
-    });
+  async function connect(credential) {
+    if (typeof credential !== 'string' || !credential)
+      throw new Error(remote ? 'A gadget development token is required.' : 'An authenticated local session is required.');
+    const resolvedWorkspaceId = remote
+      ? boundWorkspaceId
+      : await ensureConversation({ apiOrigin, frontendOrigin, cookie: credential, statePath: sessionPath, title, fetchImpl });
+    const ticket = remote
+      ? await requestJson(`${apiOrigin}/v2/gadget-dev/rpc-ticket`, {
+          authorization: `Bearer ${credential}`, method: 'POST', body: { workspaceId: resolvedWorkspaceId }, fetchImpl
+        })
+      : await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/rpc-ticket`, {
+          frontendOrigin, cookie: credential, method: 'POST', body: {}, fetchImpl
+        });
     if (typeof ticket?.data?.ticket !== 'string' || !ticket.data.ticket) throw new Error('The API returned no agent-session ticket.');
-    const socketUrl = `${apiOrigin.replace(/^http:/, 'ws:')}/v2/workspaces/${encodeURIComponent(resolvedWorkspaceId)}/rpc?ticket=${encodeURIComponent(ticket.data.ticket)}`;
+    const socketUrl = agentSocketUrl(apiOrigin, resolvedWorkspaceId, ticket.data.ticket);
     const socket = openSocket(socketUrl);
     const stub = openSession(socket);
     await stub.subscribe(new Subscriber());
@@ -214,7 +234,7 @@ export async function createConnectedAgent({
     }
   }
 
-  await connect(cookie);
+  await connect(remote ? devToken : cookie);
 
   return {
     get info() {
@@ -248,10 +268,10 @@ async function ensureConversation({ apiOrigin, frontendOrigin, cookie, statePath
   return workspaceId;
 }
 
-async function requestJson(url, { frontendOrigin, cookie, method, body, fetchImpl }) {
+async function requestJson(url, { frontendOrigin, cookie, authorization, method, body, fetchImpl }) {
   const response = await fetchImpl(url, {
     method,
-    headers: { ...apiHeaders({ cookie, frontendOrigin }), 'content-type': 'application/json' },
+    headers: { ...apiHeaders({ cookie, frontendOrigin, authorization }), 'content-type': 'application/json' },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000)
   });
@@ -260,8 +280,12 @@ async function requestJson(url, { frontendOrigin, cookie, method, body, fetchImp
   return value;
 }
 
-function apiHeaders({ cookie, frontendOrigin }) {
-  return { accept: 'application/json', cookie, origin: frontendOrigin };
+function apiHeaders({ cookie, frontendOrigin, authorization }) {
+  const headers = { accept: 'application/json' };
+  if (cookie) headers.cookie = cookie;
+  if (frontendOrigin) headers.origin = frontendOrigin;
+  if (authorization) headers.authorization = authorization;
+  return headers;
 }
 
 export function sourceDigest(files) {

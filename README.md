@@ -59,6 +59,32 @@ been verified locally. Skills/MCP, provider calls, scheduling and publishing
 remain intentionally unavailable until their normal API-governed doors are
 configured. Packaging remains a release step.
 
+### Production platform (gadget-dev token)
+
+Local iteration against the production (or staging) agent loop uses a scoped
+gadget-dev token, never a copied session cookie. Mint the token from Studio
+once `POST /v2/gadget-dev/sessions` is deployed (API PR #1768) in an
+allowlisted organization, then:
+
+```sh
+BOT_SDK_SOURCE=/path/to/agenticos-bot-sdk \
+SOCIAL_CONTENT_PREVIEW_MODE=connected-prod \
+SOCIAL_CONTENT_PREVIEW_PORT=17923 \
+SOCIAL_CONTENT_API_ORIGIN=https://api.agenticos.hk \
+SOCIAL_CONTENT_DEV_TOKEN=… \
+SOCIAL_CONTENT_DEV_WORKSPACE_ID=chat_… \
+SOCIAL_CONTENT_FRONTEND_ORIGIN=http://social.localhost:18000 \
+pnpm preview
+```
+
+`SOCIAL_CONTENT_API_ORIGIN` must be exactly `https://api.agenticos.hk` or
+`https://staging-api.agenticos.hk`. The host mints socket tickets at
+`POST /v2/gadget-dev/rpc-ticket` with the bearer token and opens `wss://`.
+The browser on `social.localhost` never receives the token, cookie, or
+ticket; auth/sign-in routes are not proxied. The canvas is still local
+SQLite. Publishing doors are not granted on the API side. Restart the host
+to switch tokens or workspaces.
+
 After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for
 setup. Choose a free port with `SOCIAL_CONTENT_PREVIEW_PORT`; an occupied port

@@ -33,8 +33,10 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
   let registrations = 0;
   const sockets = [];
   const stubs = [];
+  const requests = [];
 
   function fetchImpl(url, options) {
+    requests.push({ url, method: options?.method, headers: options?.headers });
     const target = new URL(url);
     if (target.pathname === '/v2/workspaces' && options.method === 'POST') {
       workspaceCreated = true;
@@ -44,6 +46,9 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
       return Promise.resolve(workspaceCreated ? jsonResponse(200, {}) : jsonResponse(404, {}));
     }
     if (target.pathname === '/v2/workspaces/ws_1/rpc-ticket' && options.method === 'POST') {
+      return Promise.resolve(jsonResponse(200, { data: { ticket: `ticket_${sockets.length + 1}` } }));
+    }
+    if (target.pathname === '/v2/gadget-dev/rpc-ticket' && options.method === 'POST') {
       return Promise.resolve(jsonResponse(200, { data: { ticket: `ticket_${sockets.length + 1}` } }));
     }
     return Promise.resolve(jsonResponse(404, { error: { message: 'unhandled route in fake transport' } }));
@@ -89,7 +94,7 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
     return stub;
   }
 
-  return { fetchImpl, openSocket, openSession, sockets, stubs, registrationCount: () => registrations };
+  return { fetchImpl, openSocket, openSession, sockets, stubs, requests, registrationCount: () => registrations };
 }
 
 async function withStateDirectory(fn) {
@@ -245,6 +250,59 @@ test('translates a replaced registration into a clear error and drops the connec
     const response = await agent.handle({ operation: 'pending' }, 'session=alice');
     assert.deepEqual(response.asks, []);
     assert.equal(agent.info.connected, true);
+    agent.close();
+  });
+});
+
+const prodApi = 'https://api.agenticos.hk';
+const prodWorkspace = 'chat_11111111-1111-1111-1111-111111111111';
+
+test('gadget-dev token path mints tickets over bearer HTTPS and never creates a conversation', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    let now = 1_000_000;
+    const transport = createFakeTransport({ now: () => now });
+    const agent = await createConnectedAgent({
+      apiOrigin: prodApi, devToken: 'dev_token_secret', workspaceId: prodWorkspace,
+      stateDirectory, title: 'Social Content', sourceHash, methods, callLocal: async () => ({}),
+      now: () => now, ...transport
+    });
+    assert.equal(transport.requests.some((request) => request.url.includes('/v2/workspaces') && request.method === 'POST'), false);
+    const ticket = transport.requests.find((request) => request.url.endsWith('/v2/gadget-dev/rpc-ticket'));
+    assert.ok(ticket);
+    assert.equal(ticket.headers.authorization, 'Bearer dev_token_secret');
+    assert.equal(ticket.headers.cookie, undefined);
+    assert.equal(ticket.headers.origin, undefined);
+    assert.match(transport.sockets[0].url, /^wss:\/\/api\.agenticos\.hk\/v2\/workspaces\/chat_11111111-1111-1111-1111-111111111111\/rpc\?ticket=/);
+    assert.equal(agent.info.workspaceId, prodWorkspace);
+    agent.close();
+  });
+});
+
+test('gadget-dev reconnect uses the current token and refuses cookies or unknown API origins', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    let now = 1_000_000;
+    const transport = createFakeTransport({ now: () => now });
+    await assert.rejects(createConnectedAgent({
+      apiOrigin: 'https://evil.example', devToken: 'dev_token_secret', workspaceId: prodWorkspace,
+      stateDirectory, title: 'Social Content', sourceHash, methods, callLocal: async () => ({}),
+      now: () => now, ...transport
+    }), /api\.agenticos\.hk/);
+    await assert.rejects(createConnectedAgent({
+      apiOrigin: prodApi, cookie: 'session=alice', devToken: 'dev_token_secret', workspaceId: prodWorkspace,
+      stateDirectory, title: 'Social Content', sourceHash, methods, callLocal: async () => ({}),
+      now: () => now, ...transport
+    }), /cannot be combined/);
+
+    const agent = await createConnectedAgent({
+      apiOrigin: prodApi, devToken: 'first', workspaceId: prodWorkspace,
+      stateDirectory, title: 'Social Content', sourceHash, methods, callLocal: async () => ({}),
+      now: () => now, ...transport
+    });
+    transport.stubs[0].breakNow();
+    await agent.handle({ operation: 'pending' }, 'second');
+    const tickets = transport.requests.filter((request) => request.url.endsWith('/v2/gadget-dev/rpc-ticket'));
+    assert.equal(tickets.length, 2);
+    assert.equal(tickets[1].headers.authorization, 'Bearer second');
     agent.close();
   });
 });
