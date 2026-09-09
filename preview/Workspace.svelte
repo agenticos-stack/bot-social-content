@@ -5,7 +5,8 @@
   import Shell from '@agenticos-dev/bot-shell/GadgetSplitView.svelte';
   import { createFixtureChatAdapter } from '@agenticos-dev/bot-sdk';
   const localRuntime = document.getElementById('preview-root')?.dataset.mode === 'local-runtime';
-  const connected = document.getElementById('preview-root')?.dataset.mode === 'connected';
+  const connected = ['connected', 'connected-prod'].includes(document.getElementById('preview-root')?.dataset.mode);
+  const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   let input = $state('');
   let messages = $state([]);
   let selected = $state([]);
@@ -60,7 +61,7 @@
 <header class="topbar">
   <div class="identity"><BrandMark /><span class="brand-name">Agentic<span class="brand-os">OS</span></span><span class="slash">/</span><strong>Social Content</strong><span class="edition" title={localRuntime ? 'Local SQLite with sample data. Drafts survive server restarts. No live AI or publishing.' : 'Synthetic data and scripted chat. No live AI or publishing.'}>DEV PREVIEW</span></div>
   <div class="dev-controls">
-    {#if connected}<span class="runtime-mode">Local API</span>{:else}
+    {#if connected}<span class="runtime-mode">{remote ? 'Production platform' : 'Local API'}</span>{:else}
     {#if localRuntime}<span class="runtime-mode" title="Reads and selection use SQLite. Setup, providers, scheduling and publishing are unavailable.">Local SQLite</span>{:else}
     <label for="fixture-scenario">Scenario</label>
     <select id="fixture-scenario" value={scenario} onchange={event => changeScenario(event.currentTarget.value)} title="Switching scenarios resets canvas edits.">

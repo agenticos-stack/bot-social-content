@@ -16,12 +16,14 @@ import { createDevelopmentSessions } from './development-session.mjs';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
+import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from './platform-origin.mjs';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
 const mode = process.env.SOCIAL_CONTENT_PREVIEW_MODE || 'fixture';
+const connectedModes = new Set(['connected', 'connected-prod']);
 let archive;
-if (mode === 'connected') {
+if (connectedModes.has(mode)) {
   const manifest=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8'));
   const files={};
   for(const name of manifest.files){
@@ -36,12 +38,21 @@ if (mode === 'connected') {
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
 const overlay = process.env.BOT_SDK_SOURCE;
-if (!['fixture', 'local-runtime', 'connected'].includes(mode)) throw new Error('Unknown preview mode');
+if (!['fixture', 'local-runtime', 'connected', 'connected-prod'].includes(mode)) throw new Error('Unknown preview mode');
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
 const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN;
-const connectedSourceHash = mode === 'connected' ? sourceDigest(archive.files) : null;
-const development=mode==='connected'?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
+const remote = mode === 'connected-prod';
+const devToken = remote ? process.env.SOCIAL_CONTENT_DEV_TOKEN : '';
+const devWorkspaceId = remote ? process.env.SOCIAL_CONTENT_DEV_WORKSPACE_ID : '';
+if (remote) {
+  if (typeof devToken !== 'string' || !devToken.trim()) throw new Error('Set SOCIAL_CONTENT_DEV_TOKEN to the token returned by POST /v2/gadget-dev/sessions.');
+  assertRemoteApiOrigin(apiOrigin);
+  assertGadgetDevWorkspaceId(devWorkspaceId);
+}
+const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
+const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
   async authenticate(request){
+    if (remote) return {userId:'gadget-dev',orgId:devWorkspaceId,devToken};
     const headers={cookie:request.headers.get('cookie') || '',accept:'application/json'};
     const get=async path=>{const result=await fetch(apiOrigin+path,{headers,redirect:'error',signal:AbortSignal.timeout(10000)});if(!result.ok)throw new Error('Local authentication failed');return result.json();};
     const session=await get('/api/auth/get-session');
@@ -57,7 +68,7 @@ const development=mode==='connected'?createDevelopmentSessions({appKey:SOCIAL_LO
     let local;
     try {
       local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory});
-      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),callLocal:async(method,args)=>{
+      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),callLocal:async(method,args)=>{
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
         if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
@@ -69,7 +80,7 @@ const development=mode==='connected'?createDevelopmentSessions({appKey:SOCIAL_LO
     finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!prior.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
   }
 }):null;
-const connected = mode === 'connected' ? createConnectedApi({apiOrigin, frontendOrigin, development}) : null;
+const connected = connectedModes.has(mode) ? createConnectedApi({apiOrigin, frontendOrigin, development, platform: remote ? 'remote' : 'local'}) : null;
 const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
@@ -160,7 +171,7 @@ ${tokensCss}</style></head><body><div id="preview-root" data-mode="${mode}"></di
   response.end(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Social Content canvas — ${mode} preview</title><style>${brandCss}
 ${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}" src="/fixture.js"></script><script nonce="${nonce}" src="/client.js"></script></body></html>`);
 });
-server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (${connected ? 'local API authentication; ticketed agent + local SQLite' : runtime ? 'SQLite persists in .bot-local/social-content' : 'in-memory fixture'})`));
+server.listen(port, "127.0.0.1", () => console.log(`${mode} preview: http://127.0.0.1:${port}/ (${remote ? 'gadget-dev token against production API; ticketed agent + local SQLite' : connected ? 'local API authentication; ticketed agent + local SQLite' : runtime ? 'SQLite persists in .bot-local/social-content' : 'in-memory fixture'})`));
 server.on('error', async error => { console.error(error.message); await runtime?.dispose(); process.exitCode = 1; });
 let stopping = false;
 for (const signal of signals) process.on(signal, () => {

@@ -40,6 +40,23 @@ test('agent calls receive the current request cookie, never the one captured at 
   assert.deepEqual(cookies,['session=first','session=rotated']);
 });
 
+test('agent calls receive the current gadget-dev token when no cookie is present',async()=>{
+  const credentials=[];
+  let current='first-token';
+  const session=createDevelopmentSessions({appKey:'test-app',origin:'http://social.localhost:18000',
+    authenticate:async()=>({userId:'gadget-dev',orgId:'chat_1',devToken:current}),
+    createRuntime:async()=>({token:'host-only',agent:{
+      get info(){return {connected:true,workspaceId:'chat_1',gadgetId:'dev:1',expiresAt:1};},
+      handle:async(input,credential)=>{credentials.push(credential);return {result:input,agent:{connected:true}};}
+    },handle:async()=>Response.json({ok:true}),dispose:async()=>{}})});
+  const request=()=>new Request('http://social.localhost:18000/api/dev/agent',{method:'POST',body:'{"operation":"pending"}'});
+  await session.start(request());
+  await session.agent(request(),{operation:'pending'});
+  current='rotated-token';
+  await session.agent(request(),{operation:'pending'});
+  assert.deepEqual(credentials,['first-token','rotated-token']);
+});
+
 test('start() and agent() report the live connection state, not a snapshot from creation',async()=>{
   let connected=true;
   const session=createDevelopmentSessions({appKey:'test-app',origin:'http://social.localhost:18000',

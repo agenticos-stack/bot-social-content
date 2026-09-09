@@ -33,12 +33,11 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
     async agent(request, input){
       const {runtime,identity}=await acquire(request,false);
       if(typeof runtime.agent?.handle !== 'function')throw new Error('The local agent session is unavailable.');
-      // The cookie captured when the runtime was first created can be stale
-      // minutes later (a rotated session token, a lease that needs a fresh
-      // ticket to reconnect). `acquire` re-authenticates on every call, so
-      // hand the agent the current request's cookie rather than the one from
-      // `start()`.
-      return runtime.agent.handle(input, identity.cookie);
+      // Credential captured at `start()` can be stale minutes later (rotated
+      // session cookie, or a gadget-dev token the operator replaced). `acquire`
+      // re-authenticates on every call, so hand the agent the current
+      // cookie or token rather than the one from `start()`.
+      return runtime.agent.handle(input, identity.devToken ?? identity.cookie);
     },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };

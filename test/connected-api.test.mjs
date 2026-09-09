@@ -39,3 +39,10 @@ test('connected BFF rejects foreign origins, unknown routes and oversized reques
   assert.equal((await handle(new Request(frontendOrigin+'/api/auth/dev-sign-in',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'x'.repeat(16385)}))).status,413);
   assert.throws(()=>createConnectedApi({apiOrigin:'https://staging-api.agenticos.hk',frontendOrigin}));
 });
+test('remote platform BFF admits production API origins and never proxies cookies or auth routes',async()=>{
+  assert.throws(()=>createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,platform:'remote'}));
+  const handle=createConnectedApi({apiOrigin:'https://staging-api.agenticos.hk',frontendOrigin,platform:'remote',development:{start:async()=>({mode:'local-source'})},fetcher:()=>assert.fail('must not proxy to production')});
+  assert.equal((await handle(new Request(frontendOrigin+'/api/auth/get-session'))).status,404);
+  assert.equal((await handle(new Request(frontendOrigin+'/api/auth/dev-sign-in',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,404);
+  assert.equal((await handle(new Request(frontendOrigin+'/api/dev/session',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,200);
+});

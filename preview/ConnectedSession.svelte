@@ -9,6 +9,7 @@
   let error = $state('');
   let orgName = $state('');
   let development = $state(null);
+  const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   async function request(path, body) {
     const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST',credentials:'include',
       headers:body === undefined ? {} : {'content-type':'application/json'},body:body === undefined ? undefined : JSON.stringify(body)});
@@ -27,7 +28,7 @@
     busy=true;error='';
     try{await operation();}catch(cause){error=cause instanceof Error?cause.message:'Connection failed.';}finally{busy=false;}
   }
-  onMount(()=>{busy=false;void perform(load);});
+  onMount(()=>{busy=false;if(!remote)void perform(load);});
   function start(){void perform(async()=>{
     const result=await request('/api/dev/session',{});
     if(result.data?.mode!=='local-source')throw new Error('The local runtime did not start.');
@@ -46,8 +47,12 @@
 {:else}
 <main class="connected">
   <section aria-labelledby="connection-title">
-    <h1 id="connection-title">{user ? 'Signed in' : 'Sign in'}</h1>
-    {#if user}
+    <h1 id="connection-title">{remote ? 'Production platform' : user ? 'Signed in' : 'Sign in'}</h1>
+    {#if remote}
+      <p class="hint">Development source — Production platform (read-only). The host holds a gadget-dev token; this browser never sees it. Publishing doors are not granted.</p>
+      <button class="primary" type="button" onclick={start} disabled={busy}>{busy ? 'Working…' : 'Start development session'}</button>
+      <p class="hint">Opens your local source with persistent SQLite against the production agent session. No upload or marketplace installation.</p>
+    {:else if user}
       <p class="account">{user.email}<span>{orgName ? `Organization · ${orgName}` : 'Local account'}</span></p>
       <p class="hint">Local API connected.</p>
         <button class="primary" type="button" onclick={start} disabled={busy}>{busy ? 'Working…' : 'Start development session'}</button>
