@@ -57,6 +57,13 @@ export async function createConnectedAgent({
   title,
   sourceHash,
   methods,
+  /**
+   * What this source declares it needs, so the platform can resolve its doors
+   * (REQ-008). Declaring grants nothing — consent is the owner's, read
+   * server-side on every call — so a requirement nobody granted simply yields
+   * no door.
+   */
+  requirements = [],
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -139,7 +146,7 @@ export async function createConnectedAgent({
     const socket = openSocket(socketUrl);
     const stub = openSession(socket);
     await stub.subscribe(new Subscriber());
-    const registration = await stub.registerDevelopmentGadget({ title, sourceHash, methods }, new LocalHost());
+    const registration = await stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
     workspaceId = resolvedWorkspaceId;
     session = { stub, socket, gadgetId: registration.gadgetId, expiresAt: registration.expiresAt };
     reconnectAttempts = 0;
@@ -176,7 +183,7 @@ export async function createConnectedAgent({
     if (!session || turnInFlight) return;
     if (now() < session.expiresAt - RENEW_WINDOW_MS) return;
     try {
-      const registration = await session.stub.registerDevelopmentGadget({ title, sourceHash, methods }, new LocalHost());
+      const registration = await session.stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
       session.gadgetId = registration.gadgetId;
       session.expiresAt = registration.expiresAt;
     } catch (error) {
@@ -236,10 +243,45 @@ export async function createConnectedAgent({
 
   await connect(remote ? devToken : cookie);
 
+  /**
+   * The doors this session can reach, as the local runtime wants them.
+   *
+   * `spec` is what the isolate turns into `env.<door>.<method>`, and it lists
+   * only doors the owner has actually GRANTED — an ungranted one is absent
+   * from `env`, which is the same absence an installed gadget sees and what
+   * lets the gadget's own code treat a missing door as configuration rather
+   * than failure.
+   *
+   * `call` forwards to the platform, which delegates to the same door object
+   * an installed gadget reaches. Nothing here decides anything: the grant
+   * check, the authority ladder, the refusal and the audit record all live on
+   * the far side.
+   */
+  async function doors(methodsByDoor) {
+    await ensureConnected(remote ? devToken : cookie);
+    const granted = await session.stub.developmentDoors();
+    const spec = {};
+    for (const door of Array.isArray(granted) ? granted : []) {
+      if (!door?.granted) continue;
+      const names = methodsByDoor?.[door.envKey];
+      if (!Array.isArray(names) || names.length === 0) continue;
+      spec[door.envKey] = names;
+    }
+    if (Object.keys(spec).length === 0) return null;
+    return {
+      spec,
+      call: async (envKey, method, args) => {
+        await ensureConnected(remote ? devToken : cookie);
+        return session.stub.callDevelopmentDoor(envKey, method, args);
+      }
+    };
+  }
+
   return {
     get info() {
       return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
     },
+    doors,
     handle,
     close() { disconnect(); }
   };

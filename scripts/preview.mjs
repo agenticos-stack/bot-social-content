@@ -79,6 +79,23 @@ if (remote) {
   }
   assertGadgetDevWorkspaceId(devWorkspaceId);
 }
+/**
+ * Which methods this gadget calls on each door.
+ *
+ * Read off `src/doors.js` rather than invented: these are exactly the calls
+ * the gadget makes, so a door appears in `env` with the surface the source
+ * actually uses. The platform decides whether any of them may proceed — this
+ * only names them, the way DOOR_SPEC does for an installed gadget.
+ */
+function doorMethodsByEnvKey() {
+  return {
+    social: ["createDraft", "submitForReview", "readStatus"],
+    schedule: ["create", "list", "cancel"],
+    workspace: ["notify"],
+    fetch: ["socialPostsForAccount"]
+  };
+}
+
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
 const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
   async authenticate(request){
@@ -96,14 +113,28 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     const stateDirectory=fileURLToPath(new URL(key,root));
     const prior=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
     let local;
+    // The agent comes FIRST, and the isolate second, because the door spec
+    // shapes `env` at load time and only the platform knows which doors this
+    // conversation was actually granted. `callLocal` therefore waits on the
+    // isolate rather than capturing it: registration happens immediately, but
+    // the platform cannot call the gadget until the runtime it calls exists.
+    let readyLocal;
+    const localReady = new Promise((resolve) => { readyLocal = resolve; });
     try {
-      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory});
-      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),callLocal:async(method,args)=>{
+      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
+        await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
         if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
         return payload.value;
       }});
+      // Only granted doors appear, so an ungranted one is absent from `env` —
+      // the same absence an installed gadget sees, which is what lets the
+      // gadget read a missing door as configuration rather than failure.
+      const doors = await agent.doors(doorMethodsByEnvKey()).catch(() => null);
+      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors});
+      readyLocal();
+      if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
       return {...local,agent,dispose:async()=>{agent.close();await local.dispose();}};
     }
     catch (error) { await local?.dispose().catch(() => undefined); throw error; }
