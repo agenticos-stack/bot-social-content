@@ -176,6 +176,8 @@ export const STRINGS = Object.freeze({
     batchNoDestinationTitle: "No destination set up yet",
     batchNoDestinationBody: "Localized posts need somewhere to go. Add a destination account in Settings, then continue.",
     batchBlockedTitle: "These posts were not moved",
+    drawerSelectedNotice: "Added to your selection",
+    drawerRemovedNotice: "Removed from your selection",
 
     // --- Localize (step 2) --------------------------------------------------
     localizeTitle: "Refine content",
@@ -410,6 +412,8 @@ export const STRINGS = Object.freeze({
     batchNoDestinationTitle: "尚未設定發佈目的地",
     batchNoDestinationBody: "本地化後的帖文需要發佈位置。請先在設定中新增目的地帳戶，然後再繼續。",
     batchBlockedTitle: "這些帖文未有移動",
+    drawerSelectedNotice: "已加入選取",
+    drawerRemovedNotice: "已從選取中移除",
 
     localizeTitle: "修訂內容",
     localizeDesc: "書面香港中文，與來源並列顯示。受保護的內容將維持原文，不作更動。",

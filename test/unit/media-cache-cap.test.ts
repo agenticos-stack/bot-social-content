@@ -170,6 +170,58 @@ describe("bytes come from the door that owns the source", () => {
     expect(seen.url).not.toContain(".mp4");
   });
 
+  /*
+   * The grid fetches a thumb; opening the drawer asked for a preview, and the
+   * cache is keyed by rendition — so the same file crossed the metered door
+   * twice and was stored twice. Every thumb/preview pair in a real account's
+   * cache is byte-identical.
+   */
+  describe("a rendition already held", () => {
+    function serving(byteLength: number, seen: { calls: number }) {
+      return {
+        metered_fetch: {
+          fetch_media: async () => {
+            seen.calls += 1;
+            return { ok: true, mime: "image/jpeg", bytes: new Uint8Array(byteLength).fill(9), byteLength };
+          }
+        }
+      };
+    }
+
+    it("is reused for the other rendition instead of fetched again", async () => {
+      const seen = { calls: 0 };
+      const gadget = withOpenItem(serving(2048, seen), {
+        id: "source-media", kind: "image", url: "https://cdn.example.test/a.jpg"
+      });
+      await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+      expect(seen.calls).toBe(1);
+
+      const preview = await gadget.getMedia("item-1", "source-media", { rendition: "preview" });
+      expect(seen.calls).toBe(1);
+      expect((preview as { total: number }).total).toBe(2048);
+      expect(gadget.storage.getMedia("item-1", "source-media", "preview")).toBeTruthy();
+    });
+
+    /*
+     * The target rendition's cap still applies. A file that fits the preview
+     * cap can be too big to hold as a thumb, and reusing it across would
+     * quietly raise a limit that exists on purpose.
+     */
+    it("is not reused into a rendition whose cap it exceeds", async () => {
+      const seen = { calls: 0 };
+      const gadget = withOpenItem(serving(700 * 1024, seen), {
+        id: "source-media", kind: "image", url: "https://cdn.example.test/a.jpg"
+      });
+      const preview = await gadget.getMedia("item-1", "source-media", { rendition: "preview" });
+      expect((preview as { ok?: boolean }).ok).not.toBe(false);
+      expect(seen.calls).toBe(1);
+
+      const thumb = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+      // Refetched and refused on its own cap, not silently promoted.
+      expect(thumb).toMatchObject({ ok: false, code: "media_too_large" });
+    });
+  });
+
   it("says so plainly when the open source has no fetch door granted", async () => {
     const gadget = withOpenItem({}, { id: "source-media", kind: "image", url: "https://cdn.example.test/a.jpg" });
     const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });

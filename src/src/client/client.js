@@ -304,9 +304,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
 .sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: center; gap: 10px; }
+.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
+.sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
+.sl-preview-close { align-self: flex-start; }
+/*
+ * Scoped to the eyebrow, not to every span in the header.
+ *
+ * A .sl-preview-head span rule styled ANY span the header grew, so the
+ * 'via your watch on ...' line came out as a second 9px uppercase kicker, and
+ * the .sl-preview-via rule meant to fix it lost on specificity (0,1,0 against
+ * 0,1,1). An element selector inside a container is a rule about a shape
+ * nobody declared; it holds only until the shape changes.
+ *
+ * (No backticks in here: this stylesheet is a template literal.)
+ */
 .sl-preview-head strong { display: block; font-size: 13px; }
-.sl-preview-head span { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .sl-preview-close { margin-left: auto; flex-shrink: 0; border: 0; background: transparent; color: var(--sl-ink); font-size: 24px; height: 44px; width: 44px; border-radius: var(--sl-radius-row); }
 .sl-preview-close:hover { background: var(--sl-hover); }
 .sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
@@ -338,7 +351,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
 .sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
 .sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.sl-preview-who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sl-preview-who { display: flex; flex-direction: column; gap: 1px; }
 .sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
 .sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
 .sl-announce { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; max-width: min(520px, calc(100vw - 32px)); pointer-events: none; }
@@ -355,7 +368,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-needs-setup { white-space: normal; }
 .sl-preview-head { padding: 12px 20px; }
 .sl-preview-head strong { font-size: 16px; }
-.sl-preview-head span { font-size: 11px; }
+.sl-preview-kicker { font-size: 11px; }
 .sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
 .sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
@@ -633,8 +646,21 @@ function App() {
       item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
     ]);
 
-    const selected = !!item.selected;
-    const actions = el("footer", { class: "sl-preview-actions" }, [
+    /*
+     * RELABEL THE FOOTER; DO NOT REBUILD THE DRAWER.
+     *
+     * Selecting used to call `openPreview` again, which disposes the media
+     * stage and builds a new one — so pressing "Select post" threw away the
+     * picture and refetched it, and the only visible result of the press was
+     * that the image vanished for several seconds and came back. Nothing else
+     * on screen acknowledged the action at all.
+     *
+     * The footer is the only part that depends on `selected`, so the footer is
+     * the only part that is redrawn, and the selection is confirmed where the
+     * owner is looking rather than only in the grid behind the drawer.
+     */
+    const actions = el("footer", { class: "sl-preview-actions" });
+    const drawActions = (isSelected) => replace(actions, [
       el(
         "button",
         {
@@ -644,10 +670,11 @@ function App() {
             const next = !activePreviewItem.selected;
             await handleSelect(item.id, next);
             activePreviewItem = { ...activePreviewItem, selected: next };
-            openPreview(activePreviewItem);
+            drawActions(next);
+            announce(t(locale, next ? "drawerSelectedNotice" : "drawerRemovedNotice"), "");
           }
         },
-        selected ? t(locale, "drawerRemove") : t(locale, "drawerSelect")
+        isSelected ? t(locale, "drawerRemove") : t(locale, "drawerSelect")
       ),
       el(
         "button",
@@ -659,9 +686,10 @@ function App() {
             closePreview();
           }
         },
-        selected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
+        isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
       )
     ]);
+    drawActions(!!item.selected);
 
     replace(previewDialog, [
       el("div", { class: "sl-preview-sheet" }, [
@@ -677,7 +705,7 @@ function App() {
            * one screen that has to get the author right had it wrong.
            */
           el("div", { class: "sl-preview-who" }, [
-            el("span", null, t(locale, "drawerEyebrow")),
+            el("span", { class: "sl-preview-kicker" }, t(locale, "drawerEyebrow")),
             el("strong", { id: "sl-preview-title" }, authorLabel(item)),
             item.sourceLabel && authorLabel(item) !== item.sourceLabel
               ? el("span", { class: "sl-preview-via" }, t(locale, "drawerVia", { source: item.sourceLabel }))
