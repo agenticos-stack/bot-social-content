@@ -160,3 +160,54 @@ describe("bytes come from the door that owns the source", () => {
   });
 });
 
+/*
+ * Bytes do not survive the facet RPC as a typed array.
+ *
+ * A door hands back a `Uint8Array`; by the time the gadget sees it, Node has
+ * serialised it to `{ type: "Buffer", data: [...] }`. Every `instanceof` check
+ * missed that, `toBytes` returned null, and the caller reported "No thumb
+ * media" — a sentence about the source, and false. The door had been working
+ * for some time before this could tell.
+ */
+describe("bytes that crossed the RPC", () => {
+  function doorReturning(bytes: unknown) {
+    return {
+      metered_fetch: {
+        fetch_media: async () => ({ ok: true, mime: "image/jpeg", bytes, byteLength: 3 })
+      }
+    };
+  }
+  function gadgetWith(env: unknown) {
+    const gadget = new Gadget(context() as never, env as never);
+    gadget.storage.addOpenSource({
+      binding: "open:instagram:acct", platform: "instagram", accountKey: "acct", displayName: "@acct"
+    } as never);
+    gadget.storage.upsertItem({
+      id: "item-1", sourceBinding: "open:instagram:acct", sourceLabel: "@acct",
+      provider: "instagram", providerItemId: "p1", text: "a post",
+      media: [{ id: "source-media", kind: "image", url: "https://cdn.example.test/a.jpg" }],
+      metrics: {}, contentHash: "h",
+      firstSeenAt: "2026-09-06T00:00:00.000Z", lastSeenAt: "2026-09-06T00:00:00.000Z"
+    } as never);
+    return gadget;
+  }
+
+  it("reads a Buffer's JSON form, which is what actually arrives", async () => {
+    const gadget = gadgetWith(doorReturning({ type: "Buffer", data: [1, 2, 3] }));
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect((result as { ok?: boolean }).ok).not.toBe(false);
+    expect((result as { total: number }).total).toBe(3);
+  });
+
+  it("still reads a real Uint8Array, for a caller that does not cross a boundary", async () => {
+    const gadget = gadgetWith(doorReturning(new Uint8Array([1, 2, 3])));
+    expect((await gadget.getMedia("item-1", "source-media", { rendition: "thumb" }) as { total: number }).total).toBe(3);
+  });
+
+  it("names an unreadable shape rather than reporting no media", async () => {
+    const gadget = gadgetWith(doorReturning({ nonsense: true }));
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect(result).toMatchObject({ ok: false, code: "media_unreadable" });
+  });
+});
+
