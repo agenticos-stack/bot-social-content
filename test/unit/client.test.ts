@@ -795,12 +795,11 @@ describe("bundled client.js smoke test", () => {
       const form = findSetupForm(document);
       expect(form).toBeTruthy();
 
-      // Mirrors the walk's own interaction: add a protected term via the
-      // tag input's Enter-to-add (steps.js `renderTagList`), so the
-      // submitted payload is not just the bare default draft.
-      const termInput = findAll(document.body, (element) => hasClass(element, "sl-field-input"))[0];
-      termInput.value = "AgenticOS Pro";
-      await termInput.dispatchEvent({ type: "keydown", key: "Enter", preventDefault: () => {} });
+      // Fill the content prompt, so the submitted payload is not just the
+      // bare default draft.
+      const promptInput = findAll(document.body, (element) => element.getAttribute?.("name") === "setupContentPrompt")[0];
+      promptInput.value = "Keep AgenticOS Pro verbatim.";
+      await promptInput.dispatchEvent({ type: "change" });
       await flushAsyncWork();
 
       const submitButton = findPrimaryButton(document);
@@ -822,7 +821,7 @@ describe("bundled client.js smoke test", () => {
       // shape, so a defect here is not a payload-shape mismatch.
       expect(() => normalizeConfig(capturedConfig)).not.toThrow();
       const normalized = normalizeConfig(capturedConfig);
-      expect(normalized.protectedTerms).toEqual(["AgenticOS Pro"]);
+      expect(normalized.contentPrompt).toBe("Keep AgenticOS Pro verbatim.");
       expect(normalized.locale).toEqual({ from: "en", to: "zh-HK" });
 
       // No leftover error banner, and the setup form is gone — the view
@@ -873,8 +872,9 @@ describe("bundled client.js smoke test", () => {
 
         // Editing a field clears the stale error rather than leaving it
         // stuck until the next submit resolves.
-        const termInput = findAll(document.body, (element) => hasClass(element, "sl-field-input"))[0];
-        await termInput.dispatchEvent({ type: "keydown", key: "Enter", preventDefault: () => {} });
+        const promptInput = findAll(document.body, (element) => element.getAttribute?.("name") === "setupContentPrompt")[0];
+        promptInput.value = "changed";
+        await promptInput.dispatchEvent({ type: "change" });
         await flushAsyncWork();
         expect(findAll(document.body, (element) => hasClass(element, "sl-setup-error"))).toHaveLength(0);
       } finally {

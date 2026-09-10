@@ -47,6 +47,10 @@ export class NodeShim {
     return node;
   }
 
+  remove(): void {
+    this.parentNode?.removeChild(this);
+  }
+
   append(...nodes: Array<NodeShim | string>): void {
     for (const node of nodes) this.appendChild(typeof node === "string" ? new TextNodeShim(node) : node);
   }
@@ -186,6 +190,56 @@ export class ElementShim extends NodeShim {
     this.attrs.delete(name);
   }
 
+  /**
+   * A selector engine deliberately as small as the client's use: `.class`,
+   * `[attr]`, bare tag names, comma-separated alternatives, and
+   * space-separated descendant chains (`.sl-selection .sl-primary`). A
+   * pseudo-class or combinator the client has not needed should fail loudly
+   * by matching nothing, not pretend to work.
+   */
+  private matchesSimple(selector: string): boolean {
+    if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+    if (selector.startsWith("[") && selector.endsWith("]")) return this.hasAttribute(selector.slice(1, -1));
+    return this.tagName === selector.toUpperCase();
+  }
+
+  private matchesSelectorChain(selector: string): boolean {
+    const parts = selector.split(/\s+/).filter(Boolean);
+    if (!parts.length || !this.matchesSimple(parts[parts.length - 1])) return false;
+    let ancestor: NodeShim | null = this.parentNode;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      let found = false;
+      let node = ancestor;
+      while (node) {
+        if (node.nodeType === 1 && (node as ElementShim).matchesSimple(parts[i])) {
+          ancestor = node.parentNode;
+          found = true;
+          break;
+        }
+        node = node.parentNode;
+      }
+      if (!found) return false;
+    }
+    return true;
+  }
+
+  querySelector(selector: string): ElementShim | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector: string): ElementShim[] {
+    const alternatives = selector.split(",").map((part) => part.trim()).filter(Boolean);
+    const found: ElementShim[] = [];
+    const walk = (node: NodeShim): void => {
+      for (const child of node.children) {
+        if (alternatives.some((part) => child.matchesSelectorChain(part))) found.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return found;
+  }
+
   addEventListener(type: string, handler: Listener): void {
     const list = this.listeners.get(type) ?? [];
     list.push(handler);
@@ -245,6 +299,12 @@ export class DocumentShim {
   }
   getElementById(id: string): ElementShim | null {
     return findById(this.body, id) ?? findById(this.head, id) ?? (this.documentElement.id === id ? this.documentElement : null);
+  }
+  querySelector(selector: string): ElementShim | null {
+    return this.head.querySelector(selector) ?? this.body.querySelector(selector);
+  }
+  querySelectorAll(selector: string): ElementShim[] {
+    return [...this.head.querySelectorAll(selector), ...this.body.querySelectorAll(selector)];
   }
 }
 

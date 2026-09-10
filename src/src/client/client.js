@@ -35,7 +35,6 @@ import { createMediaStage } from "./preview-media.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
-  addListEntry,
   applyPublishState,
   applySavedRevision,
   applySavedPoster,
@@ -47,7 +46,6 @@ import {
   goToStep as goToWizardStep,
   isRefusal,
   refusalMessage,
-  removeListEntry,
   renderLocalize,
   renderPosterPng,
   renderPublish,
@@ -121,6 +119,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   outline: 2px solid var(--sl-focus); outline-offset: 2px;
 }
 .sl-app { max-width: 1080px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 36px) 96px; }
+.sl-titleline { margin-bottom: 18px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
 .sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
@@ -1471,18 +1470,6 @@ function App() {
         const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
         if (savedNotice) savedNotice.textContent = "";
         viewHost.querySelector?.(".sl-setup-error")?.remove();
-      },
-      onAdd: (field, value) => {
-        draft = addListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
-      },
-      onRemove: (field, value) => {
-        draft = removeListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
       },
       onMonitoring: async (enabled) => {
         if (saving || (enabled && JSON.stringify(draft) !== savedDraft)) return;

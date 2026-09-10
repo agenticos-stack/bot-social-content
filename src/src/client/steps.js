@@ -325,6 +325,8 @@ export function createSetupDraft() {
     protectedHashtags: [],
     disclaimers: [],
     claimsRequiringConfirmation: [],
+    contentPrompt: "",
+    imagePrompt: "",
     refinementBrief: { version: 1, targetLanguage: "zh-HK", register: "written", tone: "", allowedChanges: [], visualTreatment: "keep_original" }
   };
 }
@@ -362,6 +364,8 @@ export function draftFromConfig(config) {
     protectedHashtags: list(config.protectedHashtags) ?? base.protectedHashtags,
     disclaimers: list(config.disclaimers) ?? base.disclaimers,
     claimsRequiringConfirmation: list(config.claimsRequiringConfirmation) ?? base.claimsRequiringConfirmation,
+    contentPrompt: typeof config.contentPrompt === "string" ? config.contentPrompt : base.contentPrompt,
+    imagePrompt: typeof config.imagePrompt === "string" ? config.imagePrompt : base.imagePrompt,
     refinementBrief: config.refinementBrief ?? base.refinementBrief
   };
 }
@@ -394,6 +398,8 @@ export function toConfigPayload(draft) {
     protectedHashtags: draft.protectedHashtags,
     disclaimers: draft.disclaimers,
     claimsRequiringConfirmation: draft.claimsRequiringConfirmation,
+    contentPrompt: draft.contentPrompt,
+    imagePrompt: draft.imagePrompt,
     refinementBrief: draft.refinementBrief
   };
 }
@@ -407,31 +413,9 @@ function renderWizardError(state) {
   return state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null;
 }
 
-function renderTagList(locale, field, values, onAdd, onRemove) {
-  const input = el("input", {
-    type: "text",
-    class: "sl-field-input",
-    placeholder: t(locale, "setupAddPlaceholder"),
-    onkeydown: (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      onAdd(event.currentTarget.value);
-      event.currentTarget.value = "";
-    }
-  });
-  const chips = values.map((value) =>
-    el("span", { class: "sl-tag" }, [
-      typeof value === "string" ? value : value.value,
-      el("button", { type: "button", "aria-label": t(locale, "setupRemove", { value: typeof value === "string" ? value : value.value }), onclick: () => onRemove(value) }, "×")
-    ])
-  );
-  return el("div", { class: "sl-tag-field" }, [el("div", { class: "sl-tag-list" }, chips), input]);
-}
-
 /**
  * Public accounts this workspace watches, added by pasting a link.
  *
- * A DIFFERENT SHAPE FROM `renderTagList`, deliberately. A protected term is a
  * string the owner types and the gadget stores verbatim; a public account is a
  * link the SERVER resolves into a platform and an account key, and it can be
  * refused — a bare handle, a platform we cannot watch, a URL that names
@@ -525,15 +509,11 @@ export function renderSetup(root, draft, ctx) {
   ]);
   const select = (value, options, onChange) => el("select", { onchange: e => onChange(e.currentTarget.value) },
     options.map(([id, label]) => el("option", { value: id, selected: id === value }, t(locale, label))));
-  const tags = (key, fieldName) => field(key, renderTagList(locale, fieldName, draft[fieldName],
-    value => handlers.onAdd(fieldName, value), value => handlers.onRemove(fieldName, value)));
   const accounts = (key, rows) => el("div", { class: "sl-field" }, [
     el("strong", null, t(locale, key)),
     rows?.length ? el("ul", null, rows.map(row => el("li", null, row.label || row.displayName || row.provider)))
       : note("setupNoConnections")
   ]);
-  const brief = draft.refinementBrief || {};
-  const updateBrief = patch => handlers.onChange({ refinementBrief: patch });
   const customCadence = typeof draft.cadence === "object";
   const monitoring = summary.config?.monitoringEnabled;
   const sourceSection = section("setupSourcesSection", [
@@ -552,24 +532,13 @@ export function renderSetup(root, draft, ctx) {
       ctx.grantsNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.grantsNote) : null
     ]),
     field("openSourceLabel", renderOpenSources(locale, ctx, handlers)),
-    note("openSourceDesc")
+    note("openSourceDesc"),
+    note("openSourceRightsNote")
   ]);
   const rulesSection = section("setupRulesSection", [
     note("setupRulesNote"),
-    field("setupTone", el("input", { type: "text", maxlength: 120, value: brief.tone || "", onchange: e => updateBrief({ tone: e.currentTarget.value }) })),
-    field("setupAllowedChanges", el("textarea", { value: (brief.allowedChanges || []).map(v => typeof v === "string" ? v : v.value).join("\n"), onchange: e => updateBrief({ allowedChanges: e.currentTarget.value.split("\n").filter(Boolean) }) })),
-    field("setupVisual", select(brief.visualTreatment || "keep_original", [
-      ["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"],
-      ...(brief.visualTreatment === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])
-    ], value => updateBrief({ visualTreatment: value }))),
-    note("setupVisualNote"),
-    field("setupRightsPolicy", select(draft.rightsPolicy, [
-      ["require_confirmation", "setupRightsRequireConfirmation"], ["trust_connected", "setupRightsTrustConnected"]
-    ], rightsPolicy => handlers.onChange({ rightsPolicy }))),
-    note("openSourceRightsNote"),
-    field("setupLocale", el("p", null, t(locale, "setupLocaleFixed"))),
-    tags("setupProtectedTerms", "protectedTerms"), tags("setupHashtags", "protectedHashtags"),
-    tags("setupDisclaimers", "disclaimers"), tags("setupClaims", "claimsRequiringConfirmation")
+    field("setupContentPrompt", el("textarea", { rows: 4, value: draft.contentPrompt, placeholder: t(locale, "setupContentPromptHint"), onchange: e => handlers.onChange({ contentPrompt: e.currentTarget.value }) })),
+    field("setupImagePrompt", el("textarea", { rows: 4, value: draft.imagePrompt, placeholder: t(locale, "setupImagePromptHint"), onchange: e => handlers.onChange({ imagePrompt: e.currentTarget.value }) }))
   ]);
   const monitoringSection = section("setupMonitoringSection", [
     note("setupMonitoringNote"),
@@ -601,8 +570,7 @@ export function renderSetup(root, draft, ctx) {
       ctx.notice ? el("p", { role: "status", class: "sl-setup-notice" }, ctx.notice) : null,
       el("div", { class: "sl-setup-actions" }, [
         editing ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "settingsCancel")) : null,
-        el("button", { type: "button", class: "sl-primary", disabled: saving, onclick: () => handlers.onSubmit() }, t(locale, saving ? "setupSaving" : "saveChanges")),
-        summary.configured ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "setupDone")) : null
+        el("button", { type: "button", class: "sl-primary", disabled: saving, onclick: () => handlers.onSubmit() }, t(locale, saving ? "setupSaving" : "saveChanges"))
       ])
     ])
   ]);
