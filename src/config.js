@@ -234,8 +234,26 @@ export function normalizeConfig(input) {
     protectedHashtags: normalizeTermList(config.protectedHashtags),
     disclaimers: normalizeTermList(config.disclaimers),
     claimsRequiringConfirmation: normalizeTermList(config.claimsRequiringConfirmation),
-    refinementBrief: normalizeRefinementBrief(config.refinementBrief)
+    refinementBrief: normalizeRefinementBrief(config.refinementBrief),
+    drafting: normalizeDrafting(config.drafting)
   };
+}
+
+/**
+ * Whether a scan may ask for what it found to be drafted (TASK-019).
+ *
+ * OFF UNLESS ASKED, and unrecognised reads as off. An owner who upgrades this
+ * gadget has agreed to nothing new, and the failure of the other default is not
+ * a wrong setting — it is a scan that starts putting approvable agent turns in
+ * front of them, on its own cadence, spending the organization's credits.
+ *
+ * SEPARATE FROM `notifications`, because REQ-014 says a notification must not be
+ * the mechanism by which work is requested. Sharing one setting would make quiet
+ * hours and a `daily` digest silently decide whether work is asked for, which is
+ * exactly the coupling that requirement forbids.
+ */
+export function normalizeDrafting(value) {
+  return value === "on_new" ? "on_new" : "off";
 }
 
 /** Whether quiet hours (owner's timeZone, HH:MM wall-clock) cover an instant. Pure, so it is testable without faking the clock. */
