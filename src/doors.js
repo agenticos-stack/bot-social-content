@@ -55,7 +55,7 @@
  * `server.js`'s `FIXED_DOOR_KEYS` / `availableConnectorBindings` — resolves
  * against, so the key strings exist in exactly one place.
  */
-export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace", "fetch"]);
+export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace", "metered_fetch"]);
 
 /**
  * The door that fetches a PUBLIC account's posts, when the owner granted it.
@@ -66,7 +66,14 @@ export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace",
  * fault. Everything that reads it must treat "not granted" as "this workspace
  * does not watch open accounts", never as an error.
  */
-export const FETCH_DOOR_KEY = "fetch";
+/*
+ * The platform mints this door as `env.metered_fetch` — that is the key in the
+ * gatekeeper registry, and the key a grant reports back (`env.metered_fetch`).
+ * This module called it `fetch`, so `methodsByDoor[door.envKey]` never matched,
+ * the door never entered the isolate's `env`, and the open-account path was
+ * unreachable however the owner granted it. Use the platform's own name.
+ */
+export const FETCH_DOOR_KEY = "metered_fetch";
 
 /**
  * Whether each fixed capability door is currently granted — `env.<key>`
