@@ -121,7 +121,15 @@ export const SOCIAL_LOCALIZATION_DEFINITION = {
     },
     { requirementKey: "social", kind: "capability", label: "Social Hub publisher" },
     { requirementKey: "schedule", kind: "capability", label: "Scan cadence" },
-    { requirementKey: "workspace", kind: "capability", label: "Workspace notifications" }
+    { requirementKey: "workspace", kind: "capability", label: "Workspace notifications" },
+    /*
+     * Optional by design: a workspace whose sources are all
+     * authorised connector bindings never needs it, so its absence is a
+     * configuration rather than a fault — see `FETCH_DOOR_KEY` in
+     * `src/doors.js`. It was missing from this list entirely, so the platform
+     * was never asked to resolve the one door the open-account scan reads.
+     */
+    { requirementKey: "metered_fetch", kind: "capability", label: "Public account fetching", optional: true }
     // NO `fetch` REQUIREMENT, DELIBERATELY.
     //
     // The door that reads a PUBLIC account exists (`FETCH_DOOR_KEY` in the

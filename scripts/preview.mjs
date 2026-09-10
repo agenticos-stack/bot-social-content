@@ -92,7 +92,7 @@ function doorMethodsByEnvKey() {
     social: ["createDraft", "submitForReview", "readStatus"],
     schedule: ["create", "list", "cancel"],
     workspace: ["notify"],
-    fetch: ["socialPostsForAccount"]
+    metered_fetch: ["socialPostsForAccount"]
   };
 }
 
@@ -132,7 +132,11 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       // the same absence an installed gadget sees, which is what lets the
       // gadget read a missing door as configuration rather than failure.
       const doors = await agent.doors(doorMethodsByEnvKey()).catch(() => null);
-      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors});
+      // `doors` is null when the owner has granted none, and the testkit rejects a
+      // null where it accepts an absence — so a workspace with no doors could not
+      // start its runtime at all, and the preview reported that as a generic 409.
+      // Absence is the documented, supported state; pass it as one.
+      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined});
       readyLocal();
       if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
       return {...local,agent,dispose:async()=>{agent.close();await local.dispose();}};
