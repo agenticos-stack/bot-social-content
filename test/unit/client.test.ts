@@ -232,10 +232,13 @@ describe("the selection tray, when nothing is set up to publish to", () => {
       .map((button: { textContent?: string }) => button.textContent ?? "");
   }
 
-  it("points at settings instead of offering Continue", () => {
+  it("offers Continue — the destination is picked at submit, never before drafting", () => {
+    // TASK-015: the `send` target stopped being a precondition for
+    // `generate`. A destinationless workspace drafts first and chooses where
+    // it goes on the Publish step.
     const labels = tray({ destinations: [] });
-    expect(labels.some((label) => label.includes("Add a destination"))).toBe(true);
-    expect(labels.some((label) => label.startsWith("Continue with"))).toBe(false);
+    expect(labels.some((label) => label.includes("Continue with 1 post"))).toBe(true);
+    expect(labels.some((label) => label.includes("Add a destination"))).toBe(false);
   });
 
   it("offers Continue once a destination exists", () => {

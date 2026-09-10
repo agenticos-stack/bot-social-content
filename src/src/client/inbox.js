@@ -77,6 +77,9 @@ export function drawerProjection(batch, sourceItem) {
       caption: item.caption ?? null,
       posterLayout: item.posterLayout ?? null,
       destinationBindings: Array.isArray(item.destinationBindings) ? item.destinationBindings.slice() : [],
+      // Where this draft was sent — one row per (destination, revision)
+      // filing, `bound` included for destinations recorded but never sent.
+      publications: Array.isArray(item.publications) ? item.publications.map((pub) => ({ ...pub })) : [],
       rightsStatus: item.rightsStatus ?? "unknown",
       state: item.state ?? "unknown",
       approval: item.approval ?? null

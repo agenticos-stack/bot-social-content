@@ -21,10 +21,14 @@ No AI image refinement capability is exposed by this UI; do not invent completio
 
 The owner picks source posts in the collection and presses Continue. That
 call is `createBatch`, and the result — a batch id and one entry per item,
-each carrying its `sourceItem`, `destinationBindings`, `rightsStatus` and
-current `revision` — is your whole context for this round. Read it with
-`getBatch(batchId)` rather than assuming the shape from a previous batch;
-`destinationBindings` and `rightsStatus` can differ item to item.
+each carrying its `sourceItem`, `destinationBindings`, `publications`,
+`rightsStatus` and current `revision` — is your whole context for this
+round. Read it with `getBatch(batchId)` rather than assuming the shape from
+a previous batch; `destinationBindings` and `rightsStatus` can differ item
+to item. `destinationBindings` is where the draft WOULD go — the recorded
+default the owner can change at submit — and `publications` is where it
+actually went: one row per destination filing, `bound` rows included for
+destinations recorded but never sent.
 
 An item whose `rightsStatus` is `"pending"` or `"denied"` is held. Do not
 draft it and do not include it when you tell the owner the batch is ready —

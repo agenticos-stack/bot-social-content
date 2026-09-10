@@ -299,7 +299,7 @@ export function renderCollection(root, state, ctx) {
   // UNKNOWN IS NOT ZERO. Before `summary()` resolves there is no destination
   // list, and treating that as "none configured" would flash a setup prompt at
   // every owner on every load and then take it back.
-  const hasDestination = !summary || !Array.isArray(summary.destinations) || summary.destinations.length > 0;
+
   const nNew = newCount(state);
 
   const searchInput = el("input", {
@@ -389,29 +389,22 @@ export function renderCollection(root, state, ctx) {
       ]),
       el("button", { type: "button", class: "sl-clear", onclick: handlers.onClear }, t(locale, "clear")),
       /*
-       * A button that cannot work says so before it is pressed.
-       *
-       * With no destination configured, Continue was enabled, and pressing it
-       * refused with `batch_needs_destinations` — into a console the owner
-       * never opens. Nothing happened on screen at all. `summary.destinations`
-       * is the same list the call would send, so the tray can tell the owner
-       * what is missing while there is still something to do about it.
+       * Continue is always offered — drafting is `generate` and needs no
+       * destination (TASK-015). This used to gate on `summary.destinations`
+       * and swap in a "configure a destination first" button, which made the
+       * `send` target a precondition for the `generate` work it is chosen
+       * for. Where the draft goes is picked on the Publish step; an empty
+       * destination list is that step's problem to state, not this one's.
        */
-      hasDestination
-        ? el(
-            "button",
-            { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
-            nSelected
-              // `{n} post(s)` was the shipped copy. English has a plural; the
-              // parenthesis is a way of not choosing one.
-              ? t(locale, nSelected === 1 ? "continueWithPost" : "continueWithPosts", { n: nSelected })
-              : t(locale, "continueSelectPrompt")
-          )
-        : el(
-            "button",
-            { type: "button", class: "sl-secondary sl-needs-setup", onclick: () => handlers.onOpenSettings && handlers.onOpenSettings() },
-            t(locale, "continueNeedsDestination")
-          )
+      el(
+        "button",
+        { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
+        nSelected
+          // `{n} post(s)` was the shipped copy. English has a plural; the
+          // parenthesis is a way of not choosing one.
+          ? t(locale, nSelected === 1 ? "continueWithPost" : "continueWithPosts", { n: nSelected })
+          : t(locale, "continueSelectPrompt")
+      )
     ])
   ]);
 

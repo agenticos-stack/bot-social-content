@@ -161,14 +161,27 @@ describe("what a scan asks for", () => {
     expect(gadget.storage.listBatchItems(request.batchId)).toHaveLength(2);
   });
 
-  it("opens the batch against every granted destination", () => {
-    // What the client's own picker sends today. A scan has no narrower intent to
-    // represent, and inventing one would guess at a choice nobody made.
+  it("opens the batch against no destinations — where it goes is decided at submit", () => {
+    /**
+     * TASK-004: a destination is a `send` target and drafting is `generate`,
+     * so the scan's batch binds none — even though this fixture HAS granted
+     * destinations. `publications` rows appear when the owner submits, and
+     * nowhere before.
+     */
     const { gadget } = gadgetWith("on_new");
     const request = gadget.workRequestFor(found, gadget.storage.getConfig());
     for (const item of gadget.storage.listBatchItems(request.batchId)) {
-      expect(item.destinationBindings).toEqual(["FB_MAIN", "IG_OUT"]);
+      expect(item.destinationBindings).toEqual([]);
+      expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
     }
+  });
+
+  it("still asks for drafts when no destination is granted at all", () => {
+    // The point of the refactor: a workspace with nowhere to send can still
+    // draft. The destinationless refusal moved to submit, where it is true.
+    const { gadget } = gadgetWith("on_new");
+    gadget.storage.setDestinations([]);
+    expect(gadget.workRequestFor(found, gadget.storage.getConfig())).not.toBeNull();
   });
 
   it("batches one scan into one request, whatever it found", () => {
@@ -199,11 +212,11 @@ describe("what a scan asks for", () => {
   });
 
   it("asks for nothing, rather than throwing, when the batch cannot be opened", () => {
-    // By value, never a throw (PAT-007). No destination granted is not a scan
-    // failure and is not something to ask an owner about.
+    // By value, never a throw (PAT-007): a scan naming posts this gadget has
+    // never stored yields an empty batch, and there is nothing to ask about.
     const { gadget } = gadgetWith("on_new");
-    gadget.storage.setDestinations([]);
-    expect(gadget.workRequestFor(found, gadget.storage.getConfig())).toBeNull();
+    const unknown = [{ ...found[0], newIds: ["instagram:IG_MAIN:ghost"] }];
+    expect(gadget.workRequestFor(unknown, gadget.storage.getConfig())).toBeNull();
   });
 
   it("asks for nothing when those items already have an active localization", () => {

@@ -838,10 +838,10 @@ export class Gadget extends DurableObject {
    * thing standing between an owner and a queue.
    *
    * THE BATCH IS OPENED HERE because a draft has nowhere to go without one:
-   * `saveRevision` takes a `batchItemId`. Every granted destination, which is
-   * exactly what the client's own picker sends today — a scan has no narrower
-   * intent to represent, and inventing one would be this method guessing at a
-   * choice the owner never made.
+   * `saveRevision` takes a `batchItemId`. A destination is deliberately NOT
+   * passed (TASK-004): drafting is `generate` and needs no `send` target —
+   * where a scan-drafted post goes is the owner's decision at submit, and a
+   * workspace with no destination granted still gets its drafts.
    *
    * Never throws: a scan's stored findings must survive a failure to ask about
    * them, and the ask is the cheap half.
@@ -853,11 +853,10 @@ export class Gadget extends DurableObject {
     if (!itemIds.length) return null;
 
     try {
-      const destinationBindings = this.storage.listDestinations().map((row) => row.binding);
-      const opened = this.openBatch({ itemIds, destinationBindings });
-      // By value, never a throw (PAT-007). A refusal here — no destination
-      // granted, or these items already have an active localization — is not a
-      // scan failure and is not something to ask an owner about.
+      const opened = this.openBatch({ itemIds });
+      // By value, never a throw (PAT-007). A refusal here — these items
+      // already have an active localization — is not a scan failure and is
+      // not something to ask an owner about.
       if (!opened || opened.ok === false || !opened.items?.length) return null;
 
       return {
@@ -1287,15 +1286,15 @@ export class Gadget extends DurableObject {
   // -----------------------------------------------------------------------
 
   /**
-   * `itemIds` and `destinationBindings` — the client (TASK-203) sends every
-   * granted destination from `summary().destinations[]` every time, so one
-   * batch_items row per source item carries the whole `destinationBindings`
-   * set. That is a fact about today's picker, NOT the requirement: REQ-017's
-   * unit is the pair `(sourceItem, destinationBinding)`, and this method
-   * tests it as a pair (`duplicateKey`, `findDuplicates`) so adding a
-   * per-destination picker later changes the UI and nothing here.
+   * `itemIds`, and an optional `destinationBindings` — a destination is a
+   * `send` target decided at submit (`refactor-draft-before-destination-1`),
+   * not a precondition for drafting, so the argument is recorded as `bound`
+   * publications rather than stored on the item. REQ-017's unit is the pair
+   * `(sourceItem, destinationBinding)`: while an item has no filed
+   * publication, the item alone is the key (`findDuplicates`); once it has
+   * been sent, `submitForReview` tests the pair.
    *
-   * REFUSES, IT DOES NOT REPARENT. A second active localization for a pair
+   * REFUSES, IT DOES NOT REPARENT. A second active localization for a post
    * that already has one comes back as `{ ok: false, code:
    * "duplicate_active" }` naming the batch and item that hold it (PAT-007 —
    * by value, never a throw). This used to move the existing row into the new
@@ -1345,20 +1344,21 @@ export class Gadget extends DurableObject {
       : [];
     if (!ids.length)
       return { ok: false, code: "batch_needs_items", message: "createBatch needs at least one item id." };
-    if (!destinations.length) {
-      return {
-        ok: false,
-        code: "batch_needs_destinations",
-        // Read by an owner, not only by the caller that made the mistake:
-        // the client puts this sentence on screen verbatim.
-        message: "No destination is set up yet. Add a destination account before moving posts to Localize."
-      };
-    }
 
-    // Checked BEFORE anything is written, so a refusal never leaves an empty
-    // batch row behind for the owner to wonder about.
+    /*
+     * A DESTINATION IS A SEND TARGET, NOT A PRECONDITION (TASK-001). Drafting
+     * a localized caption is `generate` — nothing about it needs a `send`
+     * target, so an absent or empty `destinationBindings` is a batch like any
+     * other and `batch_needs_destinations` is no longer answered here. The
+     * code stays in the vocabulary for `submitForReview`, where it is true.
+     *
+     * While a batch item has no FILED publication, REQ-017's duplicate key is
+     * the source item alone (TASK-002): two drafts of the same post is not a
+     * thing an owner asked for. Once an item has been sent somewhere, the
+     * pair rule takes over — at submit, not here.
+     */
     if (createNewVersion !== true) {
-      const duplicates = this.findDuplicates(ids, destinations);
+      const duplicates = this.findDuplicates(ids);
       if (duplicates.length) return duplicateRefusal(duplicates);
     }
 
@@ -1398,22 +1398,23 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * Every `(sourceItem, destinationBinding)` pair among `itemIds` ×
-   * `destinations` that an active batch item already holds — REQ-017's real
-   * key. One entry per conflicting row, carrying the batch and item ids the
-   * owner needs in order to go and look at it.
+   * Every source item in `itemIds` that already has an active localization
+   * which never went anywhere — the item-key half of REQ-017 while drafting
+   * (TASK-002). An item with a FILED publication does not block a second
+   * draft here; the pair rule at submit owns that case (`submitForReview`).
+   * One entry per conflicting row, carrying the batch and item ids the owner
+   * needs in order to go and look at it.
    */
-  findDuplicates(itemIds, destinations) {
+  findDuplicates(itemIds) {
     const conflicts = [];
     for (const itemId of itemIds) {
       for (const existing of this.storage.activeBatchItemsFor(itemId)) {
-        const overlap = destinations.filter((binding) => existing.destinationBindings.includes(binding));
-        if (!overlap.length) continue;
+        if (this.storage.hasFiledPublication(existing.id)) continue;
         conflicts.push({
           itemId,
           batchId: existing.batchId,
           batchItemId: existing.id,
-          destinationBindings: overlap
+          destinationBindings: existing.destinationBindings
         });
       }
     }
@@ -1425,8 +1426,10 @@ export class Gadget extends DurableObject {
     // refuses otherwise), so a conflicting row here is one the owner asked to
     // replace. Retired rather than edited: the old revisions, rights record
     // and approval stay exactly as they were published (REQ-011, PAT-004).
+    // An item that HAS been sent somewhere stays active — its publications
+    // are the record, and the pair rule at submit owns them from there.
     for (const existing of this.storage.activeBatchItemsFor(item.id)) {
-      if (existing.destinationBindings.some((binding) => destinationBindings.includes(binding))) {
+      if (!this.storage.hasFiledPublication(existing.id)) {
         this.storage.supersedeBatchItem(existing.id);
       }
     }
@@ -1438,10 +1441,16 @@ export class Gadget extends DurableObject {
       id: batchItemId,
       batchId,
       itemId: item.id,
-      destinationBindings,
+      // TASK-003: the column is read for rows written before migration 8
+      // only. What a caller still sends is recorded as `bound` publications
+      // instead — a default the submit picker reads, not a send (TASK-005).
+      destinationBindings: [],
       state,
       rightsStatus: requiresConfirmation ? "pending" : "confirmed"
     });
+    for (const binding of destinationBindings) {
+      this.storage.boundPublication(batchItemId, binding);
+    }
     this.storage.setOriginLink(batchItemId, {
       provider: item.provider,
       sourceBinding: item.sourceBinding,
@@ -1474,6 +1483,20 @@ export class Gadget extends DurableObject {
    * "edited since" needs — the owner's actual decision is a `readStatus`
    * poll away (`readPublishState`), never tracked locally.
    */
+  /**
+   * The destinations this item is pointed at: the union of what a caller
+   * recorded (the legacy column, read for pre-migration rows) and every live
+   * publication's binding. This is the submit picker's default — it says
+   * where a draft WOULD go, never that it has gone.
+   */
+  bindingsForItem(batchItem) {
+    const recorded = this.storage
+      .publicationsFor(batchItem.id)
+      .filter((publication) => publication.state !== "superseded")
+      .map((publication) => publication.destinationBinding);
+    return [...new Set([...(batchItem.destinationBindings ?? []), ...recorded])];
+  }
+
   projectBatchItem(batchItem) {
     const latest = this.storage.latestRevision(batchItem.id);
     const sourceItem = this.storage.getItem(batchItem.itemId);
@@ -1482,15 +1505,19 @@ export class Gadget extends DurableObject {
       ledger: latest?.ledger,
       sourceOrigin: sourceRow?.origin
     });
+    const destinationBindings = this.bindingsForItem(batchItem);
     return {
       id: batchItem.id,
       sourceItem,
-      destinationBindings: batchItem.destinationBindings,
+      destinationBindings,
+      // TASK-009: where it went — one row per destination this item was sent
+      // to (or is pointed at, in the `bound` state).
+      publications: this.storage.publicationsFor(batchItem.id),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
       // nothing ever set.
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings),
+      limits: this.storage.limitsForDestinations(destinationBindings),
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
@@ -1605,7 +1632,10 @@ export class Gadget extends DurableObject {
         claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
         confirmedClaims
       },
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
+      // The union includes `bound` publications, so a destination recorded
+      // for this item still applies its own caption limit while drafting
+      // (REQ-016) — and a destinationless draft checks nothing, as it must.
+      limits: this.storage.limitsForDestinations(this.bindingsForItem(batchItem))
     });
     if (!validation.ok) return { ok: false, issues: validation.issues };
 
@@ -1746,7 +1776,10 @@ export class Gadget extends DurableObject {
    * back to drafting/held_rights as before.
    */
   nextStateAfterEdit(batchItem) {
-    if (batchItem.version) {
+    // "Was this ever submitted?" used to be `batchItem.version` alone; with
+    // destinations living on publications, a filed publication row is the
+    // same fact.
+    if (batchItem.version || this.storage.hasFiledPublication(batchItem.id)) {
       return { state: "expired", approval_id: null };
     }
     return { state: batchItem.state === "held_rights" ? "held_rights" : "drafting" };
@@ -1793,16 +1826,32 @@ export class Gadget extends DurableObject {
    *    silently recording as submitted.
    *
    * On the expected refusal, the batch item moves to `review_requested` and
-   * stores the `versionId`/`contentHash` `createDraft` returned — never an
-   * `approvalId`, which this call never learns (see `projectBatchItem`).
+   * each filing lands as a `publications` row carrying the `versionId`/
+   * `contentHash` `createDraft` returned — never an `approvalId`, which this
+   * call never learns (see `projectBatchItem`).
+   *
+   * THE SIGNATURE CHANGED (TASK-010/011). Destination and timing were once
+   * fixed on the batch item at create; they are this call's arguments now —
+   * `destinationBindings` is where the submission goes (absent: the item's
+   * recorded bindings, the default a caller older than this flow relies on),
+   * `intent` is the timing (`publishMode` + schedule fields), and
+   * `createNewVersion` is REQ-017's explicit opt-in for a pair that is
+   * already claimed.
+   *
+   * ONE FILING PER BINDING: the door is asked per destination — one
+   * `createDraft` whose `targets` is that destination alone, one
+   * `submitForReview` for its `versionId` — so a `publications` row records
+   * one pair's intent and receipt. A binding that fails lands in `failures`
+   * and files nothing; the bindings that succeeded are still filed.
    *
    * EVERY early exit below is `{ ok: false, code, message }`, never a
    * throw — the owner can hit each one through ordinary use (rights not yet
-   * confirmed, a stale revision, a destination the door cannot resolve, the
-   * Social Hub itself unreachable) and this method runs as a facet RPC
-   * target, where a throw is what breaks the output gate (file header note).
+   * confirmed, a stale revision, no destination chosen, a destination the
+   * door cannot resolve, the Social Hub itself unreachable) and this method
+   * runs as a facet RPC target, where a throw is what breaks the output
+   * gate (file header note).
    */
-  async submitForReview({ batchItemId, expectedRevision }) {
+  async submitForReview({ batchItemId, expectedRevision, destinationBindings, intent, createNewVersion }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) return { ok: false, code: "batch_item_unknown", message: `No batch item ${batchItemId}.` };
     if (batchItem.currentRevision !== expectedRevision) {
@@ -1832,8 +1881,38 @@ export class Gadget extends DurableObject {
         message: `Rights must be confirmed before submitting (currently ${batchItem.rightsStatus}).`
       };
     }
+    /*
+     * Where this submission goes. An explicit `destinationBindings` argument
+     * wins — it is the picker's answer; absent, the recorded bindings are the
+     * default a caller older than this flow relied on (CON-004). An empty
+     * answer is the one place `batch_needs_destinations` still means what it
+     * says.
+     */
+    const recorded = this.bindingsForItem(batchItem);
+    const bindings =
+      destinationBindings === undefined
+        ? recorded
+        : [
+            ...new Set(
+              (Array.isArray(destinationBindings) ? destinationBindings : []).filter(
+                (binding) => typeof binding === "string" && binding
+              )
+            )
+          ];
+    if (!bindings.length) {
+      return {
+        ok: false,
+        code: "batch_needs_destinations",
+        message: "Choose a destination account before submitting for review."
+      };
+    }
+
     const caption = revision.caption ?? "";
-    const publication = normalizePublicationIntent(revision.publicationIntent ?? undefined);
+    // Timing comes with the submission now; the stored revision's own intent
+    // is only the default a caller that sends none relied on.
+    const publication = normalizePublicationIntent(
+      intent === undefined ? revision.publicationIntent ?? undefined : intent
+    );
     if (!publication.ok) {
       return { ok: false, code: publication.code, message: publication.message };
     }
@@ -1865,60 +1944,142 @@ export class Gadget extends DurableObject {
       return { ok: false, code: attribution.code, message: attribution.message };
     }
 
-    // Both door calls below are wrapped: `socialCreateDraft` /
+    /*
+     * REQ-017's pair rule, where the send happens (TASK-012): an active
+     * publication on ANOTHER localization of this source post claims the
+     * pair — `bound` included, because a recorded claim is still a claim.
+     * Checked for every binding BEFORE the first door call, so a refusal
+     * files nothing. The owner's `createNewVersion` opt-in retires the
+     * conflicting rows as the new filing succeeds, never before.
+     */
+    const conflictsByBinding = new Map();
+    for (const binding of bindings) {
+      const conflicts = this.storage
+        .activePublicationsForPair(batchItem.itemId, binding)
+        .filter((publication) => publication.batchItemId !== batchItemId);
+      if (conflicts.length) conflictsByBinding.set(binding, conflicts);
+    }
+    if (conflictsByBinding.size && createNewVersion !== true) {
+      return duplicatePublicationRefusal(conflictsByBinding, batchItem.itemId);
+    }
+
+    const filed = [];
+    const skipped = [];
+    const failures = [];
+    const mergedTargets = [];
+    let lastFiled = null;
+
+    // The door calls below are wrapped: `socialCreateDraft` /
     // `socialSubmitForReview` (`doors.js`) throw when the door itself is
     // absent, and a real Social Hub RPC can reject on its own (a genuine
     // outage) — either way that is an owner-facing "try again later", not a
     // reason to let an exception cross this facet's RPC boundary.
-    let draft;
-    try {
-      draft = await socialCreateDraft(this.env, {
-        caption,
-        media: packedMedia.media,
-        targets: batchItem.destinationBindings.map((destinationBinding) => ({ destinationBinding })),
-        origin: attribution.origin,
-        protectedLiterals,
-        // The Social Hub owns schedule validation and time resolution. Carry
-        // the normalized, owner-reviewed intent through the door instead of
-        // silently downgrading every revision to save_draft.
-        schedule: publication.intent
+    for (const binding of bindings) {
+      const mine = this.storage.livePublication(batchItemId, binding);
+      // Already filed AT THIS revision — a retry of the same ask refreshes
+      // nothing, and the owner is told rather than handed a duplicate.
+      if (mine && mine.revision === expectedRevision && mine.state !== "bound") {
+        skipped.push({ destinationBinding: binding, publicationId: mine.id, reason: "already_submitted" });
+        continue;
+      }
+
+      let draft;
+      try {
+        draft = await socialCreateDraft(this.env, {
+          caption,
+          media: packedMedia.media,
+          targets: [{ destinationBinding: binding }],
+          origin: attribution.origin,
+          protectedLiterals,
+          // The Social Hub owns schedule validation and time resolution.
+          // Carry the normalized, owner-reviewed intent through the door
+          // instead of silently downgrading every revision to save_draft.
+          schedule: publication.intent
+        });
+      } catch (error) {
+        failures.push({ destinationBinding: binding, code: "provider_unavailable", message: errorMessage(error) });
+        continue;
+      }
+      if (isDoorRefusal(draft)) {
+        failures.push({
+          destinationBinding: binding,
+          code: draft.code || "destination_unresolved",
+          message: draft.message || "Could not create a draft for this post."
+        });
+        continue;
+      }
+
+      let submission;
+      try {
+        submission = await socialSubmitForReview(this.env, {
+          versionId: draft.versionId,
+          expectedContentHash: draft.contentHash
+        });
+      } catch (error) {
+        failures.push({ destinationBinding: binding, code: "provider_unavailable", message: errorMessage(error) });
+        continue;
+      }
+      if (!isDoorRefusal(submission) || submission.code !== "submission_required") {
+        failures.push({
+          destinationBinding: binding,
+          code: "provider_unavailable",
+          message: isDoorRefusal(submission)
+            ? submission.message
+            : "submitForReview returned an unexpected result."
+        });
+        continue;
+      }
+
+      // Retire what this filing replaces: this item's older/bound row for
+      // the pair, and — only under the explicit opt-in — the conflicting
+      // row on another localization. Failed filings supersede nothing.
+      const replaceIds = [mine, ...(conflictsByBinding.get(binding) ?? [])]
+        .filter(Boolean)
+        .map((publication) => publication.id);
+      const publicationId = this.storage.filePublication({
+        batchItemId,
+        destinationBinding: binding,
+        revision: expectedRevision,
+        intent: publication.intent,
+        state: "review_requested",
+        postId: draft.postId,
+        version: draft.versionId,
+        replaceIds
       });
-    } catch (error) {
-      return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
-    }
-    if (isDoorRefusal(draft)) {
-      return {
-        ok: false,
-        code: draft.code || "destination_unresolved",
-        message: draft.message || "Could not create a draft for this post."
-      };
+      filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
+      mergedTargets.push(...normalizeTargets(draft.targets, [binding]));
+      lastFiled = draft;
     }
 
-    let submission;
-    try {
-      submission = await socialSubmitForReview(this.env, {
-        versionId: draft.versionId,
-        expectedContentHash: draft.contentHash
-      });
-    } catch (error) {
-      return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
-    }
-    if (!isDoorRefusal(submission) || submission.code !== "submission_required") {
-      const message = isDoorRefusal(submission) ? submission.message : "submitForReview returned an unexpected result.";
-      return { ok: false, code: "provider_unavailable", message };
+    if (!filed.length) {
+      if (skipped.length) {
+        return {
+          ok: false,
+          code: "already_submitted",
+          message: "This revision was already submitted for review to every selected destination.",
+          skipped
+        };
+      }
+      const first = failures[0] ?? { code: "provider_unavailable", message: "Nothing was submitted." };
+      return { ok: false, code: first.code, message: first.message, failures };
     }
 
     this.storage.updateBatchItem(batchItemId, {
       state: "review_requested",
       approval_id: null,
       approved_revision: expectedRevision,
-      content_hash: draft.contentHash,
-      post_id: draft.postId,
-      version: draft.versionId,
-      targets_json: JSON.stringify(normalizeTargets(draft.targets, batchItem.destinationBindings))
+      content_hash: lastFiled.contentHash,
+      post_id: lastFiled.postId,
+      version: lastFiled.versionId,
+      targets_json: JSON.stringify(mergedTargets.length ? mergedTargets : null)
     });
-    await this.broadcast({ type: "review_requested", batchItemId, versionId: draft.versionId });
-    return this.projectBatchItem(this.storage.getBatchItem(batchItemId));
+    await this.broadcast({ type: "review_requested", batchItemId, versionId: lastFiled.versionId });
+    return {
+      ...this.projectBatchItem(this.storage.getBatchItem(batchItemId)),
+      submitted: filed,
+      ...(skipped.length ? { skipped } : {}),
+      ...(failures.length ? { failures } : {})
+    };
   }
 
   /**
@@ -1933,17 +2094,25 @@ export class Gadget extends DurableObject {
    */
   async readPublishState(batchItemId) {
     const batchItem = this.storage.getBatchItem(batchItemId);
-    if (!batchItem) return null;
-    if (!batchItem.version) {
-      return { targets: [] };
+    if (!batchItem) return { publications: [], targets: [] };
+
+    const publications = [];
+    for (const publication of this.storage.publicationsFor(batchItemId)) {
+      // A `bound` row was never sent — there is no `versionId` to poll.
+      let targets = [];
+      if (publication.version) {
+        const fresh = await socialReadStatus(this.env, publication.version);
+        const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
+        targets = normalizeTargets(freshTargets, [publication.destinationBinding], null);
+        if (freshTargets) {
+          // The pair's own outcome rows are the item's canonical targets.
+          this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
+        }
+      }
+      publications.push({ ...publication, targets });
     }
 
-    const fresh = await socialReadStatus(this.env, batchItem.version);
-    const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-    const targets = normalizeTargets(freshTargets, batchItem.destinationBindings, batchItem.targets);
-    if (freshTargets) this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
-
-    return { targets };
+    return { publications, targets: publications.flatMap((publication) => publication.targets) };
   }
 
   // -----------------------------------------------------------------------
@@ -2015,8 +2184,16 @@ export class Gadget extends DurableObject {
           // `destinationBindings`, plural — one batch item carries the whole
           // set the owner picked (`hydrateBatchItem`). Reading the singular
           // `destinationBinding`, which no row has ever had, made this column
-          // blank on every export ever produced.
-          const destinations = (item.destinationBindings ?? []).join(", ");
+          // blank on every export ever produced. Under the publications
+          // model the destinations live on `publications` rows; the legacy
+          // column stays in the union for rows written before migration 8.
+          const publications = this.storage.publicationsFor(item.id);
+          const destinations = [
+            ...new Set([
+              ...(item.destinationBindings ?? []),
+              ...publications.map((publication) => publication.destinationBinding)
+            ])
+          ].join(", ");
           return `<tr><td>${escapeHtml(destinations)}</td><td>${escapeHtml(item.state)}</td><td>${escapeHtml(revision?.caption ?? "")}</td></tr>`;
         })
         .join("");
@@ -2177,12 +2354,43 @@ function duplicateRefusal(duplicates) {
     rest > 0
       ? ` ${rest} other selected post${rest === 1 ? "" : "s"} ${rest === 1 ? "is" : "are"} already localized too.`
       : "";
+  const bound = first.destinationBindings?.length ? ` for ${first.destinationBindings.join(", ")}` : "";
   return {
     ok: false,
     code: "duplicate_active",
     message:
-      `${first.itemId} already has an active localization for ${first.destinationBindings.join(", ")} in ${where}.${more}` +
+      `${first.itemId} already has an active localization${bound} in ${where}.${more}` +
       " Open it, or create a new version to localize it again.",
+    duplicates
+  };
+}
+
+/**
+ * REQ-017's refusal at submit — the pair rule, applied per destination
+ * (TASK-012). `conflictsByBinding` maps each requested binding to the active
+ * publication rows on OTHER localizations of the same source post that
+ * already claim it; the refusal names the batch and item holding the first
+ * conflict and lists every claimed pair.
+ */
+function duplicatePublicationRefusal(conflictsByBinding, itemId) {
+  const bindings = [...conflictsByBinding.keys()];
+  const first = [...conflictsByBinding.values()][0][0];
+  const where = `batch ${first.batchId ?? "—"} (item ${first.batchItemId})`;
+  const duplicates = [...conflictsByBinding.entries()].flatMap(([binding, pubs]) =>
+    pubs.map((pub) => ({
+      itemId,
+      batchId: pub.batchId,
+      batchItemId: pub.batchItemId,
+      publicationId: pub.id,
+      destinationBindings: [binding]
+    }))
+  );
+  return {
+    ok: false,
+    code: "duplicate_active",
+    message:
+      `${itemId} already has an active publication to ${bindings.join(", ")} in ${where}.` +
+      " Open it, or create a new version to send this post there again.",
     duplicates
   };
 }

@@ -57,14 +57,18 @@ import {
   setActiveItem,
   setBatch,
   resumeBatch,
-  submitEnabled,
+  reviewEnabled,
   recordDraftConflict,
   resolveDraftConflict,
   setMobilePane,
+  setPublishError,
+  setPublishIntent,
   setSaving,
+  setSubmitting,
   setWizardError,
   toConfigPayload,
   toggleConfirmedClaim,
+  togglePublishBinding,
   updateDraft
 } from "./steps.js";
 
@@ -287,6 +291,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-result-item { padding: 10px 0; border-top: 1px solid var(--sl-line); }
 .sl-result-item:first-child { border-top: 0; padding-top: 0; }
 .sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
+.sl-outcome { display: inline-flex; align-items: center; gap: 6px; }
 .sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
@@ -786,13 +791,23 @@ function App() {
     }
     if (request !== drawerRequest) return;
     const editable = batch.items?.some(isEditableItem);
+    const destinationLabel = (binding) =>
+      (summary?.destinations || []).find((d) => d.destinationBinding === binding || d.binding === binding)?.label || binding;
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
       ...batch.items.map((item) => el("section", { class: "sl-drawer-section" }, [
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
         el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
-        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, `${t(locale, "drawerRightsPendingTitle")}: ${item.rightsStatus}`),
+        // The line used to head every row "Rights not yet confirmed" — even
+        // confirmed ones. The status decides the title, not the paragraph.
+        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, `${t(locale, { confirmed: "drawerRightsConfirmedTitle", denied: "drawerRightsDeniedTitle" }[item.rightsStatus] ?? "drawerRightsPendingTitle")}: ${item.rightsStatus}`),
+        // TASK-018: where this draft was sent — one line per publication,
+        // including `bound` ones (recorded destinations, never sent).
+        item.publications?.length
+          ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
+              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
+          : null,
         el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]))
@@ -948,9 +963,9 @@ function App() {
     try {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
-      // createBatch answers an expected refusal (no items, no destinations,
-      // an existing active localization) as a value, not a throw — see
-      // server.js's header note.
+      // createBatch answers an expected refusal (no items, an existing
+      // active localization) as a value, not a throw — see server.js's
+      // header note.
       if (isRefusal(batch)) {
         if (batch.code === "duplicate_active") {
           collectionState = setNotice(collectionState, {
@@ -1072,40 +1087,80 @@ function App() {
       wizard = resolveDraftConflict(wizard, id, keepEdits);
       renderCurrentView();
     },
-    onSubmitForReview: async () => {
-      if (!submitEnabled(wizard, policy)) {
-        wizard = setWizardError(wizard, t(locale, "submitBlocked"));
-        renderCurrentView();
-        return;
-      }
-      wizard = setWizardError(wizard, null);
-      wizard = { ...wizard, submitting: true };
-      renderCurrentView();
-      try {
-        for (const item of wizard.batch.items) {
-          const result = await rpc.submitForReview({ batchItemId: item.id, expectedRevision: item.revision ?? 0 });
-          // Every expected refusal (rights unconfirmed, a stale revision, an
-          // unresolved destination, a provider outage) is a value now, not
-          // a rejected promise — server.js's header note. Stop at the first
-          // one and show it rather than moving on as if every item cleared.
-          if (isRefusal(result)) {
-            wizard = setWizardError(wizard, refusalMessage(result));
-            renderCurrentView();
-            return;
-          }
-        }
-        const refreshed = await rpc.getBatch(wizard.batch.id);
-        wizard = setBatch(wizard, refreshed);
-        wizard = goToWizardStep(wizard, "review");
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      } finally {
-        wizard = { ...wizard, submitting: false };
-        renderCurrentView();
-      }
+    // --- Publish step: the send decision is per item, made at submit -------
+    onToggleBinding: (id, binding) => {
+      wizard = togglePublishBinding(wizard, id, binding);
       renderCurrentView();
     },
+    onPublishIntent: (id, patch, redraw = true) => {
+      wizard = setPublishIntent(wizard, id, patch);
+      // Radio changes redraw; the schedule text/datetime inputs stay put so
+      // typing does not lose focus mid-keystroke.
+      if (redraw) renderCurrentView();
+    },
+    /**
+     * TASK-016's submit: one item, the bindings the picker has chosen, the
+     * timing it carries. `createNewVersion` arrives only from the refusal's
+     * own button — REQ-017's opt-in, taken by the owner, never retried.
+     * Every expected refusal (rights unconfirmed, a stale revision, no
+     * destination chosen, an already-filed pair, a provider outage) is a
+     * value — server.js's header note — shown on the item it belongs to.
+     */
+    onSubmitItem: async (id, createNewVersion = false) => {
+      const item = wizard.batch?.items.find((entry) => entry.id === id);
+      if (!item || wizard.submittingByItem?.[id]) return;
+      const choice = wizard.publishChoices?.[id] ?? {};
+      wizard = setPublishError(wizard, id, null);
+      wizard = setSubmitting(wizard, id, true);
+      renderCurrentView();
+      try {
+        const result = await rpc.submitForReview({
+          batchItemId: id,
+          expectedRevision: item.revision ?? 0,
+          destinationBindings: choice.bindings ?? [],
+          intent: choice.intent,
+          createNewVersion
+        });
+        if (isRefusal(result)) {
+          wizard = setPublishError(wizard, id, { code: result.code, message: refusalMessage(result) });
+        } else {
+          // The filing landed — read back the item and its publication rows
+          // so the picker shows them as filed rather than chosen.
+          const refreshed = await rpc.getBatch(wizard.batch.id);
+          const fresh = refreshed?.items?.find((entry) => entry.id === id);
+          if (fresh) {
+            wizard = { ...wizard, batch: { ...wizard.batch, items: wizard.batch.items.map((entry) => (entry.id === id ? fresh : entry)) } };
+          }
+          const publishState = await rpc.readPublishState(id);
+          wizard = applyPublishState(wizard, id, publishState);
+        }
+      } catch (error) {
+        console.error(error);
+        wizard = setPublishError(wizard, id, { code: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+      wizard = setSubmitting(wizard, id, false);
+      renderCurrentView();
+    },
+    // The Publish step's empty state offers the same grant re-check the
+    // Settings screen does (TASK-022) — a destination granted after setup is
+    // exactly the case an owner reaches it with.
+    onRefreshGrants: async () => {
+      try {
+        const result = await rpc.refreshGrants();
+        if (result && result.ok === false) {
+          announce(t(locale, "genericError"), result.message || "");
+          return;
+        }
+        await refreshSummary();
+        const names = [...(result?.added?.sources ?? []), ...(result?.added?.destinations ?? [])].map((row) => row.label || row.binding);
+        announce(t(locale, names.length ? "setupConnectionsFound" : "setupConnectionsNone", names.length ? { names: names.join(", ") } : {}), "");
+        renderCurrentView();
+      } catch (error) {
+        console.error(error);
+        announce(t(locale, "genericError"), error instanceof Error ? error.message : "");
+      }
+    },
+    onOpenSettings: () => collectionHandlers.onOpenSettings(),
     onBack: async () => {
       if (wizard.submitting || leavingEditor) return;
       leavingEditor = true;
@@ -1141,28 +1196,41 @@ function App() {
       }
     },
     onContinue: async () => {
-      if (wizard.step === "review") {
+      // Localize -> Review asks only that the stored draft is current; the
+      // destination is the Publish step's question, not this transition's.
+      if (wizard.step === "localize") {
+        if (!reviewEnabled(wizard)) {
+          wizard = setWizardError(wizard, t(locale, "reviewBlocked"));
+        } else {
+          wizard = setWizardError(wizard, null);
+          wizard = goToWizardStep(wizard, "review");
+        }
+      } else if (wizard.step === "review") {
         wizard = goToWizardStep(wizard, "publish");
         await refreshPublishState();
       }
       renderCurrentView();
     },
     onRetry: async (itemId, destinationBinding) => {
-      wizard = setWizardError(wizard, null);
+      // A failed pair re-files through the same per-item submit, scoped to
+      // the one destination that failed.
+      wizard = setPublishError(wizard, itemId, null);
       try {
         const result = await rpc.submitForReview({
           batchItemId: itemId,
-          expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0
+          expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0,
+          destinationBindings: [destinationBinding]
         });
         if (isRefusal(result)) {
-          wizard = setWizardError(wizard, refusalMessage(result));
+          wizard = setPublishError(wizard, itemId, { code: result.code, message: refusalMessage(result) });
         } else {
-          await refreshPublishState();
+          const state = await rpc.readPublishState(itemId);
+          wizard = applyPublishState(wizard, itemId, state);
         }
         renderCurrentView();
       } catch (error) {
         console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
+        wizard = setPublishError(wizard, itemId, { code: "error", message: error instanceof Error ? error.message : String(error) });
         renderCurrentView();
       }
     },
@@ -1235,8 +1303,8 @@ function App() {
     }
     if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });
     else if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
-    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, handlers: wizardHandlers });
-    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, handlers: wizardHandlers });
+    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
+    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
   }
 
   globalThis.addEventListener?.("beforeunload", (event) => {

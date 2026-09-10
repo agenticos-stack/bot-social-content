@@ -23,14 +23,20 @@ const DEFAULT_TEXT_COLOR = "#ffffff";
 export function createWizardState() {
   return {
     step: "select",
-    batch: null, // { id, items: [{ id, sourceItem, destinationBindings, revision, caption, posterLayout, confirmedClaims, approval }] }
+    batch: null, // { id, items: [{ id, sourceItem, destinationBindings, publications, revision, caption, posterLayout, confirmedClaims, approval }] }
     activeItemId: null,
     mobilePane: "source",
     drafts: {}, // batchItemId -> { caption, template, headline, subline, background, textColor, align, confirmedClaims: string[] }
     acknowledged: {}, // last server-confirmed draft per item; browser edits never replace this
     savingByItem: {},
     conflicts: {},
-    publishByItem: {}, // batchItemId -> per-destination outcomes from readPublishState()
+    publishByItem: {}, // batchItemId -> readPublishState(): { publications, targets }
+    // TASK-016: the send decision per item — which destinations this submit
+    // files against, and the timing for all of them. Seeded from the item's
+    // recorded bindings; the owner picks on the Publish step.
+    publishChoices: {}, // batchItemId -> { bindings: string[], intent: { publishMode, ... } }
+    publishErrors: {}, // batchItemId -> { code, message } from the last submit refusal
+    submittingByItem: {},
     error: null // the message of the most recent refusal (see isRefusal/refusalMessage below), cleared on the next attempt
   };
 }
@@ -83,8 +89,17 @@ function draftFor(item) {
 export function setBatch(state, batch) {
   if (!batch || !Array.isArray(batch.items) || !batch.items.length) return state;
   const drafts = {};
-  for (const item of batch.items) drafts[item.id] = draftFor(item);
-  return { ...state, step: "localize", batch, activeItemId: batch.items[0].id, drafts, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {} };
+  const publishChoices = {};
+  for (const item of batch.items) {
+    drafts[item.id] = draftFor(item);
+    // The submit picker's default is what the item is already pointed at:
+    // bound publications and the legacy column arrive as destinationBindings.
+    publishChoices[item.id] = {
+      bindings: Array.isArray(item.destinationBindings) ? item.destinationBindings.slice() : [],
+      intent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" }
+    };
+  }
+  return { ...state, step: "localize", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
 }
 
 export function recordDraftConflict(state, id, savedItem) {
@@ -184,6 +199,72 @@ export function applySavedPoster(state, batchItemId, result, submittedDraft = st
 
 export function applyPublishState(state, batchItemId, publishState) {
   return { ...state, publishByItem: { ...state.publishByItem, [batchItemId]: publishState } };
+}
+
+// --- Publish step: the send decision (TASK-016) -----------------------------
+
+/** Toggle one destination in an item's submit set. */
+export function togglePublishBinding(state, batchItemId, binding) {
+  const current = state.publishChoices?.[batchItemId] ?? { bindings: [], intent: { publishMode: "save_draft", latePolicy: "hold" } };
+  const has = current.bindings.includes(binding);
+  return {
+    ...state,
+    publishChoices: {
+      ...state.publishChoices,
+      [batchItemId]: { ...current, bindings: has ? current.bindings.filter((entry) => entry !== binding) : current.bindings.concat(binding) }
+    }
+  };
+}
+
+/** Merge a timing patch into an item's submit intent (publishMode / schedule fields). */
+export function setPublishIntent(state, batchItemId, patch) {
+  const current = state.publishChoices?.[batchItemId] ?? { bindings: [], intent: { publishMode: "save_draft", latePolicy: "hold" } };
+  return {
+    ...state,
+    publishChoices: { ...state.publishChoices, [batchItemId]: { ...current, intent: { ...current.intent, ...patch, latePolicy: "hold" } } }
+  };
+}
+
+export function setPublishError(state, batchItemId, error) {
+  return { ...state, publishErrors: { ...state.publishErrors, [batchItemId]: error || null } };
+}
+
+export function setSubmitting(state, batchItemId, submitting) {
+  return { ...state, submittingByItem: { ...state.submittingByItem, [batchItemId]: submitting } };
+}
+
+/** The destinations this submit would file — the picker's answer, never the batch's fixed property. */
+export function publishBindings(state, batchItemId) {
+  return state.publishChoices?.[batchItemId]?.bindings ?? [];
+}
+
+/**
+ * Localize -> Review. Drafting needs no destination and needs no send —
+ * only that nothing is mid-save or unsaved, so the review the owner reads
+ * is the draft that is actually stored.
+ */
+export function reviewEnabled(state) {
+  if (!state.batch?.items.length || state.submitting) return false;
+  if (Object.keys(state.conflicts ?? {}).length) return false;
+  if (dirtyItemIds(state).length) return false;
+  if (Object.values(state.savingByItem).some(Boolean)) return false;
+  return true;
+}
+
+/**
+ * Whether ONE item can be filed for review right now — the Publish step's
+ * per-item submit (TASK-016). Everything `submitEnabled` asked of the batch,
+ * asked of the item, plus the one thing that only exists at this step: at
+ * least one destination chosen.
+ */
+export function submitItemEnabled(state, batchItemId, policy) {
+  const item = state.batch?.items.find((entry) => entry.id === batchItemId);
+  if (!item || state.submitting || state.submittingByItem?.[batchItemId]) return false;
+  if (state.conflicts && Object.hasOwn(state.conflicts, batchItemId)) return false;
+  if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
+  if (!publishBindings(state, batchItemId).length) return false;
+  const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
+  return !hasBlockingIssues(issues) && !rightsBlockSubmit(item.rightsStatus, item.rightsRequired);
 }
 
 // ---------------------------------------------------------------------------
@@ -635,24 +716,35 @@ function posterTemplatesList() {
   return POSTER_TEMPLATES;
 }
 
-function renderPublicationControls(item, draft, locale, handlers) {
-  const intent = draft.publicationIntent;
-  const change = (patch, redraw = true) => handlers.onDraftChange(item.id, { publicationIntent: { ...patch, latePolicy: "hold" } }, redraw);
+function renderVisualControls(item, draft, locale, handlers) {
   const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
   return el("fieldset", { class: "sl-setup-section" }, [
+    el("legend", null, t(locale, "setupVisual")),
+    field("setupVisual", el("select", { onchange: e => handlers.onDraftChange(item.id, { acceptedVisualMode: e.currentTarget.value }) },
+      [["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"], ...(draft.acceptedVisualMode === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])].map(([value, key]) => el("option", { value, selected: draft.acceptedVisualMode === value }, t(locale, key))))),
+    el("p", { class: "sl-field-note" }, t(locale, "setupVisualNote"))
+  ]);
+}
+
+/**
+ * The timing half of the send decision, per item on the Publish step
+ * (TASK-016). Writes `publishChoices[itemId].intent` — the submission's own
+ * argument — not the draft, so choosing a time never dirties the caption.
+ */
+function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
+  const change = (patch, redraw = true) => handlers.onPublishIntent(itemId, patch, redraw);
+  const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
+  return el("fieldset", { class: "sl-setup-section", disabled }, [
     el("legend", null, t(locale, "publicationTiming")),
     ...[["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
-      el("label", { class: "sl-radio" }, [el("input", { type: "radio", name: "publicationMode", checked: intent.publishMode === mode,
+      el("label", { class: "sl-radio" }, [el("input", { type: "radio", name: `publicationMode-${itemId}`, checked: intent.publishMode === mode,
         onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }), t(locale, key)])),
     ...(intent.publishMode === "schedule" ? [
       field("publicationLocalTime", el("input", { type: "datetime-local", value: intent.publishLocalTime || "", oninput: e => change({ publishLocalTime: e.currentTarget.value }, false) })),
       field("publicationTimezone", el("input", { type: "text", value: intent.timezone || "", oninput: e => change({ timezone: e.currentTarget.value }, false) })),
       field("publicationOffset", el("input", { type: "number", min: -840, max: 840, value: intent.utcOffsetMinutes ?? "", oninput: e => change({ utcOffsetMinutes: e.currentTarget.value === "" ? null : Number(e.currentTarget.value) }, false) }))
     ] : []),
-    el("p", { class: "sl-field-note" }, t(locale, "publicationHint")),
-    field("setupVisual", el("select", { onchange: e => handlers.onDraftChange(item.id, { acceptedVisualMode: e.currentTarget.value }) },
-      [["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"], ...(draft.acceptedVisualMode === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])].map(([value, key]) => el("option", { value, selected: draft.acceptedVisualMode === value }, t(locale, key))))),
-    el("p", { class: "sl-field-note" }, t(locale, "setupVisualNote"))
+    el("p", { class: "sl-field-note" }, t(locale, "publicationHint"))
   ]);
 }
 
@@ -712,7 +804,9 @@ export function renderLocalize(root, state, ctx) {
   renderPosterEditor(posterHost, activeItem, draft, ctx);
 
   const savingThis = !!state.savingByItem[activeItem.id];
-  const submittable = submitEnabled(state, policy);
+  // Localize asks only that the review the owner reads next is the draft that
+  // is stored — rights and destination are the Publish step's question now.
+  const reviewable = reviewEnabled(state);
 
   const footer = el("footer", { class: "sl-selection" }, [
     el("div", { class: "sl-selection-inner" }, [
@@ -733,11 +827,11 @@ export function renderLocalize(root, state, ctx) {
           type: "button",
           class: "sl-primary",
           style: "margin-left:auto",
-          disabled: !submittable,
-          title: submittable ? "" : t(locale, "submitBlocked"),
-          onclick: () => handlers.onSubmitForReview()
+          disabled: !reviewable,
+          title: reviewable ? "" : t(locale, "reviewBlocked"),
+          onclick: () => handlers.onContinue()
         },
-        t(locale, "submitForReview")
+        t(locale, "continueToReview")
       )
     ])
   ]);
@@ -758,30 +852,25 @@ export function renderLocalize(root, state, ctx) {
     dual,
     issueList,
     posterHost,
-    renderPublicationControls(activeItem, draft, locale, handlers),
+    renderVisualControls(activeItem, draft, locale, handlers),
     footer
   ])]);
 }
 
 export function renderReview(root, state, ctx) {
-  const { locale, handlers, summary } = ctx;
+  const { locale, handlers } = ctx;
   const batch = state.batch;
   if (!batch) return replace(root, []);
 
-  const destinationLabel = (binding) => {
-    const destination = (summary?.destinations || []).find((entry) => entry.destinationBinding === binding || entry.binding === binding);
-    return destination?.label || binding;
-  };
-
-  const cards = batch.items.flatMap((item) => {
-    const draft = state.drafts[item.id];
-    return (item.destinationBindings || []).map((binding) =>
-      el("div", { class: "sl-preview-card" }, [
-        el("header", null, [el("strong", null, destinationLabel(binding))]),
-        el("div", { class: "sl-pc-media" }, [el("span", null, draft.headline)]),
-        el("div", { class: "sl-pc-body" }, [el("p", null, draft.caption), el("span", { class: "sl-bind-label" }, t(locale, "boundTo", { label: destinationLabel(binding) }))])
-      ])
-    );
+  // One card per DRAFT — the destination is chosen on the next step, so a
+  // card headed by a destination would be asserting a decision not yet made.
+  const cards = batch.items.map((item) => {
+    const draft = state.drafts[item.id] ?? {};
+    return el("div", { class: "sl-preview-card" }, [
+      el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
+      el("div", { class: "sl-pc-media" }, [el("span", null, draft.headline || "")]),
+      el("div", { class: "sl-pc-body" }, [el("p", null, draft.caption || item.caption || "")])
+    ]);
   });
 
   const approval = batch.approval || null;
@@ -809,32 +898,145 @@ export function renderReview(root, state, ctx) {
 }
 
 function stateBadge(locale, outcome) {
-  const key = { scheduled: "stateScheduled", published: "statePublished", failed_safe: "stateFailed", unknown: "stateUnknown" }[outcome] || "stateUnknown";
+  const key = {
+    scheduled: "stateScheduled",
+    published: "statePublished",
+    failed_safe: "stateFailed",
+    failed: "stateFailed",
+    unknown: "stateUnknown",
+    bound: "stateBound",
+    review_requested: "stateInReview",
+    superseded: "stateSuperseded"
+  }[outcome] || "stateUnknown";
   return el("span", { class: `sl-state-badge sl-state-${outcome}` }, t(locale, key));
 }
 
+/** A publication's displayable state: the door's own outcome when one has been read back, else the row's filing state. */
+function publicationOutcome(publication) {
+  const target =
+    publication.targets?.find((entry) => entry.destinationBinding === publication.destinationBinding) ??
+    publication.targets?.[0];
+  return { target, outcome: target?.outcome ?? publication.state };
+}
+
 export function renderPublish(root, state, ctx) {
-  const { locale, handlers } = ctx;
+  const { locale, handlers, summary, policy } = ctx;
   const batch = state.batch;
   if (!batch) return replace(root, []);
 
-  const rows = batch.items.flatMap((item) => {
+  const destinations = Array.isArray(summary?.destinations) ? summary.destinations : [];
+  const destinationLabel = (binding) =>
+    destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
+
+  /*
+   * TASK-017/TASK-022: with nowhere configured there is nothing to submit
+   * TO — said on this step, where the choice actually lives, with both ways
+   * out beside it. Drafting was never blocked on this; only the send is.
+   */
+  const emptyDestinations = el("div", { class: "sl-empty" }, [
+    el("strong", null, t(locale, "batchNoDestinationTitle")),
+    el("p", null, t(locale, "publishNoDestinationsBody")),
+    el("div", { class: "sl-setup-actions" }, [
+      el("button", { type: "button", class: "sl-primary", onclick: () => handlers.onOpenSettings() }, t(locale, "settingsOpen")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections"))
+    ])
+  ]);
+
+  const itemCards = batch.items.map((item) => {
     const publishState = state.publishByItem[item.id];
-    const targets = publishState?.targets || [];
-    return targets.map((target) =>
-      el("div", { class: "sl-target-row" }, [
-        el("div", { class: "sl-who" }, [el("strong", null, target.label || target.destinationBinding), target.detail ? el("span", null, target.detail) : null]),
-        stateBadge(locale, target.outcome),
-        target.outcome === "published" && target.receiptUrl
-          ? el("a", { class: "sl-receipt", href: target.receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
-          : target.outcome === "failed_safe"
-            ? el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onRetry(item.id, target.destinationBinding) }, t(locale, "retry"))
-            : target.outcome === "unknown"
-              ? el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onCheckManually(item.id, target.destinationBinding) }, t(locale, "checkManually"))
-              : null,
-        target.guidance ? el("p", { class: "sl-guidance" }, target.guidance) : target.outcome === "unknown" ? el("p", { class: "sl-guidance" }, t(locale, "unknownGuidance")) : null
-      ])
+    const publications = publishState?.publications ?? item.publications ?? [];
+    // A pair already filed at the current revision is shown, not re-offered —
+    // the checkbox is disabled so ticking it off cannot file a duplicate.
+    const filedPairs = new Set(
+      publications
+        .filter((pub) => pub.version && pub.revision === item.revision && pub.state !== "superseded" && pub.state !== "failed")
+        .map((pub) => pub.destinationBinding)
     );
+    const choice = state.publishChoices[item.id] ?? {
+      bindings: [],
+      intent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" }
+    };
+    const submitting = !!state.submittingByItem[item.id];
+    const error = state.publishErrors?.[item.id];
+    const enabled = submitItemEnabled(state, item.id, policy);
+    const heading = (state.drafts[item.id]?.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
+
+    const pubRows = publications
+      .filter((pub) => pub.state !== "superseded")
+      .map((pub) => {
+        const { target, outcome } = publicationOutcome(pub);
+        return el("div", { class: "sl-target-row" }, [
+          el("div", { class: "sl-who" }, [
+            el("strong", null, destinationLabel(pub.destinationBinding)),
+            el("span", null, t(locale, "drawerRevision", { n: pub.revision }))
+          ]),
+          stateBadge(locale, outcome),
+          target?.receiptUrl
+            ? el("a", { class: "sl-receipt", href: target.receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
+            : outcome === "failed_safe" || outcome === "failed"
+              ? el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onRetry(item.id, pub.destinationBinding) }, t(locale, "retry"))
+              : outcome === "unknown" && pub.version
+                ? el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onCheckManually(item.id, pub.destinationBinding) }, t(locale, "checkManually"))
+                : null,
+          target?.guidance
+            ? el("p", { class: "sl-guidance" }, target.guidance)
+            : outcome === "unknown" && pub.version
+              ? el("p", { class: "sl-guidance" }, t(locale, "unknownGuidance"))
+              : null
+        ]);
+      });
+
+    const picker = destinations.length
+      ? el("fieldset", { class: "sl-setup-section", disabled: submitting }, [
+          el("legend", null, t(locale, "publishPickDestinations")),
+          ...destinations.map((destination) => {
+            const binding = destination.destinationBinding ?? destination.binding;
+            const filed = filedPairs.has(binding);
+            return el("label", { class: "sl-radio" }, [
+              el("input", {
+                type: "checkbox",
+                checked: filed || choice.bindings.includes(binding),
+                disabled: filed || submitting,
+                onchange: () => handlers.onToggleBinding(item.id, binding)
+              }),
+              destination.label || binding,
+              filed ? el("span", { class: "sl-field-note" }, t(locale, "publishAlreadyFiled")) : null
+            ]);
+          })
+        ])
+      : null;
+
+    const refusal = error
+      ? el("div", { class: "sl-wizard-error", role: "alert" }, [
+          el("p", null, error.message),
+          // REQ-017's opt-in is the refusal's own button — the owner takes it
+          // deliberately, and nothing else retries with `createNewVersion`.
+          error.code === "duplicate_active"
+            ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onSubmitItem(item.id, true) }, t(locale, "duplicateBlockedNewVersion"))
+            : null
+        ])
+      : null;
+
+    return el("section", { class: "sl-drawer-section" }, [
+      el("h3", null, heading || item.id),
+      pubRows.length ? el("div", null, pubRows) : null,
+      picker,
+      renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
+      refusal,
+      destinations.length
+        ? el(
+            "button",
+            {
+              type: "button",
+              class: "sl-primary",
+              disabled: !enabled,
+              title: enabled ? "" : t(locale, "submitBlocked"),
+              onclick: () => handlers.onSubmitItem(item.id, false)
+            },
+            submitting ? t(locale, "saving") : t(locale, "submitForReview")
+          )
+        : null
+    ]);
   });
 
   const footer = el("footer", { class: "sl-selection" }, [
@@ -847,22 +1049,34 @@ export function renderPublish(root, state, ctx) {
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
     renderWizardError(state),
-    rows.length ? el("div", null, rows) : el("p", null, t(locale, "loading")),
+    destinations.length ? el("div", null, itemCards) : emptyDestinations,
     footer
   ]);
 }
 
 export function renderResult(root, state, ctx) {
-  const { locale, handlers } = ctx;
+  const { locale, handlers, summary } = ctx;
   const batch = state.batch;
   if (!batch) return replace(root, []);
 
+  const destinations = Array.isArray(summary?.destinations) ? summary.destinations : [];
+  const destinationLabel = (binding) =>
+    destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
+
   const items = batch.items.map((item) => {
     const publishState = state.publishByItem[item.id];
-    const outcomes = (publishState?.targets || []).map((target) => stateBadge(locale, target.outcome));
+    const publications = publishState?.publications ?? item.publications ?? [];
+    const rows = publications
+      .filter((pub) => pub.state !== "superseded")
+      .map((pub) =>
+        el("span", { class: "sl-outcome" }, [
+          el("span", null, destinationLabel(pub.destinationBinding)),
+          stateBadge(locale, publicationOutcome(pub).outcome)
+        ])
+      );
     return el("div", { class: "sl-result-item" }, [
       el("strong", null, item.sourceItem?.text ? item.sourceItem.text.split("\n")[0].slice(0, 60) : item.id),
-      el("div", { class: "sl-outcomes" }, outcomes)
+      el("div", { class: "sl-outcomes" }, rows.length ? rows : [el("span", { class: "sl-field-note" }, t(locale, "resultNotSent"))])
     ]);
   });
 
