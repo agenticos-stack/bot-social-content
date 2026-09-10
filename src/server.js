@@ -807,6 +807,19 @@ export class Gadget extends DurableObject {
     }
 
     let cursor = source.cursor ?? null;
+    /*
+     * Every cursor this run has already asked with.
+     *
+     * A pager that does not advance is not a pager. `treg.instagram.user.posts`
+     * RETURNS a `next_cursor` but does not accept one — sending it back yields
+     * the identical page, verified against the live endpoint — so the loop
+     * refetched page one until `MAX_ITEMS_PER_SOURCE` stopped it: roughly
+     * eight billed provider calls to read twelve posts, on every scan.
+     *
+     * Detecting the repeat rather than special-casing this endpoint keeps it
+     * true for the next provider whose cursor loops, and costs one Set.
+     */
+    const askedWith = new Set([cursor]);
     let fetched = 0;
     let newCount = 0;
     let changedCount = 0;
@@ -860,6 +873,11 @@ export class Gadget extends DurableObject {
         cursor = normalized.nextCursor;
         this.storage.recordSourceOutcome(source.binding, { outcome: "confirmed", cursor });
         if (!cursor || normalized.items.length === 0) break;
+        // A cursor we have already used cannot take us anywhere new, so this
+        // page is the last one — not an error, and the items just read are
+        // kept. Reaching here is the provider saying "no more", clumsily.
+        if (askedWith.has(cursor)) break;
+        askedWith.add(cursor);
       }
     } catch (error) {
       outcome = "failed_safe";
