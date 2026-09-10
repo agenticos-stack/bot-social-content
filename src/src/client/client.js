@@ -1273,6 +1273,10 @@ function App() {
     let openSources = (summary?.sources || []).filter((source) => source.origin === "open");
     let openBusy = false;
     let openError = null;
+    // The additive grant re-check — busy/result live beside the button that
+    // asks for it (TASK-021), namespaced like the open-source fields.
+    let grantsBusy = false;
+    let grantsNote = null;
 
     const draw = () =>
       renderSetup(viewHost, draft, {
@@ -1289,6 +1293,8 @@ function App() {
         // clobbered the setConfig one and a failed save showed nothing.
         openBusy,
         openError,
+        grantsBusy,
+        grantsNote,
         handlers: setupHandlers
       });
     const setupHandlers = {
@@ -1336,6 +1342,39 @@ function App() {
           openError = thrown instanceof Error ? thrown.message : String(thrown);
         }
         openBusy = false;
+        draw();
+      },
+
+      /**
+       * "Check for new connections" — TASK-021. A connector granted after
+       * first setup never reached the lists this form shows, because the
+       * derive step only ran at first setup or through the legacy `setConfig`
+       * path and this payload carries no bindings. `refreshGrants` is the
+       * additive re-derive; what it added (or that it added nothing) is said
+       * beside the button.
+       */
+      onRefreshGrants: async () => {
+        if (grantsBusy) return;
+        grantsBusy = true;
+        grantsNote = null;
+        draw();
+        try {
+          const result = await rpc.refreshGrants();
+          if (!result || result.ok === false) {
+            grantsNote = result?.message || t(locale, "genericError");
+          } else {
+            await refreshSummary();
+            const names = [...(result.added?.sources || []), ...(result.added?.destinations || [])]
+              .map((row) => row.label || row.binding);
+            grantsNote = names.length
+              ? t(locale, "setupConnectionsFound", { names: names.join(", ") })
+              : t(locale, "setupConnectionsNone");
+          }
+        } catch (thrown) {
+          console.error(thrown);
+          grantsNote = thrown instanceof Error ? thrown.message : String(thrown);
+        }
+        grantsBusy = false;
         draw();
       },
 

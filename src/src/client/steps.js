@@ -459,6 +459,17 @@ export function renderSetup(root, draft, ctx) {
     note("setupSourcesNote"),
     accounts("setupConnectedSources", (summary.sources || []).filter(row => row.origin !== "open")),
     accounts("setupDestinations", summary.destinations),
+    /*
+     * A connector granted after first setup reaches storage only if someone
+     * re-derives it — `deriveBindingsFromGrants` runs on first setup and the
+     * legacy `setConfig` path alone, and this form's payload has never
+     * carried a binding list. `refreshGrants` is the additive re-check; the
+     * result is said beside the button, not only in a toast.
+     */
+    el("div", { class: "sl-setup-actions" }, [
+      el("button", { type: "button", class: "sl-secondary", disabled: ctx.grantsBusy, onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections")),
+      ctx.grantsNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.grantsNote) : null
+    ]),
     field("openSourceLabel", renderOpenSources(locale, ctx, handlers)),
     note("openSourceDesc")
   ]);

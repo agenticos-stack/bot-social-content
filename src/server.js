@@ -507,6 +507,43 @@ export class Gadget extends DurableObject {
     return described;
   }
 
+  /**
+   * A connector granted AFTER first setup (TASK-020).
+   *
+   * `deriveBindingsFromGrants` ran only inside `saveConfiguration`, and there
+   * only on the legacy `setConfig` path or while no config existed — and the
+   * settings form's payload (`toConfigPayload`) has never carried `sources`
+   * or `destinations`. So a door granted later never appeared: the lists
+   * `summary()` reports are read from storage, and nothing after first setup
+   * ever wrote to them.
+   *
+   * ADDITIVE, and only additive. A granted-but-unstored binding is inserted;
+   * every row already stored keeps its cursor, scan history and describe
+   * exactly as they are. It does not touch the config, does not arm or alter
+   * a schedule, and does not remove a revoked grant either — a revoked door's
+   * row stays so the items it produced still name their source, and
+   * `summary().doors` is what reports it gone.
+   */
+  async refreshGrants() {
+    const derived = await this.deriveBindingsFromGrants();
+    const knownSources = new Set(this.storage.listSources().map((row) => row.binding));
+    const knownDestinations = new Set(this.storage.listDestinations().map((row) => row.binding));
+    const addedSources = derived.sources.filter((row) => !knownSources.has(row.binding));
+    const addedDestinations = derived.destinations.filter((row) => !knownDestinations.has(row.binding));
+    this.ctx.storage.transactionSync(() => {
+      for (const source of addedSources) this.storage.addSourceBinding(source);
+      for (const destination of addedDestinations) this.storage.addDestinationBinding(destination);
+    });
+    return {
+      ok: true,
+      added: {
+        sources: addedSources.map((row) => ({ binding: row.binding, label: row.label, provider: row.provider })),
+        destinations: addedDestinations.map((row) => ({ binding: row.binding, label: row.label, provider: row.provider }))
+      },
+      summary: await this.summary()
+    };
+  }
+
   async armSchedule(cadence, timeZone) {
     const withZone = cadence.kind === "interval" ? cadence : { ...cadence, timezone: cadence.timezone || timeZone };
     try {

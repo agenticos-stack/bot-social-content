@@ -43,7 +43,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * an installed gadget.
    */
   const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights'];
-  const needsDoors = ['setConfig','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','submitForReview','readPublishState','getMedia'];
+  const needsDoors = ['setConfig','saveSetup','setMonitoring','refreshGrants','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','submitForReview','readPublishState','getMedia'];
   const connectedDoors = doors ?? undefined;
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],
     allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });

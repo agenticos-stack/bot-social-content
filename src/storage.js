@@ -372,6 +372,36 @@ export class Storage {
   }
 
   /**
+   * Add one grant-derived binding without disturbing the row already there.
+   *
+   * `setSources`/`setDestinations` are REPLACE — right for "these are the
+   * bindings" at setup, wrong for `refreshGrants`: a connector granted after
+   * first setup must appear WITHOUT the existing rows' cursor, scan history
+   * and stored describe being rewritten. `INSERT OR IGNORE` keeps the row
+   * that is there when the binding was already known.
+   */
+  addSourceBinding(source) {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO sources (binding, label, provider, page_id, describe_json) VALUES (?, ?, ?, ?, ?)",
+      source.binding,
+      source.label,
+      source.provider,
+      source.pageId ?? null,
+      source.describe ? JSON.stringify(source.describe) : null
+    );
+  }
+
+  addDestinationBinding(destination) {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO destinations (binding, label, provider, describe_json) VALUES (?, ?, ?, ?)",
+      destination.binding,
+      destination.label,
+      destination.provider,
+      destination.describe ? JSON.stringify(destination.describe) : null
+    );
+  }
+
+  /**
    * Add one public account as a source, or leave it as it is.
    *
    * `INSERT OR IGNORE`, so adding the same account twice is not an error and
