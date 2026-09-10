@@ -70,7 +70,11 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
       try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
       if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length) return fail(400,'Session identity is assigned by the local host.');
       try{return Response.json({data:await development.start(request)},{headers:{'cache-control':'no-store'}});}
-      catch {return fail(409,'Could not start local runtime. Check your local session and the development server.');}
+      catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not start local runtime. Check your local session and the development server.';
+        console.error('development.start failed:', error);
+        return fail(409, message);
+      }
     }
     if (platform === 'remote') return fail(404,'Route unavailable in connected preview.');
     const path=url.pathname.startsWith('/api/agenticos/')?url.pathname.slice('/api/agenticos'.length):url.pathname;

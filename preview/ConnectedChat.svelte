@@ -2,6 +2,12 @@
   import { onMount } from 'svelte';
 
   let { agent, onBack } = $props();
+  const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
+  const workspaceId = $derived(typeof agent?.workspaceId === 'string' ? agent.workspaceId : '');
+  // A full conversation id is 41 characters of mostly-constant prefix and
+  // random hex. Only the first group tells two sessions apart, so that is what
+  // the row shows; the whole id stays in the title for copying out of it.
+  const shortId = $derived(workspaceId.replace(/^chat_/, '').split('-')[0] || 'conversation');
   let messages = $state([]);
   let asks = $state([]);
   let draft = $state('');
@@ -78,7 +84,11 @@
     </div>
     <button class="back" type="button" onclick={onBack}>Account</button>
   </header>
-  <div class="connection"><span class="dot"></span><span>Connected to local API</span><code>{agent?.workspaceId ?? 'conversation'}</code></div>
+  <div class="connection">
+    <span class="dot"></span>
+    <span class="connection-label">Connected to {remote ? 'production' : 'local'} API</span>
+    <code title={workspaceId || 'No conversation id'}>{shortId}</code>
+  </div>
   <div class="messages" aria-live="polite">
     {#if messages.length === 0}
       <div class="empty"><strong>Work with the source</strong><p>Ask the agent to inspect a batch, refine a caption, or explain the current local state.</p></div>
@@ -108,9 +118,15 @@
   .chat-head{display:flex;align-items:center;gap:12px;padding:16px 18px 13px;border-bottom:1px solid var(--color-line)}
   .chat-head h1{font:600 15px/1.2 var(--font-brand);margin:2px 0 0;letter-spacing:-.01em}.eyebrow{font-size:9px;letter-spacing:.12em;color:var(--color-ink-soft)}
   .back{margin-left:auto;border:0;background:transparent;color:var(--color-ink-soft);font-size:11px;padding:5px 7px;border-radius:6px;cursor:pointer}.back:hover{background:var(--color-paper)}
-  .connection{display:flex;align-items:center;gap:6px;padding:8px 18px;border-bottom:1px solid var(--color-line);font-size:10px;color:var(--color-ink-soft)}.connection code{margin-left:auto;max-width:92px;overflow:hidden;text-overflow:ellipsis;color:var(--color-ink-faint);font:10px ui-monospace,monospace}.dot{width:6px;height:6px;border-radius:50%;background:#3c9b69;box-shadow:0 0 0 3px color-mix(in srgb,#3c9b69 14%,transparent)}
+  .connection{display:flex;align-items:center;gap:7px;padding:9px 18px;border-bottom:1px solid var(--color-line);font-size:10px;color:var(--color-ink-soft)}
+  .connection-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* An id is one token: it truncates rather than wrapping, whatever the pane width. */
+  .connection code{flex:none;margin-left:auto;max-width:12ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 6px;border-radius:5px;background:var(--color-paper);color:var(--color-ink-soft);font:10px/1.5 ui-monospace,monospace}
+  .dot{flex:none;width:6px;height:6px;border-radius:50%;background:#3c9b69;box-shadow:0 0 0 3px color-mix(in srgb,#3c9b69 14%,transparent)}
   .messages{overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:10px}.empty{margin:auto 6px;color:var(--color-ink-soft);font-size:12px;line-height:1.55}.empty strong{color:var(--color-ink);font-size:13px}.empty p{margin:4px 0 0}.message{max-width:88%;padding:9px 11px;border-radius:11px 11px 11px 4px;background:var(--color-paper);font-size:12px;line-height:1.55;white-space:pre-wrap}.message.mine{align-self:flex-end;border-radius:11px 11px 4px 11px;background:var(--color-ink);color:var(--color-panel)}
   .typing{display:flex;gap:3px;padding:8px 10px}.typing i{width:4px;height:4px;border-radius:50%;background:var(--color-ink-soft);animation:pulse 1s infinite}.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}@keyframes pulse{50%{opacity:.25}}
   .approvals{margin:0 12px 10px;padding:10px;border:1px solid color-mix(in srgb,#b58a38 45%,var(--color-line));border-radius:9px;background:color-mix(in srgb,#b58a38 7%,var(--color-panel))}.approval-title{display:flex;justify-content:space-between;font-size:10px;font-weight:600}.approval-title small{font-weight:500;color:var(--color-ink-soft)}.approval{padding-top:7px}.approval p{font-size:11px;line-height:1.45;margin:0 0 7px}.approval div{display:flex;gap:6px}.approval button{min-height:28px;padding:4px 9px;border:1px solid var(--color-line-strong);border-radius:6px;background:var(--color-panel);font-size:10px;cursor:pointer}.approval .approve{background:var(--color-ink);color:var(--color-panel);border-color:var(--color-ink)}
-  .error{margin:0 14px 9px;padding:7px 9px;border-left:2px solid #b94b4b;color:#934040;font-size:10px;line-height:1.4}.composer{display:flex;gap:7px;padding:11px 12px;border-top:1px solid var(--color-line);background:var(--color-panel)}.composer input{min-width:0;flex:1;height:34px;padding:0 10px;border:1px solid var(--color-line-strong);border-radius:8px;background:var(--color-paper);color:var(--color-ink);font:12px var(--font-body)}.composer button{width:34px;height:34px;border:0;border-radius:8px;background:var(--color-ink);color:var(--color-panel);font-size:18px;line-height:1;cursor:pointer}.composer button:disabled{opacity:.35;cursor:default}
+  .error{margin:0 14px 9px;padding:7px 9px;border-left:2px solid #b94b4b;color:#934040;font-size:10px;line-height:1.4}.composer{display:flex;gap:7px;padding:11px 12px;border-top:1px solid var(--color-line);background:var(--color-panel)}.composer input{min-width:0;flex:1;height:34px;padding:0 10px;border:1px solid var(--color-line-strong);border-radius:8px;background:var(--color-paper);color:var(--color-ink);font:12px var(--font-body)}.composer button{flex:none;width:34px;height:34px;border:0;border-radius:8px;background:var(--color-ink);color:var(--color-panel);font-size:18px;line-height:1;cursor:pointer}.composer button:hover:not(:disabled){background:var(--color-act-hover)}
+  /* Matches the fixture composer: nothing to send is inert, not a dimmed dark button. */
+  .composer button:disabled{background:var(--color-panel-subtle);color:var(--color-ink-faint);cursor:default}
 </style>

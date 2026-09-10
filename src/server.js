@@ -84,10 +84,15 @@ import {
   normalizeProtectedOverrides,
   normalizePublicationIntent,
   normalizeRefinementBrief,
+  normalizeLedger,
+  applyProtectedOverridesToLedger,
+  observationOrigin,
+  rightsObligation,
   posterPngConstraints,
-  validateLocalization,
   validatePosterLayout,
+  validateRevisionDraft,
   normalizeOpenInstagramPosts,
+  publicationMedia,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -1211,9 +1216,15 @@ export class Gadget extends DurableObject {
    */
   projectBatchItem(batchItem) {
     const latest = this.storage.latestRevision(batchItem.id);
+    const sourceItem = this.storage.getItem(batchItem.itemId);
+    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
+    const obligation = rightsObligation({
+      ledger: latest?.ledger,
+      sourceOrigin: sourceRow?.origin
+    });
     return {
       id: batchItem.id,
-      sourceItem: this.storage.getItem(batchItem.itemId),
+      sourceItem,
       destinationBindings: batchItem.destinationBindings,
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
@@ -1229,7 +1240,9 @@ export class Gadget extends DurableObject {
       originalMediaRefs: latest?.originalMediaRefs ?? [],
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
+      ledger: latest?.ledger ?? { spans: [], media: [] },
       rightsStatus: batchItem.rightsStatus,
+      rightsRequired: obligation.required,
       state: batchItem.state,
       approval: batchItem.version
         ? {
@@ -1277,7 +1290,8 @@ export class Gadget extends DurableObject {
     originalMediaRefs,
     derivedMediaRefs,
     publicationIntent,
-    acceptedVisualMode
+    acceptedVisualMode,
+    ledger
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -1290,51 +1304,11 @@ export class Gadget extends DurableObject {
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
     const previous = this.storage.latestRevision(batchItemId);
-    const validation = validateLocalization({
-      source: { text: sourceItem ? sourceItem.text : "" },
-      draft: caption,
-      policy: {
-        protectedTerms: config?.protectedTerms,
-        protectedHashtags: config?.protectedHashtags,
-        disclaimers: config?.disclaimers,
-        claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
-        confirmedClaims
-      },
-      // REQ-016: the destinations' own reported limits, not a constant here.
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
-    });
-    if (!validation.ok) return { ok: false, issues: validation.issues };
-
-    if (posterLayout) {
-      const posterValidation = validatePosterLayout(posterLayout);
-      if (!posterValidation.ok) {
-        return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
-      }
-    }
-
     const refinement = normalizeRefinementBrief(
       refinementBrief === undefined
         ? (previous?.refinementBrief ?? (previous ? null : config?.refinementBrief))
         : refinementBrief
     );
-    const intent = normalizePublicationIntent(
-      publicationIntent === undefined ? (previous?.publicationIntent ?? undefined) : publicationIntent
-    );
-    if (!intent.ok) return { ok: false, issues: [{ code: intent.code, severity: "block", message: intent.message }] };
-    const sourceMedia = Array.isArray(sourceItem?.media)
-      ? sourceItem.media.map((media) => ({
-          assetId: media.id,
-          kind: media.kind,
-          url: media.url,
-          source: "original"
-        }))
-      : [];
-    const originals =
-      originalMediaRefs === undefined
-        ? (previous?.originalMediaRefs ?? (batchItem.currentRevision === 0 ? normalizeAssetRefs(sourceMedia) : []))
-        : normalizeAssetRefs(originalMediaRefs);
-    const derived =
-      derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
     if (
       acceptedVisualMode !== undefined &&
       !["keep_original", "text_poster", "ai_refinement"].includes(acceptedVisualMode)
@@ -1354,6 +1328,52 @@ export class Gadget extends DurableObject {
       protectedOverrides === undefined
         ? (previous?.protectedOverrides ?? [])
         : normalizeProtectedOverrides(protectedOverrides);
+    const storedLedger = applyProtectedOverridesToLedger(
+      ledger === undefined ? (previous?.ledger ?? { spans: [], media: [] }) : normalizeLedger(ledger),
+      overrides
+    );
+
+    const validation = validateRevisionDraft({
+      source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
+      draft: caption,
+      brief,
+      ledger: storedLedger,
+      policy: {
+        protectedTerms: config?.protectedTerms,
+        protectedHashtags: config?.protectedHashtags,
+        disclaimers: config?.disclaimers,
+        claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
+        confirmedClaims
+      },
+      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
+    });
+    if (!validation.ok) return { ok: false, issues: validation.issues };
+
+    if (posterLayout) {
+      const posterValidation = validatePosterLayout(posterLayout);
+      if (!posterValidation.ok) {
+        return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
+      }
+    }
+
+    const intent = normalizePublicationIntent(
+      publicationIntent === undefined ? (previous?.publicationIntent ?? undefined) : publicationIntent
+    );
+    if (!intent.ok) return { ok: false, issues: [{ code: intent.code, severity: "block", message: intent.message }] };
+    const sourceMedia = Array.isArray(sourceItem?.media)
+      ? sourceItem.media.map((media) => ({
+          assetId: media.id,
+          kind: media.kind,
+          url: media.url,
+          source: "original"
+        }))
+      : [];
+    const originals =
+      originalMediaRefs === undefined
+        ? (previous?.originalMediaRefs ?? (batchItem.currentRevision === 0 ? normalizeAssetRefs(sourceMedia) : []))
+        : normalizeAssetRefs(originalMediaRefs);
+    const derived =
+      derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption,
@@ -1364,7 +1384,8 @@ export class Gadget extends DurableObject {
       protectedOverrides: overrides,
       originalMediaRefs: originals,
       derivedMediaRefs: derived,
-      publicationIntent: intent.intent
+      publicationIntent: intent.intent,
+      ledger: storedLedger
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -1444,7 +1465,8 @@ export class Gadget extends DurableObject {
       protectedOverrides: previous?.protectedOverrides ?? [],
       originalMediaRefs: previous?.originalMediaRefs ?? [],
       derivedMediaRefs: previous?.derivedMediaRefs ?? [],
-      publicationIntent: previous?.publicationIntent ?? null
+      publicationIntent: previous?.publicationIntent ?? null,
+      ledger: previous?.ledger ?? { spans: [], media: [] }
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -1486,7 +1508,8 @@ export class Gadget extends DurableObject {
       rights_confirmed_at: new Date().toISOString(),
       state: status === "confirmed" ? "drafting" : "held_rights"
     });
-    return this.storage.getBatchItem(batchItemId);
+    const updated = this.storage.getBatchItem(batchItemId);
+    return updated ? this.projectBatchItem(updated) : updated;
   }
 
   // -----------------------------------------------------------------------
@@ -1529,19 +1552,25 @@ export class Gadget extends DurableObject {
         message: `Revision mismatch: this batch item is at revision ${batchItem.currentRevision}.`
       };
     }
-    // REQ-019: never submit while rights are pending or denied.
-    if (batchItem.rightsStatus !== "confirmed") {
+    const revision = this.storage.getRevision(batchItemId, expectedRevision);
+    const origin = this.storage.getOriginLink(batchItemId);
+    if (!revision || !origin) {
+      return { ok: false, code: "revision_missing", message: "Nothing to submit yet. Save a revision first." };
+    }
+
+    const sourceItem = this.storage.getItem(batchItem.itemId);
+    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
+    const obligation = rightsObligation({
+      ledger: revision.ledger,
+      sourceOrigin: sourceRow?.origin
+    });
+    // REQ-019: never submit while a computed rights obligation is unmet.
+    if (obligation.required && batchItem.rightsStatus !== "confirmed") {
       return {
         ok: false,
         code: "rights_unconfirmed",
         message: `Rights must be confirmed before submitting (currently ${batchItem.rightsStatus}).`
       };
-    }
-
-    const revision = this.storage.getRevision(batchItemId, expectedRevision);
-    const origin = this.storage.getOriginLink(batchItemId);
-    if (!revision || !origin) {
-      return { ok: false, code: "revision_missing", message: "Nothing to submit yet. Save a revision first." };
     }
     const caption = revision.caption ?? "";
     const publication = normalizePublicationIntent(revision.publicationIntent ?? undefined);
@@ -1557,6 +1586,14 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     }).map((span) => span.value);
 
+    const packedMedia = publicationMedia({
+      derivedMediaRefs: revision.derivedMediaRefs,
+      sourceMedia: sourceItem?.media
+    });
+    if (!packedMedia.ok) {
+      return { ok: false, code: packedMedia.code, message: packedMedia.message };
+    }
+
     // Both door calls below are wrapped: `socialCreateDraft` /
     // `socialSubmitForReview` (`doors.js`) throw when the door itself is
     // absent, and a real Social Hub RPC can reject on its own (a genuine
@@ -1566,16 +1603,9 @@ export class Gadget extends DurableObject {
     try {
       draft = await socialCreateDraft(this.env, {
         caption,
+        media: packedMedia.media,
         targets: batchItem.destinationBindings.map((destinationBinding) => ({ destinationBinding })),
-        origin: {
-          provider: origin.provider,
-          sourceLabel: origin.sourceLabel,
-          providerItemId: origin.providerItemId,
-          permalink: origin.permalink,
-          sourceContentHash: origin.sourceContentHash,
-          sourcePublishedAt: origin.sourcePublishedAt,
-          retrievedAt: origin.retrievedAt
-        },
+        origin: observationOrigin(origin),
         protectedLiterals,
         // The Social Hub owns schedule validation and time resolution. Carry
         // the normalized, owner-reviewed intent through the door instead of

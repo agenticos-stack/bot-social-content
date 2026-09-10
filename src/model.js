@@ -120,6 +120,72 @@ export function normalizeAssetRefs(input, source = "original") {
     .slice(0, MAX_MEDIA_PER_ITEM);
 }
 
+const GENERATED_MEDIA_PATH = /^\/v1\/media\/[^/]+\/assets\/[^/]+\/?$/;
+
+/**
+ * TASK-026: Meta fetches `image_url` / `video_url` with no AgenticOS session.
+ * `GET /v1/media/:jobId/assets/:idx` is org-auth + Drive ACL, so it is not
+ * publisher-addressable. Do not mint a public URL as a workaround (SEC-006).
+ */
+export function isPublisherAddressableUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return false;
+  let parsed;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") return false;
+  return !GENERATED_MEDIA_PATH.test(parsed.pathname);
+}
+
+function doorMediaEntry(entry) {
+  const value = record(entry);
+  if (!value) return null;
+  const assetId =
+    typeof value.assetId === "string" && value.assetId.trim()
+      ? value.assetId.trim().slice(0, 200)
+      : typeof value.id === "string" && value.id.trim()
+        ? value.id.trim().slice(0, 200)
+        : "";
+  if (!assetId) return null;
+  const url = typeof value.url === "string" ? value.url.trim().slice(0, MAX_URL_CHARS) : "";
+  return {
+    assetId,
+    url,
+    kind: value.kind === "video" ? "video" : "image"
+  };
+}
+
+function packDoorMedia(entries) {
+  const media = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const packed = doorMediaEntry(entry);
+    if (!packed) continue;
+    if (!isPublisherAddressableUrl(packed.url)) {
+      return {
+        ok: false,
+        code: "media_unaddressable",
+        message:
+          "Every media item needs a publisher-addressable https url. Generated assets at /v1/media/:id/assets/:idx cannot be fetched by the publisher."
+      };
+    }
+    media.push(packed);
+  }
+  return { ok: true, media };
+}
+
+/**
+ * Phase 1 (TASK-027): derived refs when they are publisher-addressable,
+ * otherwise the source item's own media. Generated media-job URLs refuse.
+ */
+export function publicationMedia({ derivedMediaRefs, sourceMedia } = {}) {
+  const derived = Array.isArray(derivedMediaRefs) ? derivedMediaRefs : [];
+  if (derived.length > 0) return packDoorMedia(derived);
+  return packDoorMedia(sourceMedia);
+}
+
 export function normalizePublicationIntent(input) {
   if (input === undefined) {
     return {
@@ -617,6 +683,258 @@ function issue(code, severity, message, span) {
   return entry;
 }
 
+function housePolicyIssues(trimmed, policy, limits) {
+  const issues = [];
+  const minShare = isFiniteNumber(policy.minChineseShare) ? policy.minChineseShare : DEFAULT_MIN_CHINESE_SHARE;
+  if (chineseCharacterShare(trimmed) < minShare) {
+    issues.push(issue("low_chinese_share", "block", messages.lowChineseShare.en));
+  }
+
+  const spokenForm = SPOKEN_FORM_TOKENS.find((token) => trimmed.includes(token));
+  if (spokenForm) {
+    issues.push(issue("spoken_form_detected", "block", `${messages.spokenFormDetected.en} (${spokenForm})`));
+  }
+
+  const halfwidthSpan = findHalfwidthPunctuationSpan(trimmed);
+  if (halfwidthSpan) {
+    issues.push(issue("halfwidth_punctuation", "note", messages.halfwidthPunctuation.en, halfwidthSpan));
+  }
+
+  const captionMax = isFiniteNumber(limits.captionMax) ? limits.captionMax : null;
+  if (captionMax !== null && trimmed.length > captionMax) {
+    issues.push(issue("caption_too_long", "block", `${messages.captionTooLong.en} (${trimmed.length}/${captionMax})`));
+  }
+
+  const hashtagMax = isFiniteNumber(limits.hashtagMax) ? limits.hashtagMax : null;
+  const hashtagCount = (trimmed.match(HASHTAG_PATTERN) || []).length;
+  if (hashtagMax !== null && hashtagCount > hashtagMax) {
+    issues.push(issue("hashtag_count_high", "note", `${messages.hashtagCountHigh.en} (${hashtagCount}/${hashtagMax})`));
+  }
+
+  return issues;
+}
+
+/**
+ * Localization when the brief allows no copy changes and is not ai_refinement.
+ * `ai_refinement` or any allowedChanges selects the grounding ledger path.
+ */
+export function usesGroundedValidation(brief) {
+  const normalized = normalizeRefinementBrief(brief);
+  return normalized.allowedChanges.length > 0 || normalized.visualTreatment === "ai_refinement";
+}
+
+const GROUNDED_SPAN_KINDS = new Set(["price", "url", "hashtag", "disclaimer", "claim"]);
+const BASIS_PATTERN = /^(source|knowledge|owner):(.+)$/;
+
+export function parseGroundingBasis(basis) {
+  if (typeof basis !== "string") return null;
+  const match = BASIS_PATTERN.exec(basis.trim());
+  if (!match) return null;
+  const id = match[2].trim();
+  return id ? { kind: match[1], id } : null;
+}
+
+function inferProtectedKind(text) {
+  const input = typeof text === "string" ? text.trim() : "";
+  if (!input) return null;
+  const price = input.match(/(?:HK\$|US\$|\$)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?/);
+  if (price && price[0] === input) return "price";
+  const url = input.match(/https?:\/\/[^\s<>"')\]]+/);
+  if (url && url[0] === input) return "url";
+  if (/^#[\p{L}\p{N}_]+$/u.test(input)) return "hashtag";
+  return "claim";
+}
+
+function normalizeLedgerSpan(entry) {
+  const value = record(entry);
+  if (!value) return null;
+  const text = typeof value.text === "string" ? value.text.trim().slice(0, 500) : "";
+  if (!text || !GROUNDED_SPAN_KINDS.has(value.kind)) return null;
+  const span = {
+    text,
+    kind: value.kind,
+    basis: typeof value.basis === "string" ? value.basis.trim().slice(0, 300) : ""
+  };
+  if (typeof value.reason === "string" && value.reason.trim()) span.reason = value.reason.trim().slice(0, 500);
+  if (typeof value.approvedBy === "string" && value.approvedBy.trim()) {
+    span.approvedBy = value.approvedBy.trim().slice(0, 200);
+  }
+  if (typeof value.approvedAt === "string" && value.approvedAt.trim()) {
+    span.approvedAt = value.approvedAt.trim().slice(0, 80);
+  }
+  return span;
+}
+
+function normalizeLedgerMedia(entry) {
+  const value = record(entry);
+  if (!value) return null;
+  const ref = typeof value.ref === "string" ? value.ref.trim().slice(0, 200) : "";
+  if (!ref) return null;
+  const derivedFrom =
+    typeof value.derivedFrom === "string" && value.derivedFrom.trim() ? value.derivedFrom.trim().slice(0, 200) : "";
+  if (value.provenance === "source" || value.provenance === "original") {
+    return { ref, provenance: value.provenance };
+  }
+  if (typeof value.provenance === "string" && value.provenance.startsWith("derived-from:")) {
+    const from = value.provenance.slice("derived-from:".length).trim().slice(0, 200) || derivedFrom;
+    if (!from) return null;
+    return { ref, provenance: `derived-from:${from}`, derivedFrom: from };
+  }
+  return null;
+}
+
+/** REQ-001: the revision's record of what each protected span and media entry stands on. */
+export function normalizeLedger(input) {
+  const value = record(input) ?? {};
+  return {
+    spans: (Array.isArray(value.spans) ? value.spans : []).map(normalizeLedgerSpan).filter(Boolean).slice(0, 200),
+    media: (Array.isArray(value.media) ? value.media : []).map(normalizeLedgerMedia).filter(Boolean).slice(0, MAX_MEDIA_PER_ITEM)
+  };
+}
+
+/** TASK-010: the exception list is the owner: case of the ledger, not a parallel record. */
+export function ledgerFromProtectedOverrides(input) {
+  return {
+    spans: normalizeProtectedOverrides(input)
+      .map((entry) => {
+        const kind = inferProtectedKind(entry.literal);
+        if (!kind) return null;
+        const approvedBy = entry.approvedBy || "owner";
+        const span = {
+          text: entry.literal,
+          kind,
+          basis: `owner:${approvedBy}`
+        };
+        if (entry.reason) span.reason = entry.reason;
+        if (entry.approvedBy) span.approvedBy = entry.approvedBy;
+        if (entry.approvedAt) span.approvedAt = entry.approvedAt;
+        return span;
+      })
+      .filter(Boolean),
+    media: []
+  };
+}
+
+export function applyProtectedOverridesToLedger(ledger, overrides) {
+  const normalized = normalizeLedger(ledger);
+  const ownerSpans = ledgerFromProtectedOverrides(overrides).spans;
+  const kept = normalized.spans.filter((span) => parseGroundingBasis(span.basis)?.kind !== "owner");
+  return { spans: [...kept, ...ownerSpans].slice(0, 200), media: normalized.media };
+}
+
+function ledgerReusesSource(ledger) {
+  const normalized = normalizeLedger(ledger);
+  if (normalized.media.some((entry) => entry.provenance === "source" || entry.provenance.startsWith("derived-from:"))) {
+    return true;
+  }
+  return normalized.spans.some((span) => parseGroundingBasis(span.basis)?.kind === "source");
+}
+
+/**
+ * Rights follow the ledger, not an assumption of republication.
+ * Reused source material is gated; original-only is inspiration, recorded
+ * and not gated; an `open` source is always gated (TASK-013 / TASK-014).
+ * An empty ledger is localization: the source survives, so confirmation is
+ * required (RISK-002).
+ */
+export function rightsObligation({ ledger, sourceOrigin } = {}) {
+  const open = sourceOrigin === "open";
+  const reuse = ledgerReusesSource(ledger);
+  const originalOnly = !reuse && normalizeLedger(ledger).media.some((entry) => entry.provenance === "original");
+  return {
+    required: open || !originalOnly,
+    relationship: originalOnly ? "inspiration" : "reuse"
+  };
+}
+
+/** PAT-001: the door origin block IS the observation record. */
+export function observationOrigin(originLink) {
+  const value = record(originLink);
+  if (!value) return null;
+  return {
+    provider: value.provider,
+    sourceLabel: value.sourceLabel,
+    providerItemId: value.providerItemId,
+    permalink: value.permalink,
+    sourceContentHash: value.sourceContentHash,
+    sourcePublishedAt: value.sourcePublishedAt,
+    retrievedAt: value.retrievedAt
+  };
+}
+
+function detectGroundedDraftSpans(text, policy = {}) {
+  const input = typeof text === "string" ? text : "";
+  const spans = [];
+  if (!input) return spans;
+  for (const match of input.matchAll(PRICE_PATTERN)) {
+    spans.push({ start: match.index, end: match.index + match[0].length, kind: "price", value: match[0] });
+  }
+  for (const match of input.matchAll(URL_PATTERN)) {
+    spans.push({ start: match.index, end: match.index + match[0].length, kind: "url", value: match[0] });
+  }
+  for (const match of input.matchAll(HASHTAG_PATTERN)) {
+    spans.push({ start: match.index, end: match.index + match[0].length, kind: "hashtag", value: match[0] });
+  }
+  for (const term of normalizeTermList(policy.disclaimers)) {
+    pushTermMatches(spans, input, { ...term, allowSubstring: true }, "disclaimer");
+  }
+  for (const term of normalizeTermList(policy.claimsRequiringConfirmation)) {
+    pushTermMatches(spans, input, { ...term, allowSubstring: true }, "claim");
+  }
+  return spans.sort((left, right) => left.start - right.start);
+}
+
+/**
+ * Basis-anchored validation for derived drafts. House policy (register, limits)
+ * still runs. Protected draft spans fail closed without a recognised basis.
+ * A `knowledge:` basis is a citation only — this function never fetches.
+ */
+export function validateGrounded({ source = {}, draft, ledger, policy = {}, limits = {} } = {}) {
+  const issues = [];
+  const trimmed = typeof draft === "string" ? draft.trim() : "";
+  if (!trimmed) {
+    issues.push(issue("empty_draft", "block", messages.emptyDraft.en));
+    return { ok: false, issues };
+  }
+  issues.push(...housePolicyIssues(trimmed, policy, limits));
+
+  const entries = normalizeLedger(ledger).spans;
+  const sourceText = typeof source.text === "string" ? source.text : "";
+  const sourceId = typeof source.id === "string" ? source.id : "";
+
+  for (const span of detectGroundedDraftSpans(trimmed, policy)) {
+    if (!GROUNDED_SPAN_KINDS.has(span.kind)) continue;
+    const match = entries.find((entry) => {
+      const value = record(entry);
+      return value && value.kind === span.kind && value.text === span.value;
+    });
+    if (!match) {
+      issues.push(issue("ungrounded_span", "block", `${messages.ungroundedSpan.en}: "${span.value}"`, span));
+      continue;
+    }
+    const parsed = parseGroundingBasis(match.basis);
+    if (!parsed) {
+      issues.push(issue("unknown_basis", "block", `${messages.unknownBasis.en}: "${String(match.basis ?? "")}"`, span));
+      continue;
+    }
+    if (parsed.kind === "source") {
+      const itemMatches = !sourceId || parsed.id === sourceId;
+      if (!itemMatches || !sourceText.includes(span.value)) {
+        issues.push(
+          issue("source_basis_mismatch", "block", `${messages.sourceBasisMismatch.en}: "${span.value}"`, span)
+        );
+      }
+    }
+  }
+
+  return { ok: !issues.some((entry) => entry.severity === "block"), issues };
+}
+
+/** REQ-003: localization stays the no-allowed-changes path; derivation uses the ledger. */
+export function validateRevisionDraft({ brief, ...rest } = {}) {
+  return usesGroundedValidation(brief) ? validateGrounded(rest) : validateLocalization(rest);
+}
+
 /**
  * Validates a localized draft against the source item, the org's protection
  * policy and destination limits. Never rewrites the draft — only reports.
@@ -630,15 +948,7 @@ export function validateLocalization({ source = {}, draft, policy = {}, limits =
     return { ok: false, issues };
   }
 
-  const minShare = isFiniteNumber(policy.minChineseShare) ? policy.minChineseShare : DEFAULT_MIN_CHINESE_SHARE;
-  if (chineseCharacterShare(trimmed) < minShare) {
-    issues.push(issue("low_chinese_share", "block", messages.lowChineseShare.en));
-  }
-
-  const spokenForm = SPOKEN_FORM_TOKENS.find((token) => trimmed.includes(token));
-  if (spokenForm) {
-    issues.push(issue("spoken_form_detected", "block", `${messages.spokenFormDetected.en} (${spokenForm})`));
-  }
+  issues.push(...housePolicyIssues(trimmed, policy, limits));
 
   const sourceText = typeof source.text === "string" ? source.text : "";
   const sourceSpans = detectProtectedLiterals(sourceText, policy);
@@ -663,22 +973,6 @@ export function validateLocalization({ source = {}, draft, policy = {}, limits =
     if (!confirmed) {
       issues.push(issue("claim_unconfirmed", "confirm", `${messages.claimUnconfirmed.en}: "${claim.value}"`, claim));
     }
-  }
-
-  const halfwidthSpan = findHalfwidthPunctuationSpan(trimmed);
-  if (halfwidthSpan) {
-    issues.push(issue("halfwidth_punctuation", "note", messages.halfwidthPunctuation.en, halfwidthSpan));
-  }
-
-  const captionMax = isFiniteNumber(limits.captionMax) ? limits.captionMax : null;
-  if (captionMax !== null && trimmed.length > captionMax) {
-    issues.push(issue("caption_too_long", "block", `${messages.captionTooLong.en} (${trimmed.length}/${captionMax})`));
-  }
-
-  const hashtagMax = isFiniteNumber(limits.hashtagMax) ? limits.hashtagMax : null;
-  const hashtagCount = (trimmed.match(HASHTAG_PATTERN) || []).length;
-  if (hashtagMax !== null && hashtagCount > hashtagMax) {
-    issues.push(issue("hashtag_count_high", "note", `${messages.hashtagCountHigh.en} (${hashtagCount}/${hashtagMax})`));
   }
 
   return { ok: !issues.some((entry) => entry.severity === "block"), issues };
@@ -812,6 +1106,18 @@ export const messages = {
   hashtagCountHigh: {
     en: "The caption uses more hashtags than recommended.",
     "zh-HK": "文案使用的主題標籤數量超過建議上限。"
+  },
+  ungroundedSpan: {
+    en: "A protected span has no basis.",
+    "zh-HK": "受保護片段沒有依據。"
+  },
+  unknownBasis: {
+    en: "The basis form is not recognised.",
+    "zh-HK": "不支援此依據形式。"
+  },
+  sourceBasisMismatch: {
+    en: "The cited source does not support this span.",
+    "zh-HK": "所引用的來源並不支持此片段。"
   },
   posterLayoutInvalid: { en: "The poster layout is not a valid object.", "zh-HK": "海報版面資料無效。" },
   posterTemplateInvalid: { en: "The poster template is not supported.", "zh-HK": "不支援此海報範本。" },

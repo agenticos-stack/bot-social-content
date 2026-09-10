@@ -48,6 +48,8 @@
 // (`server.js`'s `deriveBindingsFromGrants`), never guessed or reconstructed
 // here.
 
+import { isPublisherAddressableUrl } from "./model.js";
+
 /**
  * This blueprint's three fixed single-binding capability doors, keyed
  * exactly as the platform binds them (see the header note above). The one
@@ -309,6 +311,21 @@ export async function socialCreateDraft(env, input) {
   const social = env && env.social;
   if (!social || typeof social.createDraft !== "function") {
     throw new Error("The Social Hub door is not granted. Ask the owner to grant it during setup.");
+  }
+  const media = input && Array.isArray(input.media) ? input.media : null;
+  if (media) {
+    for (const item of media) {
+      const record = item && typeof item === "object" ? item : null;
+      const assetId = record && typeof record.assetId === "string" ? record.assetId.trim() : "";
+      const url = record && typeof record.url === "string" ? record.url : "";
+      if (!assetId || !isPublisherAddressableUrl(url)) {
+        return {
+          refused: true,
+          code: "media_unaddressable",
+          message: "Every media item needs a publisher-addressable https url."
+        };
+      }
+    }
   }
   return social.createDraft(input);
 }

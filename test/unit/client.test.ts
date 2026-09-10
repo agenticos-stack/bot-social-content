@@ -293,6 +293,15 @@ describe("steps.js transitions", () => {
     expect(submitEnabled(wizard, {})).toBe(false);
   });
 
+  it("does not block Submit when rights are pending but the ledger is original-only", () => {
+    let wizard = createWizardState();
+    wizard = setBatch(wizard, {
+      id: "batch1",
+      items: [{ ...baseBatch.items[0], rightsStatus: "pending", rightsRequired: false, caption: "今日優惠，建議零售價 HK$268，數量有限，售完即止。" }]
+    });
+    expect(submitEnabled(wizard, {})).toBe(true);
+  });
+
   it("Review flips to expired once the item's current revision has moved past the approved one", () => {
     expect(isApprovalExpired(null)).toBe(false);
     expect(isApprovalExpired({ approvedRevision: 3, currentRevision: 3 })).toBe(false);

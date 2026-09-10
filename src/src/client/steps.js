@@ -4,7 +4,7 @@
 // functions so tests/social-localization-client.test.ts can assert step
 // transitions and validation gating without a DOM.
 
-import { detectProtectedLiterals, posterPngConstraints, validateLocalization, validatePosterLayout } from "../../model.js";
+import { detectProtectedLiterals, posterPngConstraints, validatePosterLayout, validateRevisionDraft } from "../../model.js";
 import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
@@ -74,7 +74,8 @@ function draftFor(item) {
     confirmedClaims: Array.isArray(item.confirmedClaims) ? item.confirmedClaims.slice() : [],
     publicationIntent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" },
     refinementBrief: item.refinementBrief,
-    acceptedVisualMode: item.refinementBrief?.visualTreatment ?? "keep_original"
+    acceptedVisualMode: item.refinementBrief?.visualTreatment ?? "keep_original",
+    ledger: item.ledger ?? { spans: [], media: [] }
   };
 }
 
@@ -189,11 +190,13 @@ export function applyPublishState(state, batchItemId, publishState) {
 // Pure validation/gating selectors
 // ---------------------------------------------------------------------------
 
-/** Runs model.js's validateLocalization for one item against its current draft — the same rule the server enforces on saveRevision(). */
+/** Runs the same validator saveRevision() selects from the brief (localization vs grounded). */
 export function computeIssues(item, draft, policy) {
-  return validateLocalization({
-    source: { text: item.sourceItem?.text ?? "" },
+  return validateRevisionDraft({
+    source: { text: item.sourceItem?.text ?? "", id: item.sourceItem?.id ?? "" },
     draft: draft?.caption ?? "",
+    brief: draft?.refinementBrief,
+    ledger: draft?.ledger,
     policy: { ...policy, confirmedClaims: draft?.confirmedClaims ?? [] },
     limits: item.limits || {}
   });
@@ -203,9 +206,11 @@ export function hasBlockingIssues(issues) {
   return Array.isArray(issues) && issues.some((issue) => issue.severity === "block");
 }
 
-/** REQ-019: an item MUST NOT submit while source rights are pending or denied. */
-export function rightsBlockSubmit(rightsStatus) {
-  return rightsStatus === "pending" || rightsStatus === "denied";
+/** REQ-019: an item MUST NOT submit while a required rights obligation is unmet. */
+export function rightsBlockSubmit(rightsStatus, rightsRequired = true) {
+  if (rightsStatus === "denied") return true;
+  if (rightsRequired === false) return false;
+  return rightsStatus === "pending";
 }
 
 export function submitEnabled(state, policy) {
@@ -213,7 +218,7 @@ export function submitEnabled(state, policy) {
   return state.batch.items.every((item) => {
     const draft = state.drafts[item.id];
     const issues = computeIssues(item, draft, policy).issues;
-    return !hasBlockingIssues(issues) && !rightsBlockSubmit(item.rightsStatus);
+    return !hasBlockingIssues(issues) && !rightsBlockSubmit(item.rightsStatus, item.rightsRequired);
   });
 }
 
