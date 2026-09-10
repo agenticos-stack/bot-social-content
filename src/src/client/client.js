@@ -300,7 +300,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
 .sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
 .sl-tag-field input { width: 100%; border: 0; height: 30px; }
-.sl-preview-dialog { width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/*
+ * SLIM, because the media is tall.
+ *
+ * 640px was a generic drawer width. Nine of the twelve posts a real account
+ * produces are portrait -- 1080x1350 or 480x852 -- so a wide sheet spends its
+ * width on empty ground beside the picture and its height on the thing that
+ * matters. 440 is a 4:5 frame at full bleed with the caption still reading
+ * near 60 characters; a 9:16 reel sits inside it without the sheet having to
+ * grow. The blurred fill behind the frame went with it: it existed only to
+ * cover the gap a too-wide sheet left, and there is no gap now.
+ */
+.sl-preview-dialog { width: min(440px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
 /* The drawer slides in from the edge it is docked to. The display and overlay
    properties have to transition discretely or the closing frames are never
    painted: a dialog leaves the top layer the instant close() runs. The
@@ -308,11 +319,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    top layer cannot otherwise express, having no previous style to start from. */
 .sl-preview-dialog:not([open]) { translate: 100% 0; opacity: 0; }
 @starting-style { .sl-preview-dialog[open] { translate: 100% 0; opacity: 0; } }
-.sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/*
+ * No dim. The drawer is for looking at one post while the others stay in
+ * view; darkening them makes the grid a wall instead of a row you are moving
+ * along. The sheet reads as a layer from its own edge and shadow.
+ *
+ * The backdrop element stays (showModal still traps focus and Escape still
+ * closes) but it is transparent, so a click on it is a click on something the
+ * owner can plainly see -- and that click now closes the drawer, because a
+ * visible grid that swallows clicks is worse than a dimmed one that does.
+ */
+.sl-preview-dialog::backdrop { background: transparent; opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
 .sl-preview-dialog:not([open])::backdrop { opacity: 0; }
 @starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
-.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: -18px 0 40px -16px rgba(24,24,27,.28); }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
 .sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
@@ -333,10 +354,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
 /* The media stage. See preview-media.js for why the cap is a length. */
 .sl-preview-stage-wrap { margin-bottom: 20px; }
-.sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 260px; padding: 18px; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
+.sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; padding: 0; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
 .sl-stage-surface { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; }
-.sl-stage-img { position: relative; display: block; width: auto; height: auto; max-width: 100%; box-shadow: 0 10px 34px rgba(0,0,0,.5); }
-.sl-stage-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(34px) brightness(.42) saturate(1.15); transform: scale(1.15); pointer-events: none; }
+.sl-stage-img { position: relative; display: block; width: auto; height: auto; max-width: 100%; }
 .sl-stage-chip { position: absolute; z-index: 2; top: 12px; font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 4px 8px; color: #f3f0e9; background: rgba(13,12,10,.74); border: 1px solid rgba(243,240,233,.16); }
 .sl-stage-kind { left: 12px; }
 .sl-stage-count { right: 12px; font-variant-numeric: tabular-nums; }
@@ -419,8 +439,22 @@ function buildShell() {
   return { root, viewHost };
 }
 
-function buildPreviewDialog() {
+function buildPreviewDialog(onDismiss) {
   const dialog = el("dialog", { class: "sl-preview-dialog", "aria-labelledby": "sl-preview-title" });
+  /*
+   * A click on what is NOT the sheet closes it.
+   *
+   * With the dim gone the grid behind the drawer is legible, and a legible
+   * thing that ignores clicks reads as a frozen page. `showModal` puts a
+   * transparent backdrop over it, so the click lands on the dialog element
+   * itself rather than on any of its content — which is exactly the test for
+   * "outside".
+   */
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    if (typeof onDismiss === "function") onDismiss();
+    else dialog.close();
+  });
   document.body.appendChild(dialog);
   return dialog;
 }
@@ -519,7 +553,7 @@ function App() {
   const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
   const { root: shellRoot, viewHost } = buildShell();
   shellRoot.appendChild(announceRegion);
-  const previewDialog = buildPreviewDialog();
+  const previewDialog = buildPreviewDialog(() => closePreview());
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
 

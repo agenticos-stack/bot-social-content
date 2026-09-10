@@ -29,7 +29,7 @@ import { t } from "./i18n.js";
  * happened. A length cannot fail that way, so the cap is stated in `px` and
  * `dvh` and the stage sizes itself around it.
  */
-const FRAME_MAX = "min(520px, 62dvh)";
+const FRAME_MAX = "min(600px, 68dvh)";
 
 /** Bytes as an owner would say them. `getMedia` reports the exact count. */
 function readableBytes(total) {
@@ -118,20 +118,19 @@ export function createMediaStage(rpc, item, locale) {
   /*
    * The frame, whole, on a neutral ground.
    *
-   * The blurred copy behind it is the same blob — no second fetch — and exists
-   * so a 9:16 reel does not sit between two empty panels. It is decorative and
-   * `aria-hidden`; the readable image is the one in front.
+   * A blurred copy of the same blob used to sit behind it, filling the width a
+   * portrait picture left over in a 640px sheet. The sheet is 440 now — cut to
+   * the shape the media actually is — so there is no gap to fill, and the
+   * picture is the only thing on the stage.
    */
   function showFrame(url, frame) {
-    const picture = el("img", {
-      class: "sl-stage-img",
-      src: url,
-      alt: item.text ? item.text.slice(0, 120) : t(locale, "drawerEyebrow"),
-      style: `max-height: ${FRAME_MAX}`
-    });
     replace(surface, [
-      el("img", { class: "sl-stage-backdrop", src: url, alt: "", "aria-hidden": "true" }),
-      picture
+      el("img", {
+        class: "sl-stage-img",
+        src: url,
+        alt: item.text ? item.text.slice(0, 120) : t(locale, "drawerEyebrow"),
+        style: `max-height: ${FRAME_MAX}`
+      })
     ]);
     kindChip.textContent = frameLabel(frame);
   }
