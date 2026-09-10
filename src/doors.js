@@ -265,8 +265,22 @@ export async function listOpenAccountPosts(env, source, { after } = {}) {
  * media entry; the file is multi-megabyte and cannot fit the cache, and a
  * still is what both the grid and any later derivation actually want.
  */
+/**
+ * WHICH FILE a rendition asks the provider for.
+ *
+ * Exported because `server.js` asks the same question before paying for a
+ * second fetch: when two renditions resolve to the same URL they are the same
+ * file, and bytes already held for one are the bytes for the other. Today that
+ * is every media entry — the rendition is advisory, and the provider's payload
+ * carries one candidate per photo — but the comparison is written out rather
+ * than assumed, so a rendition-specific URL later changes this in one place.
+ */
+export function mediaUrlFor(media, rendition) {
+  return media?.kind === "video" && media?.posterUrl ? media.posterUrl : media?.url;
+}
+
 export async function fetchMedia(env, binding, media, rendition, origin) {
-  const url = media?.kind === "video" && media?.posterUrl ? media.posterUrl : media?.url;
+  const url = mediaUrlFor(media, rendition);
   if (!url) {
     return { outcome: "unknown", message: "That media has no fetchable URL." };
   }

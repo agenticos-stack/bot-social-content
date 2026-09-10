@@ -79,6 +79,7 @@ export function svgEl(tag, attrs, children) {
  * the app that hosts it. Add a name here only when Studio already has it.
  */
 const ICON_PATHS = {
+  close: ["M6 6l12 12", "M18 6L6 18"],
   refresh: [
     "M20 6v5h-5",
     "M4 18v-5h5",

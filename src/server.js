@@ -119,7 +119,8 @@ import {
   socialCreateDraft,
   socialReadStatus,
   socialSubmitForReview,
-  listOpenAccountPosts
+  listOpenAccountPosts,
+  mediaUrlFor
 } from "./doors.js";
 
 /**
@@ -1164,6 +1165,33 @@ export class Gadget extends DurableObject {
     }
     if (!media.url) {
       return { refused: { code: "media_missing_url", message: "That media entry carries no URL." } };
+    }
+
+    /*
+     * ALREADY HELD IS ALREADY PAID FOR.
+     *
+     * The grid fetches a `thumb`; opening the drawer asked for a `preview`,
+     * and the cache is keyed by rendition, so the same file was fetched a
+     * second time through the metered door, over the network, and stored a
+     * second time — every one of the four thumb/preview pairs in a real
+     * account's cache is byte-identical, same length and same header. That is
+     * the whole of "why is the drawer slow when we already have the picture".
+     *
+     * `mediaUrlFor` is the door's own rule about which file a rendition asks
+     * for. When both renditions name the same URL the bytes are the same
+     * bytes, so the ones already stored are copied across rather than
+     * refetched. The target rendition's cap still applies: a file that fits
+     * the preview cap may be too big to hold as a thumb, and reusing it would
+     * quietly raise a limit that exists on purpose.
+     */
+    const other = rendition === "thumb" ? "preview" : "thumb";
+    if (mediaUrlFor(media, rendition) === mediaUrlFor(media, other)) {
+      const held = this.storage.getMedia(itemId, mediaId, other);
+      const cap = rendition === "thumb" ? THUMB_MAX_BYTES : PREVIEW_MAX_BYTES;
+      if (held && held.bytes.byteLength <= cap) {
+        this.storage.putMedia(itemId, mediaId, rendition, held.mime, held.bytes);
+        return { mime: held.mime, bytes: held.bytes };
+      }
     }
 
     // The source's own origin decides which door owns its bytes; a media id
