@@ -436,8 +436,37 @@ function toHex(bytes) {
 }
 
 /**
+ * The stable half of a media URL.
+ *
+ * A CDN delivery URL is not an identity. Instagram's carry a signature and an
+ * expiry in the query (`oh`, `oe`, `_nc_ohc`, `_nc_gid`) and rotate their edge
+ * host between fetches — `scontent-phl2-1` one hour, `scontent-lga3-2` the
+ * next. Hashing the whole URL therefore made every item differ from itself on
+ * every scan: a second scan of an account that had published nothing reported
+ * 100 changed and 0 unchanged, which makes "what is new since yesterday"
+ * meaningless and would notify an owner about posts nobody touched.
+ *
+ * The PATH is the object key and is stable — verified against two fetches of
+ * the same account hours apart, where every path matched and no host did.
+ *
+ * A path that carries no identity (empty, or "/") falls back to the whole URL.
+ * Losing identity is the worse direction: a hash that cannot tell two assets
+ * apart reports a real edit as unchanged, and silence is harder to notice than
+ * noise.
+ */
+function mediaIdentity(url) {
+  if (typeof url !== "string" || !url) return null;
+  try {
+    const { pathname } = new URL(url);
+    return pathname && pathname !== "/" ? pathname : url;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * SHA-256 hex over a canonical JSON of [provider, providerItemId, text,
- * media ids/urls in order, publishedAt] — deliberately excludes metrics and
+ * media ids/paths in order, publishedAt] — deliberately excludes metrics and
  * the firstSeenAt/lastSeenAt/contentHash fields, so retrieving the same item
  * again never changes its hash. Async because crypto.subtle is.
  */
@@ -447,7 +476,7 @@ export async function contentHash(item) {
     provider: item?.provider ?? null,
     providerItemId: item?.providerItemId ?? null,
     text: item?.text ?? "",
-    media: media.map((entry) => ({ id: entry?.id ?? null, url: entry?.url ?? null })),
+    media: media.map((entry) => ({ id: entry?.id ?? null, url: mediaIdentity(entry?.url) })),
     publishedAt: item?.publishedAt ?? null
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
