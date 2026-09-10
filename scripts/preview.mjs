@@ -110,7 +110,26 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
   async createRuntime(key, identity){
     const root=new URL('../.bot-local/connected/',import.meta.url);
     await mkdir(root,{recursive:true,mode:0o700});
-    const stateDirectory=fileURLToPath(new URL(key,root));
+    /*
+     * The agent and the isolate get SIBLING directories, never the same one.
+     *
+     * The testkit claims its state directory by creating it and writing a
+     * `.bot-state` marker, and refuses a directory that already exists without
+     * one — that is what stops it adopting a directory it does not own. But
+     * the agent is started first (deliberately: the door spec shapes `env` at
+     * load), and `createConnectedAgent` does `mkdir(stateDirectory, {
+     * recursive: true })` to store its session file. Sharing one path meant
+     * the agent always created it first, unmarked, so every connected run
+     * failed with "Refusing an unowned or symlinked local state directory" —
+     * reported, like every other startup failure here, as a generic 409.
+     *
+     * A child directory does not help either: `recursive: true` creates the
+     * parent on the way down. They have to be siblings.
+     */
+    const sessionRoot=fileURLToPath(new URL(key,root));
+    await mkdir(sessionRoot,{recursive:true,mode:0o700});
+    const agentStateDirectory=resolve(sessionRoot,'agent');
+    const stateDirectory=resolve(sessionRoot,'runtime');
     const prior=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
     let local;
     // The agent comes FIRST, and the isolate second, because the door spec
@@ -121,7 +140,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     let readyLocal;
     const localReady = new Promise((resolve) => { readyLocal = resolve; });
     try {
-      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
+      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
