@@ -201,6 +201,47 @@ describe("contentHash", () => {
     expect(await contentHash(base)).toBe(await contentHash(withExtras));
   });
 
+  it("is stable when only the CDN signature and edge host rotate", async () => {
+    /*
+     * A delivery URL is not an identity. Instagram signs its CDN URLs (`oh`,
+     * `oe`, `_nc_ohc`, `_nc_gid`) and rotates the edge host between fetches.
+     * Hashing the whole URL made every item differ from itself on every scan:
+     * a second scan of an account that had published nothing reported 100
+     * changed, 0 unchanged — which makes "what is new since yesterday"
+     * meaningless and would notify an owner about posts nobody touched.
+     *
+     * The path is the object key, and it is stable: verified against two
+     * fetches of the same account hours apart, where every path matched and
+     * no host did.
+     */
+    const first = {
+      ...base,
+      media: [{ id: 0, url: "https://scontent-phl2-1.cdninstagram.com/o1/v/t2/AQO9rjNO?oh=aaa&oe=68C1&_nc_gid=g1" }]
+    };
+    const later = {
+      ...base,
+      media: [{ id: 0, url: "https://scontent-lga3-2.cdninstagram.com/o1/v/t2/AQO9rjNO?oh=zzz&oe=99FF&_nc_gid=g2" }]
+    };
+    expect(await contentHash(first)).toBe(await contentHash(later));
+  });
+
+  it("still changes when the media itself changes", async () => {
+    // The path carries the identity, so a different asset must still differ —
+    // a hash that cannot tell two assets apart reports a real edit as
+    // unchanged, and silence is harder to notice than noise.
+    const a = { ...base, media: [{ id: 0, url: "https://cdn.example.test/o1/AAA?oh=x" }] };
+    const b = { ...base, media: [{ id: 0, url: "https://cdn.example.test/o1/BBB?oh=x" }] };
+    expect(await contentHash(a)).not.toBe(await contentHash(b));
+  });
+
+  it("falls back to the whole URL when the path carries no identity", async () => {
+    // Some providers put the asset id in the query. Dropping it there would
+    // make every asset hash alike, so the fallback keeps the whole URL.
+    const a = { ...base, media: [{ id: 0, url: "https://cdn.example.test/?asset=AAA" }] };
+    const b = { ...base, media: [{ id: 0, url: "https://cdn.example.test/?asset=BBB" }] };
+    expect(await contentHash(a)).not.toBe(await contentHash(b));
+  });
+
   it("changes when the text changes", async () => {
     expect(await contentHash(base)).not.toBe(await contentHash({ ...base, text: "Different text" }));
   });
