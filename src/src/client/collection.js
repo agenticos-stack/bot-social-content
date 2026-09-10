@@ -437,41 +437,54 @@ export function renderCollection(root, state, ctx) {
   if (typeof loadCover === "function") fillCovers(covers, loadCover);
 }
 
-/**
- * ONE AT A TIME, in the order the cards are on screen.
+/*
+ * A FEW AT A TIME, in the order the cards are on screen.
  *
- * This started every fetch at once, which looks like the fastest thing to do
- * and is the slowest: the transport under `getMedia` runs one call at a time
- * (the gadget's storage is single-threaded, and the development host queues
- * browser calls explicitly), so twelve parallel calls do not overlap — they
- * queue. What parallelism buys instead is that every call's timeout starts
- * ticking the moment it is made, while it is still eleventh in line. On a
- * fifteen-post grid the first three covers arrived and the other nine died on
- * a 20-second timeout they spent entirely in the queue, which reads exactly
- * like a broken fetch door and is not one.
+ * This has been each of the two obvious answers, and both were wrong for the
+ * same reason: the right number is neither one nor all of them.
  *
- * Awaited in sequence, each call's clock covers its own work and nothing
- * else's. The grid is already drawn — covers land top-down as they arrive,
- * which is also the order a reader is looking in.
+ * It started as all-at-once, which timed out. The development host ran every
+ * browser call in a single line and armed each call's clock the moment it was
+ * made, so nine of twelve covers spent their whole budget queued and died
+ * looking exactly like a broken fetch door.
+ *
+ * The fix for that was strictly sequential, and it worked — every call's clock
+ * then covered its own work. But it made the grid the sum of its parts: twelve
+ * covers at roughly half a second each is ten seconds of watching pictures
+ * arrive one by one, and the queue it was avoiding no longer exists. The host
+ * runs a bounded pool now (testkit `local-session.js`), so the line that made
+ * sequential necessary is gone and sequential is simply the slowest thing left.
+ *
+ * `COVER_FETCHES` matches that pool. Asking for more would only rebuild the
+ * queue on the other side of the wire, which is where this started.
  */
+const COVER_FETCHES = 4;
+
 async function fillCovers(covers, loadCover) {
-  for (const { slot, itemId, mediaId } of covers) {
-    try {
-      const url = await loadCover(itemId, mediaId);
-      if (!url) continue;
-      slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
-    } catch (error) {
-      // A cover that cannot be fetched is not an error to put on the card: it
-      // keeps the provider glyph it already had, which is what a post with no
-      // media looks like anyway. But a silent `catch {}` here is how nine
-      // timed-out covers looked identical to nine posts without pictures, so
-      // the reason goes to the console where whoever is developing the gadget
-      // can read it. `getMedia`'s refusal codes carry the same reason to the
-      // preview dialog, where an owner sees it.
-      console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
+  const queue = [...covers];
+  const draw = async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const { slot, itemId, mediaId } = next;
+      try {
+        const url = await loadCover(itemId, mediaId);
+        if (url) slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
+      } catch (error) {
+        // A cover that cannot be fetched is not an error to put on the card: it
+        // keeps the provider glyph it already had, which is what a post with no
+        // media looks like anyway. But a silent `catch {}` here is how nine
+        // timed-out covers looked identical to nine posts without pictures, so
+        // the reason goes to the console where whoever is developing the gadget
+        // can read it. `getMedia`'s refusal codes carry the same reason to the
+        // preview dialog, where an owner sees it.
+        console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
+      }
     }
-  }
+  };
+  // Workers share one queue, so a slow cover holds up only itself: the next
+  // free worker takes the next card rather than the whole grid waiting on it.
+  await Promise.all(Array.from({ length: Math.min(COVER_FETCHES, queue.length) }, draw));
 }
+
 
 function renderInboxInto(root, state, ctx) {
   // Kept as an injected renderer to avoid making collection state own saved
