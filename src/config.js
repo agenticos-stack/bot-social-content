@@ -236,7 +236,7 @@ export function normalizeConfig(input) {
     claimsRequiringConfirmation: normalizeTermList(config.claimsRequiringConfirmation),
     refinementBrief: normalizeRefinementBrief(config.refinementBrief),
     contentPrompt: boundedString(config.contentPrompt, 4000) || "",
-    imagePrompt: boundedString(config.imagePrompt, 4000) || "",
+    posterPrompt: boundedString(config.posterPrompt, 4000) || "",
     drafting: normalizeDrafting(config.drafting)
   };
 }

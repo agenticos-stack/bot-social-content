@@ -807,8 +807,14 @@ export class Gadget extends DurableObject {
      * turned on.
      *
      * Returned rather than sent. There is nothing here for the gadget to call
-     * (SEC-003): the platform reads this off the hook's result and files an
-     * action its owner answers.
+     * (SEC-003) — and, verified 2026-09-10, nothing on the platform that reads
+     * it either: `schedule-room-invoker.ts` keeps only `error`/`detail` from
+     * the hook's response and `schedule-delivery.ts` reduces the outcome to
+     * `{ok}`/`{ok:false}`. The request is still emitted — the shape is the
+     * contract agenticos-stack/agenticos#1861 is asked to honor — but until
+     * that lands, `drafting: "on_new"` has never produced a revision through
+     * this path. Generation today is the Content-tab ask (see the client's
+     * ask card) or the owner speaking to the agent directly.
      */
     const workRequest = this.workRequestFor(perSource, config);
 

@@ -36,9 +36,20 @@ say plainly which items are waiting on a rights decision and why.
 
 ## When a scan asked for the drafting, not a person
 
-You can arrive here with nobody having typed anything. If the owner turned
-drafting on, a scheduled scan that finds new posts opens a batch and files a
-request; when the owner approves it, you are handed a brief like this:
+A scan's `runScan` result can carry a `workRequest` — `{ batchId, sourceLabel,
+itemIds, intake: "saveRevision" }` — but **the platform currently discards
+it**: the schedule invoker keeps only ok/error from the hook's response, so no
+brief has ever arrived through that path (tracked as
+agenticos-stack/agenticos#1861). What actually reaches you is the owner
+pasting the ask from the Content tab: "Draft localized captions for the N
+posts in batch …", or asking in their own words. Either way the contract below
+is identical — the batch already exists; do not `createBatch`.
+
+The owner's drafting instructions live in config: read `summary().config`'s
+`contentPrompt` (what captions should say and how they should read) and
+`posterPrompt` (what the text poster should look like) and honor them.
+
+If you ever ARE handed a structured brief, it looks like this:
 
 ```
 { drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: "saveRevision", next: "..." }

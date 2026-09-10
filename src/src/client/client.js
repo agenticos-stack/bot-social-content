@@ -35,6 +35,7 @@ import { createMediaStage } from "./preview-media.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
+  addListEntry,
   applyPublishState,
   applySavedRevision,
   applySavedPoster,
@@ -46,6 +47,7 @@ import {
   goToStep as goToWizardStep,
   isRefusal,
   refusalMessage,
+  removeListEntry,
   renderLocalize,
   renderPosterPng,
   renderPublish,
@@ -64,6 +66,7 @@ import {
   setSaving,
   setSubmitting,
   setWizardError,
+  suggestProtectedTerms,
   toConfigPayload,
   toggleConfirmedClaim,
   togglePublishBinding,
@@ -168,6 +171,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-inbox-card-meta { display: flex; justify-content: space-between; color: var(--sl-muted); font-size: 9px; }
 .sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
+.sl-ask { display: grid; gap: 8px; padding: 14px 16px; margin-bottom: 14px; border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); background: var(--sl-selected, var(--sl-surface)); }
+.sl-ask-message { display: block; padding: 10px 12px; border-radius: var(--sl-radius-control); background: var(--sl-surface); border: 1px solid var(--sl-line); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; user-select: text; }
+.sl-advanced { margin-top: 4px; }
+.sl-advanced summary { cursor: pointer; font-weight: 600; font-size: 12px; padding: 6px 0; }
+.sl-tag-suggest { border: 1px dashed var(--sl-line-strong, var(--sl-line)); background: transparent; cursor: pointer; }
 .sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
@@ -566,6 +574,10 @@ function App() {
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
+  // The batch the owner just asked to be drafted — one Content-tab card
+  // carrying the message to send the agent. Session-scoped: dismissing or
+  // navigating away leaves the batch itself untouched.
+  let pendingAsk = null;
   let wizard = createWizardState();
   let activePreviewItem = null;
   let activePreviewStage = null;
@@ -909,6 +921,21 @@ function App() {
       collectionState = clearNotice(collectionState);
       renderCurrentView();
     },
+    onDismissAsk: () => {
+      pendingAsk = null;
+      renderCurrentView();
+    },
+    onCopyAsk: async (message) => {
+      try {
+        await navigator.clipboard?.writeText(message);
+        if (pendingAsk) pendingAsk = { ...pendingAsk, copied: true };
+      } catch (error) {
+        // A sandboxed frame can lack clipboard permission; the message stays
+        // on screen in a selectable block either way.
+        console.error(error);
+      }
+      renderCurrentView();
+    },
     onInspectBatch: openBatchDrawer,
     onInboxFilter: (filter) => { inboxState = setInboxFilter(inboxState, filter); if (filter === "new") { collectionState = setFilter(collectionState, "new"); void loadCollection("new"); } renderCurrentView(); },
     onLoadMoreBatches: async () => {
@@ -980,8 +1007,23 @@ function App() {
         return;
       }
       collectionState = clearNotice(collectionState);
-      wizard = setBatch(wizard, batch);
+      /*
+       * The batch is pending drafts now — generation is a conversation ask,
+       * not a click path (PM decision 1: no platform work-request mechanism
+       * exists yet; agenticos-stack/agenticos#1861). Land on Content, where
+       * the ask panel carries the ready-to-send phrasing and the pending
+       * drafts appear as they are saved. Editing still reaches the wizard
+       * through Inspect → Continue editing.
+       */
+      pendingAsk = { batchId: batch.id, count: batch.items?.length ?? ids.length };
+      activeSection = "content";
+      inboxState = setInboxFilter(inboxState, "drafts");
       await rpc.markSeen(ids).catch(() => {});
+      try {
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      } catch (error) {
+        console.error(error);
+      }
       renderCurrentView();
     } catch (error) {
       console.error(error);
@@ -1296,7 +1338,7 @@ function App() {
         ])
       ]);
       if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask: pendingAsk });
       replace(viewHost, [navigation, body]);
       return;
     }
@@ -1344,6 +1386,9 @@ function App() {
     // asks for it (TASK-021), namespaced like the open-source fields.
     let grantsBusy = false;
     let grantsNote = null;
+    let suggestBusy = false;
+    let suggestions = null;
+    let suggestNote = null;
 
     const draw = () =>
       renderSetup(viewHost, draft, {
@@ -1362,6 +1407,9 @@ function App() {
         openError,
         grantsBusy,
         grantsNote,
+        suggestBusy,
+        suggestions,
+        suggestNote,
         handlers: setupHandlers
       });
     const setupHandlers = {
@@ -1458,6 +1506,42 @@ function App() {
           }
         }
         if (summary?.configured) await loadCollection("new");
+      },
+      onAdd: (field, value) => {
+        draft = addListEntry(draft, field, value);
+        error = null;
+        notice = null;
+        draw();
+      },
+      onRemove: (field, value) => {
+        draft = removeListEntry(draft, field, value);
+        error = null;
+        notice = null;
+        draw();
+      },
+      /**
+       * "Suggest from watched posts" — candidate protected terms and hashtags
+       * read off the owner's own already-scanned items (suggestProtectedTerms
+       * is the pure heuristic in steps.js). Suggestions render as chips; each
+       * is one click from the list, nothing is added silently.
+       */
+      onSuggestTerms: async () => {
+        if (suggestBusy) return;
+        suggestBusy = true;
+        suggestNote = null;
+        draw();
+        try {
+          const page = await rpc.listItems({ limit: 50 });
+          suggestions = suggestProtectedTerms(page?.items ?? []);
+          if (!suggestions.terms.length && !suggestions.hashtags.length) {
+            suggestNote = t(locale, "setupSuggestNone");
+          }
+        } catch (thrown) {
+          console.error(thrown);
+          suggestNote = thrown instanceof Error ? thrown.message : String(thrown);
+        }
+        suggestBusy = false;
+        draw();
       },
       onChange: (patch) => {
         if (saving) return;

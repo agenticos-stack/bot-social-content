@@ -120,7 +120,25 @@ export function renderInbox(root, state, ctx) {
     el("p", { class: "sl-field-note" }, batch.lastUpdatedAt ? new Date(batch.lastUpdatedAt).toLocaleString(locale) : ""),
     el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onInspectBatch(batch) }, t(locale, "inboxInspect"))
   ]); });
+  /*
+   * The generation ask — the batch just created is pending drafts, and the
+   * one thing between it and finished drafts is a message to the agent. One
+   * turn covers the batch, so the card says what to send and offers to copy
+   * it rather than paraphrasing instructions an owner would have to retype.
+   */
+  const ask = ctx.ask;
+  const askMessage = ask ? t(locale, ask.count === 1 ? "askAgentPromptOne" : "askAgentPrompt", { n: ask.count, id: ask.batchId }) : null;
+  const askCard = ask ? el("article", { class: "sl-ask" }, [
+    el("strong", null, t(locale, ask.count === 1 ? "askAgentTitleOne" : "askAgentTitle", { n: ask.count })),
+    el("p", { class: "sl-field-note" }, t(locale, "askAgentBody")),
+    el("code", { class: "sl-ask-message" }, askMessage),
+    el("div", { class: "sl-setup-actions" }, [
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk() }, t(locale, "askAgentDismiss"))
+    ])
+  ]) : null;
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
+    askCard,
     el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),
     cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : state.loading ? el("p", { class: "sl-field-note", role: "status" }, t(locale, "loading")) : null,
     state.nextCursor ? el("button", { type: "button", class: "sl-secondary", onclick: handlers.onLoadMoreBatches }, t(locale, "inboxLoadMore")) : null,

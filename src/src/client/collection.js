@@ -400,9 +400,9 @@ export function renderCollection(root, state, ctx) {
         "button",
         { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
         nSelected
-          // `{n} post(s)` was the shipped copy. English has a plural; the
-          // parenthesis is a way of not choosing one.
-          ? t(locale, nSelected === 1 ? "continueWithPost" : "continueWithPosts", { n: nSelected })
+          // One agent turn drafts the whole batch — the count on the action
+          // is the spend, said before it happens (PM decision 5).
+          ? t(locale, nSelected === 1 ? "draftPost" : "draftPosts", { n: nSelected })
           : t(locale, "continueSelectPrompt")
       )
     ])
