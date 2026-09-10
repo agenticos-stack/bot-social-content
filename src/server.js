@@ -1284,7 +1284,9 @@ export class Gadget extends DurableObject {
       return {
         ok: false,
         code: "batch_needs_destinations",
-        message: "createBatch needs at least one destination binding."
+        // Read by an owner, not only by the caller that made the mistake:
+        // the client puts this sentence on screen verbatim.
+        message: "No destination is set up yet. Add a destination account before moving posts to Localize."
       };
     }
 
