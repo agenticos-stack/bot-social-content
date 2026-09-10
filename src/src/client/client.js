@@ -122,7 +122,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
 .sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
 .sl-main-actions { margin-left:auto; display:flex; gap:4px; }
-.sl-main-actions .sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; }
+/*
+ * The BUTTON carries its own size, not the row it happens to sit in.
+ *
+ * These rules lived on a .sl-main-actions .sl-icon-action selector, so the
+ * same class used anywhere else -- the drawer's close, for one -- came out
+ * unsized. A component that only works inside one parent is not a component.
+ *
+ * (No backticks anywhere in this stylesheet: it is a template literal.)
+ */
+.sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
 .sl-icon-action svg { width:18px; height:18px; display:block; }
 .sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
 .sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
@@ -306,7 +315,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
-.sl-preview-close { align-self: flex-start; }
+.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
 /*
  * Scoped to the eyebrow, not to every span in the header.
  *
@@ -320,8 +329,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  */
 .sl-preview-head strong { display: block; font-size: 13px; }
 .sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
-.sl-preview-close { margin-left: auto; flex-shrink: 0; border: 0; background: transparent; color: var(--sl-ink); font-size: 24px; height: 44px; width: 44px; border-radius: var(--sl-radius-row); }
-.sl-preview-close:hover { background: var(--sl-hover); }
+
 .sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
 /* The media stage. See preview-media.js for why the cap is a length. */
 .sl-preview-stage-wrap { margin-bottom: 20px; }
@@ -659,30 +667,31 @@ function App() {
      * the only part that is redrawn, and the selection is confirmed where the
      * owner is looking rather than only in the grid behind the drawer.
      */
+    /*
+     * ONE ACTION.
+     *
+     * The footer offered "Select post" beside "Select & continue", which are
+     * the same decision asked twice: both select, and the difference is only
+     * whether the drawer stays open. Two buttons of near-identical weight is
+     * a choice the owner has to read before making the one that matters.
+     *
+     * Deselecting does not belong here either — the card's own checkbox and
+     * the tray's Clear are where a selection is taken back, and this drawer is
+     * open on the post you are deciding about.
+     */
     const actions = el("footer", { class: "sl-preview-actions" });
     const drawActions = (isSelected) => replace(actions, [
       el(
         "button",
         {
           type: "button",
-          class: "sl-secondary",
-          onclick: async () => {
-            const next = !activePreviewItem.selected;
-            await handleSelect(item.id, next);
-            activePreviewItem = { ...activePreviewItem, selected: next };
-            drawActions(next);
-            announce(t(locale, next ? "drawerSelectedNotice" : "drawerRemovedNotice"), "");
-          }
-        },
-        isSelected ? t(locale, "drawerRemove") : t(locale, "drawerSelect")
-      ),
-      el(
-        "button",
-        {
-          type: "button",
           class: "sl-primary",
           onclick: async () => {
-            if (!activePreviewItem.selected) await handleSelect(item.id, true);
+            if (!activePreviewItem.selected) {
+              await handleSelect(item.id, true);
+              activePreviewItem = { ...activePreviewItem, selected: true };
+              announce(t(locale, "drawerSelectedNotice"), "");
+            }
             closePreview();
           }
         },
@@ -711,7 +720,13 @@ function App() {
               ? el("span", { class: "sl-preview-via" }, t(locale, "drawerVia", { source: item.sourceLabel }))
               : null
           ]),
-          el("button", { type: "button", class: "sl-preview-close", "aria-label": t(locale, "close"), onclick: () => closePreview() }, "×")
+          el("div", { class: "sl-preview-head-actions" }, [
+            el("button", {
+              type: "button", class: "sl-icon-action",
+              title: t(locale, "close"), "aria-label": t(locale, "close"),
+              onclick: () => closePreview()
+            }, icon("close"))
+          ])
         ]),
         body,
         actions
@@ -749,7 +764,13 @@ function App() {
       ]))
     ]);
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
-      el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("button", { type: "button", class: "sl-preview-close", "aria-label": t(locale, "drawerClose"), onclick: () => batchDialog.close() }, "×")]),
+      el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
+        el("button", {
+          type: "button", class: "sl-icon-action",
+          title: t(locale, "drawerClose"), "aria-label": t(locale, "drawerClose"),
+          onclick: () => batchDialog.close()
+        }, icon("close"))
+      ])]),
       body,
       el("footer", { class: "sl-preview-actions" }, [
         el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),

@@ -145,10 +145,6 @@ export const STRINGS = Object.freeze({
     drawerViewOriginal: "View original ↗",
     drawerRightsPendingTitle: "Rights not yet confirmed",
     drawerConfirmRights: "Confirm reuse rights",
-    drawerSelected: "Selected",
-    drawerNotSelected: "Not selected",
-    drawerRemove: "Remove from selection",
-    drawerSelect: "Select post",
     drawerContinueSelected: "Continue with this post",
     drawerSelectAndContinue: "Select & continue",
     drawerVia: "via your watch on {source}",
@@ -177,7 +173,6 @@ export const STRINGS = Object.freeze({
     batchNoDestinationBody: "Localized posts need somewhere to go. Add a destination account in Settings, then continue.",
     batchBlockedTitle: "These posts were not moved",
     drawerSelectedNotice: "Added to your selection",
-    drawerRemovedNotice: "Removed from your selection",
 
     // --- Localize (step 2) --------------------------------------------------
     localizeTitle: "Refine content",
@@ -381,10 +376,6 @@ export const STRINGS = Object.freeze({
     drawerViewOriginal: "查看原文 ↗",
     drawerRightsPendingTitle: "版權尚未確認",
     drawerConfirmRights: "確認轉用版權",
-    drawerSelected: "已選取",
-    drawerNotSelected: "未選取",
-    drawerRemove: "移除選取",
-    drawerSelect: "選取帖文",
     drawerContinueSelected: "繼續處理此帖文",
     drawerSelectAndContinue: "選取並繼續",
     drawerVia: "來自你追蹤的 {source}",
@@ -413,7 +404,6 @@ export const STRINGS = Object.freeze({
     batchNoDestinationBody: "本地化後的帖文需要發佈位置。請先在設定中新增目的地帳戶，然後再繼續。",
     batchBlockedTitle: "這些帖文未有移動",
     drawerSelectedNotice: "已加入選取",
-    drawerRemovedNotice: "已從選取中移除",
 
     localizeTitle: "修訂內容",
     localizeDesc: "書面香港中文，與來源並列顯示。受保護的內容將維持原文，不作更動。",
