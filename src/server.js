@@ -1097,6 +1097,9 @@ export class Gadget extends DurableObject {
     // Too large is not missing, and saying so is the point: an owner who is
     // told "no media" goes looking for a broken source, while one told the
     // size and the cap knows the media is fine and the cache is the limit.
+    if (cached?.refused) {
+      return { ok: false, code: cached.refused.code, message: cached.refused.message };
+    }
     if (cached?.tooLarge) {
       const { byteLength, cap } = cached.tooLarge;
       return {
@@ -1129,18 +1132,55 @@ export class Gadget extends DurableObject {
    */
   async fetchAndCacheMedia(itemId, mediaId, rendition) {
     const item = this.storage.getItem(itemId);
-    const media = item ? item.media.find((entry) => entry.id === mediaId) : null;
-    if (!item || !media || !media.url) return null;
+    /*
+     * Say which of the three was missing.
+     *
+     * This returned a bare `null` for all of them, and the caller turned that
+     * into "No thumb media for <id>" — a sentence about the media that is
+     * false for two of the three causes. An unknown item, a media id that
+     * matches nothing on a known item, and an entry with no URL send a reader
+     * to three different places.
+     */
+    if (!item) {
+      return { refused: { code: "item_missing", message: `No item ${itemId}.` } };
+    }
+    const media = item.media.find((entry) => String(entry.id) === String(mediaId));
+    if (!media) {
+      const known = item.media.map((entry) => JSON.stringify(entry.id)).join(", ") || "none";
+      return { refused: { code: "media_id_unknown", message: `That item has no media ${JSON.stringify(mediaId)}; it has: ${known}.` } };
+    }
+    if (!media.url) {
+      return { refused: { code: "media_missing_url", message: "That media entry carries no URL." } };
+    }
 
     // The source's own origin decides which door owns its bytes; a media id
     // cannot be read for it, and guessing from the binding's shape is what
     // `scanOneSource` already refuses to do.
     const source = this.storage.getSource(item.sourceBinding);
     const response = await fetchMedia(this.env, item.sourceBinding, media, rendition, source?.origin);
-    if (response.outcome !== "confirmed" || !response.data) return null;
+    // Carry the door's own words. Returning a bare null here turned every
+    // distinct refusal — no door granted, host not allowlisted, the CDN
+    // answered 403 — into "No thumb media", which sends a reader looking at
+    // the item instead of at the reason.
+    if (response.outcome !== "confirmed" || !response.data) {
+      return { refused: { code: response.outcome ?? "unknown", message: response.message ?? "The media could not be fetched." } };
+    }
 
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
-    if (!raw) return null;
+    /*
+     * The last bare `null` on this path, and the one that hid the door working.
+     *
+     * A door confirms and hands back bytes; if `toBytes` cannot read the shape
+     * they arrived in, returning null made `getMedia` answer "No thumb media",
+     * which is a sentence about the source and false about what happened. Say
+     * what was actually received instead — the shape is the clue.
+     */
+    if (!raw) {
+      const shape = response.data?.bytes === undefined
+        ? Object.keys(response.data ?? {}).join(", ") || typeof response.data
+        : `bytes as ${Object.keys(response.data.bytes ?? {}).slice(0, 4).join("|") || Object.prototype.toString.call(response.data.bytes)}`;
+      return { refused: { code: "media_unreadable", message: `The door returned media this gadget could not read (${shape}).` } };
+    }
     const cap = rendition === "thumb" ? THUMB_MAX_BYTES : PREVIEW_MAX_BYTES;
     /*
      * REFUSE what does not fit. Do not store a prefix of it.
@@ -2096,6 +2136,45 @@ function toBytes(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (Array.isArray(value)) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  /*
+   * A Buffer that has crossed the facet RPC as JSON.
+   *
+   * Bytes do not survive that boundary as a typed array: Node serialises a
+   * Buffer to `{ type: "Buffer", data: [...] }`, so every `instanceof` above
+   * misses and the media reads as unreadable. This is the shape a door's
+   * bytes ACTUALLY have by the time the gadget sees them — the door was
+   * working long before this function could tell, and the bare `null` it
+   * returned reported that as "no media".
+   */
+  if (value && typeof value === "object" && value.type === "Buffer" && Array.isArray(value.data)) {
+    return new Uint8Array(value.data);
+  }
+  /*
+   * A typed array that has crossed the facet RPC.
+   *
+   * `Uint8Array` does not survive that boundary as itself: it arrives as a
+   * plain object keyed by index, so every `instanceof` above misses and the
+   * bytes look unreadable. This is the shape a door's media actually has by
+   * the time the gadget sees it — the door was working long before this
+   * function could tell.
+   *
+   * Read by INDEX up to `length`, rather than by `Object.values`, because key
+   * order is not part of the contract and a stray non-index property would
+   * otherwise be spliced into the middle of an image.
+   */
+  if (value && typeof value === "object") {
+    const length = Number(value.length ?? value.byteLength);
+    if (Number.isInteger(length) && length >= 0) {
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        const byte = value[index];
+        if (typeof byte !== "number") return null;
+        bytes[index] = byte;
+      }
+      return bytes;
+    }
+  }
   if (typeof value === "string") {
     try {
       const binary = atob(value);

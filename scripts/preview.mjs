@@ -120,12 +120,25 @@ if (remote) {
  * actually uses. The platform decides whether any of them may proceed — this
  * only names them, the way DOOR_SPEC does for an installed gadget.
  */
+/**
+ * Which methods of each granted door the isolate should see.
+ *
+ * This is a REQUEST, not a description: `agent.doors` intersects it with what
+ * the owner granted, and the isolate's `env` is built from the result. So a
+ * method missing here is missing from `env` even when the door is granted and
+ * the platform offers it — indistinguishable, from inside the gadget, from a
+ * door nobody granted.
+ *
+ * That is how `fetch_media` was invisible after it shipped: the door said
+ * "granted", the platform had the method, and `env.metered_fetch.fetch_media`
+ * was still undefined because this list had not been told about it.
+ */
 function doorMethodsByEnvKey() {
   return {
     social: ["createDraft", "submitForReview", "readStatus"],
     schedule: ["create", "list", "cancel"],
     workspace: ["notify"],
-    metered_fetch: ["socialPostsForAccount"]
+    metered_fetch: ["socialPostsForAccount", "fetch_media"]
   };
 }
 
