@@ -382,14 +382,26 @@ function App() {
    * across re-renders: the grid rebuilds on every selection change, and
    * minting a fresh URL each time would leak one per card per keystroke.
    */
+  /*
+   * The PROMISE is what is kept, not the finished URL.
+   *
+   * A re-render can start a second fill while the first is still running —
+   * a selection change rebuilds the grid — and a map of finished URLs is
+   * empty for everything still in flight, so the second pass would refetch
+   * every one of them down a transport that runs one call at a time. Keyed on
+   * the promise, a second asker waits on the first fetch instead of starting
+   * another. A failure is dropped from the map so the next render may retry.
+   */
   const coverUrls = new Map();
-  async function loadCover(itemId, mediaId) {
+  function loadCover(itemId, mediaId) {
     const key = `${itemId}::${mediaId}`;
     const existing = coverUrls.get(key);
     if (existing) return existing;
-    const { url } = await loadMediaAsBlobUrl(rpc, itemId, mediaId, "thumb");
-    coverUrls.set(key, url);
-    return url;
+    const pending = loadMediaAsBlobUrl(rpc, itemId, mediaId, "thumb")
+      .then(({ url }) => url)
+      .catch((error) => { coverUrls.delete(key); throw error; });
+    coverUrls.set(key, pending);
+    return pending;
   }
 
   const locale = resolveLocale(document.documentElement.lang);

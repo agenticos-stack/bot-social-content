@@ -47,6 +47,44 @@ export function createRpc(gadget) {
  * from. The caller owns the returned URL and must `URL.revokeObjectURL` it
  * when the preview closes or the item changes.
  */
+/**
+ * One chunk's bytes, in whichever shape they survived the trip.
+ *
+ * `new Uint8Array(value)` on a plain object silently yields an EMPTY array
+ * rather than failing, so a Buffer that crossed as `{ type: "Buffer", data:
+ * [...] }` produced an empty blob and a broken image — with nothing anywhere
+ * saying the bytes had been lost. `server.js`'s `toBytes` has the same problem
+ * and the same fix on the other side of the RPC; both are needed, because the
+ * bytes cross two boundaries and each one can flatten them.
+ */
+function chunkBytes(value) {
+  if (value instanceof Uint8Array) return value;
+  if (Array.isArray(value)) return new Uint8Array(value);
+  if (!value || typeof value !== "object") return new Uint8Array(0);
+  // A Node Buffer that was serialised: `{ type: "Buffer", data: [...] }`.
+  if (Array.isArray(value.data)) return new Uint8Array(value.data);
+  /*
+   * A `Uint8Array` that was serialised.
+   *
+   * JSON has no typed arrays, so one arrives as a plain object keyed by index
+   * — `{"0":137,"1":80,...}` — with no `length` and no `data`. `new
+   * Uint8Array(thatObject)` yields an EMPTY array rather than failing, so the
+   * blob came out zero bytes and the image was simply broken, with nothing
+   * anywhere reporting that the bytes had been dropped.
+   *
+   * Read by index up to the count of keys rather than by `Object.values`,
+   * because key order is not part of the contract.
+   */
+  const length = Object.keys(value).length;
+  const bytes = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const byte = value[index];
+    if (typeof byte !== "number") return new Uint8Array(0);
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
 export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
   const parts = [];
   let mime = "application/octet-stream";
@@ -63,7 +101,7 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
     if (page.ok === false) throw new Error(page.message || "This media is not available.");
     if (page.mime) mime = page.mime;
     if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
-    const bytes = page.bytes instanceof Uint8Array ? page.bytes : new Uint8Array(page.bytes || []);
+    const bytes = chunkBytes(page.bytes);
     parts.push(bytes);
     chunk += 1;
   } while (chunk < expectedChunks);

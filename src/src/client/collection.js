@@ -425,17 +425,39 @@ export function renderCollection(root, state, ctx) {
   if (typeof loadCover === "function") fillCovers(covers, loadCover);
 }
 
-function fillCovers(covers, loadCover) {
+/**
+ * ONE AT A TIME, in the order the cards are on screen.
+ *
+ * This started every fetch at once, which looks like the fastest thing to do
+ * and is the slowest: the transport under `getMedia` runs one call at a time
+ * (the gadget's storage is single-threaded, and the development host queues
+ * browser calls explicitly), so twelve parallel calls do not overlap — they
+ * queue. What parallelism buys instead is that every call's timeout starts
+ * ticking the moment it is made, while it is still eleventh in line. On a
+ * fifteen-post grid the first three covers arrived and the other nine died on
+ * a 20-second timeout they spent entirely in the queue, which reads exactly
+ * like a broken fetch door and is not one.
+ *
+ * Awaited in sequence, each call's clock covers its own work and nothing
+ * else's. The grid is already drawn — covers land top-down as they arrive,
+ * which is also the order a reader is looking in.
+ */
+async function fillCovers(covers, loadCover) {
   for (const { slot, itemId, mediaId } of covers) {
-    loadCover(itemId, mediaId)
-      .then((url) => {
-        if (!url) return;
-        slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
-      })
-      // A cover that cannot be fetched is not an error worth showing: the card
-      // keeps the provider glyph it already had. The REASON is carried by
-      // `getMedia`'s own refusal codes, where a reader can see it.
-      .catch(() => {});
+    try {
+      const url = await loadCover(itemId, mediaId);
+      if (!url) continue;
+      slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
+    } catch (error) {
+      // A cover that cannot be fetched is not an error to put on the card: it
+      // keeps the provider glyph it already had, which is what a post with no
+      // media looks like anyway. But a silent `catch {}` here is how nine
+      // timed-out covers looked identical to nine posts without pictures, so
+      // the reason goes to the console where whoever is developing the gadget
+      // can read it. `getMedia`'s refusal codes carry the same reason to the
+      // preview dialog, where an owner sees it.
+      console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
+    }
   }
 }
 
