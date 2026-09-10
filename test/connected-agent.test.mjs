@@ -306,3 +306,49 @@ test('gadget-dev reconnect uses the current token and refuses cookies or unknown
     agent.close();
   });
 });
+
+test('reload points the live session at new source, over the same socket', async () => {
+  /*
+   * `registerDevelopmentGadget` is built to be called again: it revokes the
+   * previous binding and mints a fresh `dev:<uuid>` so action arguments
+   * captured against the old id cannot resolve to the replacement. A reload
+   * uses exactly that, rather than reconnecting — so the socket, the
+   * conversation and the granted doors survive an edit.
+   */
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, callLocal: async () => ({}), ...transport
+    });
+    assert.equal(agent.info.gadgetId, 'dev:1');
+    assert.equal(transport.registrationCount(), 1);
+    const socketBefore = transport.sockets.length;
+
+    const next = 'b'.repeat(64);
+    const result = await agent.reload({ sourceHash: next, methods: socialMethodNames() });
+
+    assert.equal(result.sourceHash, next);
+    assert.equal(result.gadgetId, 'dev:2', 'a reload re-registers, so the id is new');
+    assert.equal(agent.info.gadgetId, 'dev:2');
+    assert.equal(transport.registrationCount(), 2);
+    assert.equal(transport.sockets.length, socketBefore, 'the socket is reused, not reopened');
+    agent.close();
+  });
+});
+
+test('reload refuses a digest that is not one, rather than registering it', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, callLocal: async () => ({}), ...transport
+    });
+    for (const bad of [undefined, '', 'nope', 'A'.repeat(64), 'a'.repeat(63)]) {
+      await assert.rejects(agent.reload({ sourceHash: bad }), /Invalid source digest/);
+    }
+    assert.equal(transport.registrationCount(), 1, 'a refused reload registers nothing');
+    agent.close();
+  });
+});
+
