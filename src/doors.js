@@ -246,8 +246,48 @@ export async function listOpenAccountPosts(env, source, { after } = {}) {
  * so `callConnector` reports the same "does not offer fetch_media" `unknown`
  * this always fell back to — no special-casing needed here either way.
  */
-export async function fetchMedia(env, binding, media, rendition) {
-  return callConnector(env, binding, "fetch_media", [{ url: media?.url, rendition }]);
+/**
+ * Bytes for one piece of media, from whichever door owns the source.
+ *
+ * Routed by the source's ORIGIN, the same way `scanOneSource` picks its
+ * reader — not by the binding's shape, and not by trying one and falling back,
+ * which would reach for a grant that does not exist and report its absence as
+ * a provider failure.
+ *
+ * An OPEN source has no connector binding, so before `metered_fetch` grew a
+ * `fetch_media` it had no route to bytes at all. That was not merely a
+ * durability gap: a gadget's canvas is served `img-src blob: data:` with
+ * `connect-src 'none'`, so a picture reaches it only as bytes the gadget
+ * already holds. Without this, a public account's posts render as empty boxes
+ * permanently, and no amount of client work changes it.
+ *
+ * A VIDEO FETCHES ITS POSTER, never its file. `model.js` keeps both on the
+ * media entry; the file is multi-megabyte and cannot fit the cache, and a
+ * still is what both the grid and any later derivation actually want.
+ */
+export async function fetchMedia(env, binding, media, rendition, origin) {
+  const url = media?.kind === "video" && media?.posterUrl ? media.posterUrl : media?.url;
+  if (!url) {
+    return { outcome: "unknown", message: "That media has no fetchable URL." };
+  }
+  if (origin === "open") {
+    const door = env && typeof env === "object" ? env[FETCH_DOOR_KEY] : null;
+    if (!door || typeof door.fetch_media !== "function") {
+      return { outcome: "unknown", message: "Public account fetching is not granted for this workspace." };
+    }
+    let result;
+    try {
+      result = await door.fetch_media({ url, rendition });
+    } catch (error) {
+      // The door refuses by value, so reaching here means the RPC itself broke.
+      return { outcome: "failed_safe", message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result || result.ok !== true) {
+      return { outcome: "failed_safe", message: (result && result.message) || "The fetch door refused." };
+    }
+    return { outcome: "confirmed", data: { mime: result.mime, bytes: result.bytes, byteLength: result.byteLength } };
+  }
+  return callConnector(env, binding, "fetch_media", [{ url, rendition }]);
 }
 
 /** `env.workspace.notify({ title, body, href })` — TASK-104. Never throws; logs and continues. */
