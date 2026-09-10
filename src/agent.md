@@ -19,20 +19,35 @@ No AI image refinement capability is exposed by this UI; do not invent completio
 
 ## Preparing selected source posts
 
-The owner picks source posts in the collection and presses Continue. That
-call is `createBatch`, and the result — a batch id and one entry per item,
-each carrying its `sourceItem`, `destinationBindings`, `publications`,
-`rightsStatus` and current `revision` — is your whole context for this
-round. Read it with `getBatch(batchId)` rather than assuming the shape from
-a previous batch; `destinationBindings` and `rightsStatus` can differ item
-to item. `destinationBindings` is where the draft WOULD go — the recorded
-default the owner can change at submit — and `publications` is where it
-actually went: one row per destination filing, `bound` rows included for
+The owner picks source posts in the collection and presses "Draft N posts".
+That call is `createBatch`, and the result — a batch id and one entry per
+item, each carrying its `sourceItem`, `protectedSpans`,
+`destinationBindings`, `publications`, `rightsStatus` and current
+`revision` — is your whole context for this round. Read it with
+`getBatch(batchId)` rather than assuming the shape from a previous batch;
+`destinationBindings` and `rightsStatus` can differ item to item.
+`destinationBindings` is where the draft WOULD go — the recorded default
+the owner can change at submit — and `publications` is where it actually
+went: one row per destination filing, `bound` rows included for
 destinations recorded but never sent.
 
-An item whose `rightsStatus` is `"pending"` or `"denied"` is held. Do not
-draft it and do not include it when you tell the owner the batch is ready —
-say plainly which items are waiting on a rights decision and why.
+`protectedSpans` is the detected list of literals that must survive into the
+draft verbatim — product names, prices, URLs, protected hashtags,
+disclaimers, claims. You are handed the values; do not infer what is
+protected from prose.
+
+An item whose `rightsStatus` is `"pending"` or `"denied"` may still be
+drafted — a draft with unconfirmed rights MAY exist; it merely may not be
+SENT. The gate sits at submit, where `submitForReview` refuses it, not at
+generation. So draft it when the owner selected it, and when you report,
+say plainly which items are still waiting on a rights confirmation before
+they can go anywhere.
+
+What you may NOT do is draft unattended. `createBatch` marks a batch
+`generation: "requested"` — draft only batches carrying that mark, only
+the items the owner selected into them, and only when the owner (or a
+brief naming the batch) actually asked. New scanned content arriving on
+its own is not a drafting ask; never draft a batch nobody requested.
 
 ## When a scan asked for the drafting, not a person
 
@@ -66,17 +81,19 @@ Do this, in order:
 1. `getBatch(batchId)` — the batch already exists. Do **not** call
    `createBatch`; it would refuse as a duplicate, and if it did not it would
    split one owner's decision across two batches.
-2. Draft each item and return it with `saveRevision`, one call per item, exactly
-   as the section below describes. `intake` names that method so the brief does
-   not have to restate this contract.
-3. You are finished when `saveRevision` has accepted every item it can. Then say
-   in one line what was drafted.
+2. Draft every item the batch carries and return them with ONE
+   `saveRevisions({ revisions: [...] })` call — one approval card covers the
+   batch, which is what the owner saw when they pressed "Draft N posts".
+   Per-item results come back in `results`; a refused entry names its issue
+   without costing the others. `saveRevision` (singular) stays for edits to
+   one item after that.
+3. You are finished when `saveRevisions` has accepted every item it can. Then
+   say in one line what was drafted, and which items still wait on rights
+   confirmation before they can be sent.
 
-Everything else here still applies without exception. An item whose
-`rightsStatus` is `"pending"` or `"denied"` is held — a scan asking for drafting
-is not a rights decision, and nobody approved republishing anything. Name the
-held items when you report. `itemIds` are the SOURCE post ids for the record;
-the `batchItemId` each `saveRevision` needs comes from `getBatch`.
+Everything else here still applies without exception. `itemIds` are the
+SOURCE post ids for the record; the `batchItemId` each revision entry needs
+comes from `getBatch`.
 
 Nothing you do here publishes. Publication stays the owner's own approval of a
 pinned revision, and a scan cannot reach it.
@@ -100,6 +117,12 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
   protected-literal overrides, original/derived media references, accepted
   visual mode, and publication intent. These are proposals and provenance, not
   permission to publish; keep `save_draft` when no intent is supplied.
+- `refinementBrief.allowedChanges` is bound by the org's stored brief — an
+  entry you supply that setup never permitted is stripped, not honoured. And
+  whatever the brief allows, source preservation still runs on every path: a
+  protected product name, price, URL, hashtag or disclaimer that does not
+  survive into the draft is a `block`, whether or not the brief allowed
+  other changes.
 - `confirmedClaims` lists which flagged claims the owner (or you, on their
   clear instruction) has confirmed are accurate. Do not confirm a claim on
   your own authority when the source gave you no basis for it.

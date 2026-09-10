@@ -296,6 +296,10 @@ export function renderCollection(root, state, ctx) {
   const covers = [];
   const items = visibleItems(state);
   const nSelected = selectedCount(state);
+  // Zero draftable is not shown as "Draft 0 posts" — every selected post
+  // being taken is the duplicate-refusal case, where the button still says
+  // the selected count because that click goes to the new-version opt-in.
+  const nDraft = nSelected === 0 ? 0 : (ctx.draftableCount ?? nSelected) || nSelected;
   // UNKNOWN IS NOT ZERO. Before `summary()` resolves there is no destination
   // list, and treating that as "none configured" would flash a setup prompt at
   // every owner on every load and then take it back.
@@ -400,9 +404,13 @@ export function renderCollection(root, state, ctx) {
         "button",
         { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
         nSelected
-          // One agent turn drafts the whole batch — the count on the action
-          // is the spend, said before it happens (PM decision 5).
-          ? t(locale, nSelected === 1 ? "draftPost" : "draftPosts", { n: nSelected })
+          // One agent turn drafts the whole batch — and the count on the
+          // action is the DRAFTABLE count, not the selected one (PM decision
+          // 5, corrected): posts already in an open draft are skipped by
+          // `continueWithSelection`, so the button says what the batch will
+          // actually hold. All-taken selections keep the selected count —
+          // that click reaches the duplicate refusal and its new-version opt-in.
+          ? t(locale, nDraft === 1 ? "draftPost" : "draftPosts", { n: nDraft })
           : t(locale, "continueSelectPrompt")
       )
     ])

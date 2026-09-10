@@ -19,7 +19,7 @@
 
 import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
 
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -354,6 +354,17 @@ const MIGRATIONS = {
         ON r.batch_item_id = bi.id
        AND r.revision = COALESCE(bi.approved_revision, bi.current_revision, 0)
       GROUP BY bi.id, je.value`);
+  },
+
+  /*
+   * The durable "drafting was asked for" mark (PM decision 1, refined). The
+   * Content-tab ask used to live in client memory — after a reload a batch at
+   * revision 0 was indistinguishable from one the owner opened to hand-edit.
+   * `"requested"` is set when the batch is opened and cleared when the owner
+   * dismisses the ask or every active item carries a revision.
+   */
+  9(sql) {
+    sql.exec("ALTER TABLE batches ADD COLUMN generation TEXT");
   }
 };
 
@@ -884,8 +895,24 @@ export class Storage {
   // batches / batch_items (REQ-017)
   // ---------------------------------------------------------------------
 
-  createBatch(id) {
-    this.sql.exec("INSERT INTO batches (id, created_at, status) VALUES (?, ?, ?)", id, nowIso(), "open");
+  createBatch(id, generation = null) {
+    this.sql.exec("INSERT INTO batches (id, created_at, status, generation) VALUES (?, ?, ?, ?)", id, nowIso(), "open", generation);
+  }
+
+  /** The owner dismissed the Content-tab ask — durable, unlike a reload. */
+  clearGeneration(batchId) {
+    this.sql.exec("UPDATE batches SET generation = NULL WHERE id = ?", batchId);
+  }
+
+  /**
+   * Drafts arrived for everything the batch asked about — the ask has
+   * answered itself, so it clears rather than waiting on a dismiss.
+   */
+  clearGenerationIfAllDrafted(batchId) {
+    const pending = Number(rows(this.sql.exec(
+      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND current_revision = 0", batchId
+    ))[0]?.n ?? 0);
+    if (pending === 0) this.clearGeneration(batchId);
   }
 
   getBatch(id) {
@@ -923,9 +950,10 @@ export class Storage {
     }
     const filter = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const rowsFound = rows(this.sql.exec(
-      `SELECT b.id, b.created_at, b.status,
+      `SELECT b.id, b.created_at, b.status, b.generation,
          COUNT(bi.id) AS item_count,
          SUM(CASE WHEN bi.state IN ('drafting','held_rights','expired') THEN 1 ELSE 0 END) AS draft_count,
+         SUM(CASE WHEN bi.rights_status = 'pending' THEN 1 ELSE 0 END) AS awaiting_rights_count,
          SUM(CASE WHEN bi.state IN ('submitted','awaiting_approval') THEN 1 ELSE 0 END) AS review_count,
          SUM(CASE WHEN bi.state = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_count,
          SUM(CASE WHEN bi.state IN ('failed','unknown','held') OR bi.rights_status IN ('pending','denied') THEN 1 ELSE 0 END) AS attention_count,
@@ -946,7 +974,7 @@ export class Storage {
        LEFT JOIN origin_links origin ON origin.batch_item_id = sample.id
        LEFT JOIN revisions revision ON revision.batch_item_id = sample.id AND revision.revision = sample.current_revision
        ${filter}
-       GROUP BY b.id, b.created_at, b.status
+       GROUP BY b.id, b.created_at, b.status, b.generation
        ORDER BY b.created_at DESC, b.id DESC LIMIT ?`,
       ...params,
       bounded + 1
@@ -958,8 +986,10 @@ export class Storage {
         id: row.id,
         createdAt: row.created_at,
         status: row.status,
+        generation: row.generation ?? null,
         itemCount: Number(row.item_count ?? 0),
         draftCount: Number(row.draft_count ?? 0),
+        awaitingRights: Number(row.awaiting_rights_count ?? 0),
         reviewCount: Number(row.review_count ?? 0),
         scheduledCount: Number(row.scheduled_count ?? 0),
         attentionCount: Number(row.attention_count ?? 0),

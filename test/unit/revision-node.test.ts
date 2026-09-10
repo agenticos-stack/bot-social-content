@@ -68,7 +68,11 @@ function seed(gadget: Gadget) {
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
-    claimsRequiringConfirmation: []
+    claimsRequiringConfirmation: [],
+    // The org's stored brief is what permits "price" as an allowed change —
+    // a caller-supplied allowedChanges is honoured only where setup already
+    // did, so these tests' briefs need it here, not only on the call.
+    refinementBrief: { allowedChanges: ["price"] }
   });
   gadget.storage.upsertItem({
     id: "instagram:IG_MAIN:p1",

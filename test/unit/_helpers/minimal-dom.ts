@@ -183,6 +183,11 @@ export class ElementShim extends NodeShim {
   getAttribute(name: string): string | null {
     return this.attrs.has(name) ? this.attrs.get(name)! : null;
   }
+  // Vitest's DOM serializer calls this when printing an element inside a
+  // failed assertion — without it the real failure is masked by a TypeError.
+  getAttributeNames(): string[] {
+    return [...this.attrs.keys()];
+  }
   hasAttribute(name: string): boolean {
     return this.attrs.has(name);
   }

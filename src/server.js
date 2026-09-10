@@ -257,6 +257,22 @@ export class Gadget extends DurableObject {
     this.storage = new Storage(ctx);
     this.storage.migrate();
     this.subscribers = new Map();
+    /*
+     * RPC calls may overlap at await points. Chain mutations so each
+     * operation observes and commits one authoritative state in strict
+     * order — the same serial lane the workspace-docs blueprint carries.
+     * A read-then-write split across an `await` (`saveConfiguration`
+     * derives bindings behind door calls before writing; `submitForReview`
+     * files publications after them) is exactly the shape that corrupts
+     * under a 4-way pool, and no `transactionSync` reaches across an await.
+     */
+    this.mutationQueue = Promise.resolve();
+  }
+
+  enqueueMutation(fn) {
+    const result = this.mutationQueue.then(fn);
+    this.mutationQueue = result.catch(() => {});
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -356,16 +372,21 @@ export class Gadget extends DurableObject {
    * `destinations` array — a future richer setup screen, or a test — is still
    * validated strictly (REQ-002: 1 to 20, unique bindings).
    */
-  async setConfig(input) {
+  setConfig(input) {
     // Compatibility: old installed clients coupled Save to starting monitoring.
-    try { return await this.saveConfiguration(input, true); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
+    return this.enqueueMutation(async () => {
+      try { return await this.saveConfiguration(input, true); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
-  async saveSetup(input) {
-    if (this.monitoringChanging) return { ok: false, message: "Wait for the monitoring change to finish before saving." };
-    try { return await this.saveConfiguration(input, false); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  saveSetup(input) {
+    // The mutation lane serialises this against any monitoring change still
+    // in flight — the old `monitoringChanging` flag's job, done by ordering.
+    return this.enqueueMutation(async () => {
+      try { return await this.saveConfiguration(input, false); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
   async saveConfiguration(input, legacyActivation) {
@@ -395,12 +416,11 @@ export class Gadget extends DurableObject {
     return this.summary();
   }
 
-  async setMonitoring(enabled) {
-    if (this.monitoringChanging) return { ok: false, message: "A monitoring change is already in progress." };
-    this.monitoringChanging = true;
-    try { return await this.changeMonitoring(enabled); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
-    finally { this.monitoringChanging = false; }
+  setMonitoring(enabled) {
+    return this.enqueueMutation(async () => {
+      try { return await this.changeMonitoring(enabled); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
   async changeMonitoring(enabled) {
@@ -524,7 +544,11 @@ export class Gadget extends DurableObject {
    * row stays so the items it produced still name their source, and
    * `summary().doors` is what reports it gone.
    */
-  async refreshGrants() {
+  refreshGrants() {
+    return this.enqueueMutation(() => this.refreshGrantsLocked());
+  }
+
+  async refreshGrantsLocked() {
     const derived = await this.deriveBindingsFromGrants();
     const knownSources = new Set(this.storage.listSources().map((row) => row.binding));
     const knownDestinations = new Set(this.storage.listDestinations().map((row) => row.binding));
@@ -573,7 +597,11 @@ export class Gadget extends DurableObject {
    * Refuses by value like everything else in this facet: a throw over RPC
    * breaks the Durable Object output gate and poisons the actor.
    */
-  async addOpenSource(link) {
+  addOpenSource(link) {
+    return this.enqueueMutation(() => this.addOpenSourceLocked(link));
+  }
+
+  async addOpenSourceLocked(link) {
     const resolved = resolveOpenSource(link);
     if (!resolved.ok) return resolved;
 
@@ -600,7 +628,11 @@ export class Gadget extends DurableObject {
   }
 
   /** Stop watching a public account. Its stored items are left alone. */
-  async removeOpenSource(binding) {
+  removeOpenSource(binding) {
+    return this.enqueueMutation(() => this.removeOpenSourceLocked(binding));
+  }
+
+  async removeOpenSourceLocked(binding) {
     const source = this.storage.getSource(binding);
     if (!source || source.origin !== "open") {
       return { ok: false, code: "not_open_source", message: "That is not a public account this workspace watches." };
@@ -709,8 +741,8 @@ export class Gadget extends DurableObject {
    * `runId` each time so a manual refresh is never mistaken for a retry of
    * the last one.
    */
-  async refresh() {
-    return this.runScan(`manual:${crypto.randomUUID()}`);
+  refresh() {
+    return this.enqueueMutation(() => this.runScan(`manual:${crypto.randomUUID()}`));
   }
 
   /**
@@ -733,12 +765,14 @@ export class Gadget extends DurableObject {
    * running it — the item-level idempotency underneath (REQ-013's
    * `UNIQUE(source_binding, provider_item_id)` upsert) still holds either way.
    */
-  async scan(firing) {
-    if (this.storage.getConfig()?.monitoringEnabled === false) {
-      return { skipped: true, reason: "Monitoring is paused." };
-    }
-    const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
-    return this.runScan(runId, firingInstant(firing));
+  scan(firing) {
+    return this.enqueueMutation(() => {
+      if (this.storage.getConfig()?.monitoringEnabled === false) {
+        return { skipped: true, reason: "Monitoring is paused." };
+      }
+      const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
+      return this.runScan(runId, firingInstant(firing));
+    });
   }
 
   async runScan(runId, at = new Date()) {
@@ -1127,20 +1161,26 @@ export class Gadget extends DurableObject {
     return { ...item, seen: this.storage.isSeen(item.id) };
   }
 
-  async markSeen(ids) {
-    const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
-    this.storage.markSeen(list);
-    return { marked: list.length };
+  markSeen(ids) {
+    return this.enqueueMutation(() => {
+      const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+      this.storage.markSeen(list);
+      return { marked: list.length };
+    });
   }
 
-  async setSelection(id, selected) {
-    this.storage.setSelection(String(id), Boolean(selected));
-    return { id: String(id), selected: Boolean(selected) };
+  setSelection(id, selected) {
+    return this.enqueueMutation(() => {
+      this.storage.setSelection(String(id), Boolean(selected));
+      return { id: String(id), selected: Boolean(selected) };
+    });
   }
 
-  async clearSelection() {
-    this.storage.clearSelection();
-    return { cleared: true };
+  clearSelection() {
+    return this.enqueueMutation(() => {
+      this.storage.clearSelection();
+      return { cleared: true };
+    });
   }
 
   async getMedia(itemId, mediaId, options = {}) {
@@ -1186,7 +1226,14 @@ export class Gadget extends DurableObject {
    * one exists — handled the same as any other ungranted-door case below,
    * and self-heals with no change here once it lands (RISK-002).
    */
-  async fetchAndCacheMedia(itemId, mediaId, rendition) {
+  fetchAndCacheMedia(itemId, mediaId, rendition) {
+    // Reached from a read method (`getMedia`), so the lane is taken here, at
+    // the write — a missing cache row checked before an `await`ed fetch is
+    // the read-then-write shape this exists to serialise.
+    return this.enqueueMutation(() => this.fetchAndCacheMediaLocked(itemId, mediaId, rendition));
+  }
+
+  async fetchAndCacheMediaLocked(itemId, mediaId, rendition) {
     const item = this.storage.getItem(itemId);
     /*
      * Say which of the three was missing.
@@ -1320,7 +1367,11 @@ export class Gadget extends DurableObject {
    * to this gadget's own `?w=<gadgetId>` (TASK-104), the same reason
    * `notifyNewItems` above never builds one either.
    */
-  async createBatch(input) {
+  createBatch(input) {
+    return this.enqueueMutation(() => this.createBatchLocked(input));
+  }
+
+  async createBatchLocked(input) {
     const opened = this.openBatch(input);
     if (opened.ok === false) return opened;
 
@@ -1371,7 +1422,10 @@ export class Gadget extends DurableObject {
     const config = this.storage.getConfig();
     const rightsPolicy = config?.rightsPolicy ?? "require_confirmation";
     const batchId = generateId("batch");
-    this.storage.createBatch(batchId);
+    // Every opened batch is a drafting request — the owner's Draft action
+    // here, a scan's workRequest below — so the mark is durable state the
+    // Content tab reads after any reload, not a flag in client memory.
+    this.storage.createBatch(batchId, "requested");
 
     const items = [];
     for (const itemId of ids) {
@@ -1512,9 +1566,20 @@ export class Gadget extends DurableObject {
       sourceOrigin: sourceRow?.origin
     });
     const destinationBindings = this.bindingsForItem(batchItem);
+    // The protected spans, detected — the agent is handed the values rather
+    // than left to infer from prose what must survive verbatim (and, on the
+    // grounded path, what a ledger entry has to name).
+    const config = this.storage.getConfig();
+    const protectedSpans = detectProtectedLiterals(typeof sourceItem?.text === "string" ? sourceItem.text : "", {
+      protectedTerms: config?.protectedTerms,
+      protectedHashtags: config?.protectedHashtags,
+      disclaimers: config?.disclaimers,
+      claimsRequiringConfirmation: config?.claimsRequiringConfirmation
+    });
     return {
       id: batchItem.id,
       sourceItem,
+      protectedSpans,
       destinationBindings,
       // TASK-009: where it went — one row per destination this item was sent
       // to (or is pointed at, in the `bound` state).
@@ -1554,7 +1619,15 @@ export class Gadget extends DurableObject {
     const batch = this.storage.getBatch(batchId);
     if (!batch) return null;
     const items = this.storage.listBatchItems(batchId).map((batchItem) => this.projectBatchItem(batchItem));
-    return { id: batch.id, createdAt: batch.created_at, status: batch.status, items };
+    return { id: batch.id, createdAt: batch.created_at, status: batch.status, generation: batch.generation ?? null, items };
+  }
+
+  /** The owner dismissed the Content-tab generation ask for this batch. */
+  dismissGenerationAsk(batchId) {
+    return this.enqueueMutation(() => {
+      this.storage.clearGeneration(String(batchId));
+      return { ok: true };
+    });
   }
 
   async listBatches() {
@@ -1572,7 +1645,35 @@ export class Gadget extends DurableObject {
   // revisions (PAT-004, REQ-007, REQ-011)
   // -----------------------------------------------------------------------
 
-  async saveRevision({
+  saveRevision(args) {
+    return this.enqueueMutation(() => this.saveRevisionLocked(args));
+  }
+
+  /**
+   * One agent turn, one approval card, the whole batch.
+   *
+   * A gadget method that is not a declared read carries no `routine` on its
+   * action shape, so `decide.ts` asks on every call and a refusal ends the
+   * turn — per-item `saveRevision` for a 12-post batch would be twelve
+   * separate asks the owner never meant to answer one by one. This is the
+   * same payload the owner sees once: every item's draft in a single write.
+   * Each entry validates independently; per-item refusals ride inside
+   * `results` rather than failing the whole call (PAT-007).
+   */
+  saveRevisions(input) {
+    return this.enqueueMutation(async () => {
+      const list = Array.isArray(input?.revisions) ? input.revisions.slice(0, 50) : [];
+      const results = [];
+      for (const entry of list) {
+        // One lane, one shared inner — the batch call is not a way around
+        // validation, it is the same saveRevision contract N times.
+        results.push(await this.saveRevisionLocked(entry && typeof entry === "object" ? entry : {}));
+      }
+      return { ok: results.every((result) => result.ok), results };
+    });
+  }
+
+  async saveRevisionLocked({
     batchItemId,
     expectedRevision,
     caption,
@@ -1613,8 +1714,19 @@ export class Gadget extends DurableObject {
         ]
       };
     }
+    /*
+     * CALLER-SUPPLIED allowedChanges, ORG-BOUND. `allowedChanges` selects the
+     * ledger path — and it arrives from whoever called saveRevision, which is
+     * the agent as often as the owner. A caller that wrote `["tone"]` into the
+     * brief got a validation path of its own choosing. The org's stored brief
+     * is the bound: only the changes it permits are honoured, so an empty
+     * stored list means no allowed changes regardless of what the call asked
+     * for.
+     */
+    const storedAllowed = normalizeRefinementBrief(config?.refinementBrief).allowedChanges;
     const brief = {
       ...refinement,
+      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change)),
       ...(acceptedVisualMode ? { visualTreatment: acceptedVisualMode } : {})
     };
     const overrides =
@@ -1686,11 +1798,16 @@ export class Gadget extends DurableObject {
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision, issues: validation.issues };
   }
 
-  async savePoster({ batchItemId, expectedRevision, template, png }) {
+  savePoster(args) {
+    return this.enqueueMutation(() => this.savePosterLocked(args));
+  }
+
+  async savePosterLocked({ batchItemId, expectedRevision, template, png }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
       return {
@@ -1791,7 +1908,11 @@ export class Gadget extends DurableObject {
     return { state: batchItem.state === "held_rights" ? "held_rights" : "drafting" };
   }
 
-  async confirmRights({ batchItemId, status, by }) {
+  confirmRights(args) {
+    return this.enqueueMutation(() => this.confirmRightsLocked(args));
+  }
+
+  async confirmRightsLocked({ batchItemId, status, by }) {
     // A caller bug, not an owner-facing condition — the only two callers of
     // this method send a fixed "confirmed" or "denied" literal. Still a
     // value, not a throw (see the file header note).
@@ -1857,7 +1978,11 @@ export class Gadget extends DurableObject {
    * runs as a facet RPC target, where a throw is what breaks the output
    * gate (file header note).
    */
-  async submitForReview({ batchItemId, expectedRevision, destinationBindings, intent, createNewVersion }) {
+  submitForReview(args) {
+    return this.enqueueMutation(() => this.submitForReviewLocked(args));
+  }
+
+  async submitForReviewLocked({ batchItemId, expectedRevision, destinationBindings, intent, createNewVersion }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) return { ok: false, code: "batch_item_unknown", message: `No batch item ${batchItemId}.` };
     if (batchItem.currentRevision !== expectedRevision) {

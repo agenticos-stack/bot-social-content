@@ -399,15 +399,29 @@ describe("validateGrounded", () => {
   const source = { id: "instagram:IG_MAIN:p1", text: "Get the HK$1,299 bundle now." };
   const derivedCaption = "宣傳優惠：套裝價錢HK$999，立即購買。";
 
-  it("passes a derived draft with a new price when the ledger names a basis", () => {
+  it("passes a derived draft when the preserved price carries a source basis", () => {
+    const result = validateGrounded({
+      source,
+      draft: "宣傳優惠：套裝價錢HK$1,299，立即購買。",
+      brief: { allowedChanges: ["price"], visualTreatment: "ai_refinement" },
+      ledger: { spans: [{ text: "HK$1,299", kind: "price", basis: "source:instagram:IG_MAIN:p1" }] }
+    });
+    expect(result.ok).toBe(true);
+    expect(result.issues.some((entry) => entry.severity === "block")).toBe(false);
+  });
+
+  it("blocks a price the grounded draft changed, whatever basis it names", () => {
+    // Source preservation runs on BOTH paths (PM decision 3, second half):
+    // a knowledge: basis can ground a draft-side literal, it cannot retire
+    // the source's own price — HK$1,299 altered to HK$999 is refused.
     const result = validateGrounded({
       source,
       draft: derivedCaption,
       brief: { allowedChanges: ["price"], visualTreatment: "ai_refinement" },
       ledger: { spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }] }
     });
-    expect(result.ok).toBe(true);
-    expect(result.issues.some((entry) => entry.severity === "block")).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "protected_literal_altered", severity: "block" }));
   });
 
   it("blocks the same derived draft when the new price has no basis", () => {

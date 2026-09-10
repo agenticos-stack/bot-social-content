@@ -261,6 +261,8 @@ describe("TEST-007: migration 8 backfills live rows", () => {
     const { db, ctx } = sqlite();
     // A schema-version-7 database, the shape live instances actually carry.
     db.exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`);
+    // The real v7 shape carries the batches row too — migration 9 alters it.
+    db.exec(`CREATE TABLE batches (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL)`);
     db.exec(`CREATE TABLE batch_items (
       id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, item_id TEXT NOT NULL,
       destination_bindings_json TEXT NOT NULL, state TEXT NOT NULL,

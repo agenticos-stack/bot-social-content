@@ -117,6 +117,10 @@ export function renderInbox(root, state, ctx) {
     el("p", null, preview?.caption ?? preview?.sourceText ?? t(locale, "inboxNoSource")),
     el("span", { class: "sl-field-note" }, Number.isInteger(preview?.revision) ? t(locale, "drawerRevision", { n: preview.revision }) : t(locale, "inboxNoSavedRevision")),
     batch.itemCount > 1 ? el("span", { class: "sl-field-note" }, t(locale, "inboxRepresentative")) : null,
+    // "12 drafts, 9 awaiting rights" (PM decision 8): a held-rights item is
+    // draftable, so the count says how much drafting is blocked at SUBMIT —
+    // not at generation — by confirmations nobody has given yet.
+    batch.awaitingRights ? el("span", { class: "sl-field-note" }, t(locale, "inboxAwaitingRights", { n: batch.awaitingRights })) : null,
     el("p", { class: "sl-field-note" }, batch.lastUpdatedAt ? new Date(batch.lastUpdatedAt).toLocaleString(locale) : ""),
     el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onInspectBatch(batch) }, t(locale, "inboxInspect"))
   ]); });
@@ -133,8 +137,8 @@ export function renderInbox(root, state, ctx) {
     el("p", { class: "sl-field-note" }, t(locale, "askAgentBody")),
     el("code", { class: "sl-ask-message" }, askMessage),
     el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk() }, t(locale, "askAgentDismiss"))
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(ask.batchId, askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk(ask.batchId) }, t(locale, "askAgentDismiss"))
     ])
   ]) : null;
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [

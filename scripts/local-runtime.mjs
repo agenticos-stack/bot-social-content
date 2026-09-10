@@ -46,7 +46,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * any door call proceeds, and `submitForReview` is gated there as it is for
    * an installed gadget.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','saveRevisions','confirmRights','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','getMedia'];
   const connectedDoors = doors ?? undefined;
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],

@@ -574,10 +574,9 @@ function App() {
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
-  // The batch the owner just asked to be drafted — one Content-tab card
-  // carrying the message to send the agent. Session-scoped: dismissing or
-  // navigating away leaves the batch itself untouched.
-  let pendingAsk = null;
+  // Cosmetic only — the ask itself is durable (batches.generation), so a
+  // reload still shows it. This just remembers "you copied it already".
+  let copiedAskId = null;
   let wizard = createWizardState();
   let activePreviewItem = null;
   let activePreviewStage = null;
@@ -921,14 +920,19 @@ function App() {
       collectionState = clearNotice(collectionState);
       renderCurrentView();
     },
-    onDismissAsk: () => {
-      pendingAsk = null;
+    onDismissAsk: async (batchId) => {
+      try {
+        await rpc.dismissGenerationAsk(batchId);
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      } catch (error) {
+        console.error(error);
+      }
       renderCurrentView();
     },
-    onCopyAsk: async (message) => {
+    onCopyAsk: async (batchId, message) => {
       try {
         await navigator.clipboard?.writeText(message);
-        if (pendingAsk) pendingAsk = { ...pendingAsk, copied: true };
+        copiedAskId = batchId;
       } catch (error) {
         // A sandboxed frame can lack clipboard permission; the message stays
         // on screen in a selectable block either way.
@@ -983,9 +987,35 @@ function App() {
     announce(t(locale, "batchBlockedTitle"), refusalMessage(refusal));
   }
 
+  /**
+   * Source items already covered by an active batch — the client's mirror of
+   * `findDuplicates` (active, never-filed batch items). The summaries only
+   * approximate it: a batch with filed-but-still-active rows is not a
+   * conflict, and the server stays authoritative for whatever this misses.
+   * Drafts and attention rows are the ones that would refuse.
+   */
+  function takenSourceIds() {
+    return new Set(
+      (inboxState.summaries ?? [])
+        .filter((entry) => (entry.draftCount ?? 0) + (entry.attentionCount ?? 0) > 0)
+        .flatMap((entry) => entry.sourceItemIds ?? [])
+    );
+  }
+
   async function continueWithSelection(createNewVersion) {
-    const ids = selectedIds(collectionState);
-    if (!ids.length) return;
+    const selected = selectedIds(collectionState);
+    if (!selected.length) return;
+    /*
+     * The count on the action is what the action can actually draft
+     * (PM decision 5, corrected): selected posts already in an open draft
+     * are not drafted again — they are skipped and named, not sent to a
+     * batch the server would refuse. When every selected post is taken,
+     * all ids still go to createBatch so its refusal can offer the
+     * explicit new-version path (REQ-017's opt-in entry).
+     */
+    const taken = takenSourceIds();
+    const draftable = selected.filter((id) => !taken.has(id));
+    const ids = draftable.length ? draftable : selected;
     try {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
@@ -1011,11 +1041,15 @@ function App() {
        * The batch is pending drafts now — generation is a conversation ask,
        * not a click path (PM decision 1: no platform work-request mechanism
        * exists yet; agenticos-stack/agenticos#1861). Land on Content, where
-       * the ask panel carries the ready-to-send phrasing and the pending
-       * drafts appear as they are saved. Editing still reaches the wizard
-       * through Inspect → Continue editing.
+       * the ask card is read off the batch's durable `generation` mark and
+       * the pending drafts appear as they are saved. Editing still reaches
+       * the wizard through Inspect → Continue editing.
        */
-      pendingAsk = { batchId: batch.id, count: batch.items?.length ?? ids.length };
+      if (draftable.length && draftable.length < selected.length) {
+        collectionState = setNotice(collectionState, {
+          message: t(locale, "skippedDrafts", { n: selected.length - draftable.length })
+        });
+      }
       activeSection = "content";
       inboxState = setInboxFilter(inboxState, "drafts");
       await rpc.markSeen(ids).catch(() => {});
@@ -1337,8 +1371,17 @@ function App() {
           el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
         ])
       ]);
-      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask: pendingAsk });
+      /*
+       * The ask is durable — `generation: "requested"` on the batch, so it
+       * survives a reload (pendingAsk in memory did not). One card, for the
+       * newest batch still waiting on drafts.
+       */
+      const askSummary = inboxState.summaries.find((entry) => entry.generation === "requested");
+      const ask = askSummary ? { batchId: askSummary.id, count: askSummary.itemCount, copied: copiedAskId === askSummary.id } : null;
+      const taken = takenSourceIds();
+      const draftableCount = selectedIds(collectionState).filter((id) => !taken.has(id)).length;
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover, draftableCount });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask });
       replace(viewHost, [navigation, body]);
       return;
     }

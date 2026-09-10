@@ -30,6 +30,8 @@ export function createRpc(gadget) {
     listBatches: () => gadget.listBatches(),
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),
+    saveRevisions: (input) => gadget.saveRevisions(input),
+    dismissGenerationAsk: (batchId) => gadget.dismissGenerationAsk(batchId),
     savePoster: (input) => gadget.savePoster(input),
     confirmRights: (input) => gadget.confirmRights(input),
     submitForReview: (input) => gadget.submitForReview(input),

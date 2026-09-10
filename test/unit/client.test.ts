@@ -744,6 +744,7 @@ describe("bundled client.js smoke test", () => {
 
     const item = makeItem({ id: "a", seen: false, selected: true });
     let createdArgs: unknown = null;
+    let dismissedAsk = false;
     (globalThis as any).gadget = {
       async summary() {
         return {
@@ -769,13 +770,19 @@ describe("bundled client.js smoke test", () => {
       },
       async listBatchSummaries() {
         // Empty until the batch exists — otherwise the view opens on Content
-        // before the click this test is about.
+        // before the click this test is about. The batch row carries the
+        // durable `generation: "requested"` mark the server now sets, until
+        // the fake's dismissGenerationAsk clears it (as the real one does).
         if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
         return {
-          batches: [{ id: "batch_test1", status: "open", itemCount: 1, draftCount: 1, reviewCount: 0, scheduledCount: 0, attentionCount: 1, sourceItemIds: ["a"], preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false } }],
+          batches: [{ id: "batch_test1", status: "open", generation: dismissedAsk ? null : "requested", itemCount: 1, draftCount: 1, awaitingRights: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 1, sourceItemIds: ["a"], preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false } }],
           nextCursor: null,
           totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 1 }
         };
+      },
+      async dismissGenerationAsk() {
+        dismissedAsk = true;
+        return { ok: true };
       },
       async subscribe() {
         return {};
