@@ -37,17 +37,24 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * `submitForReview` wraps every door call and refuses by value — an absent
    * publisher is `provider_unavailable`, not an admission failure.
    *
-   * The second is admitted ONLY with doors, because each one goes through one:
-   * scanning reads a source, monitoring arms a schedule, poster and media
-   * fetches reach their providers. Admitting them without doors would move a
-   * clear "this is unavailable" to a confusing failure inside the gadget.
+   * `getMedia` and `savePoster` belong to drafting, not to doors: a media
+   * cache hit serves local bytes with no fetch at all (a miss refuses by
+   * value — `media_missing`), and a poster PNG is rendered in the browser
+   * and only stored. Gating either on doors left a no-door session unable
+   * to read its own cache or save its own poster.
+   *
+   * The second list is admitted ONLY with doors, because each one's whole
+   * purpose is a door call: scanning reads a source, monitoring arms a
+   * schedule, source add/remove resolves through the connector. Admitting
+   * them without doors would move a clear "this is unavailable" to a
+   * confusing failure inside the gadget.
    *
    * Admission is not authority either way — the platform still decides whether
    * any door call proceeds, and `submitForReview` is gated there as it is for
    * an installed gadget.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','saveRevisions','confirmRights','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml'];
-  const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','getMedia'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','saveRevisions','confirmRights','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
+  const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],
     allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });
