@@ -141,7 +141,20 @@ const MAX_ITEMS_PER_SOURCE = 100; // REQ-013
 const PAGE_SIZE = 25; // one connector call's `limit` — small enough to isolate a mid-scan failure to a few items
 const STALE_RUN_MS = 5 * 60 * 1000; // a "running" scan_runs row older than this is a crash, not a live overlap
 
-const THUMB_MAX_BYTES = 256 * 1024; // SEC-004
+/*
+ * SEC-004. Matched to the media door's own thumb cap, deliberately.
+ *
+ * "Thumb" is not a smaller picture here: Instagram's payload carries exactly
+ * one `image_versions2.candidate` per photo, so a thumb IS the full-size file
+ * and there is nothing smaller to ask the door for. At 256 KiB this cache
+ * refused two of the first twelve photos from a real account -- the two
+ * largest, which are the two a grid most wants to show.
+ *
+ * Kept equal to `MEDIA_FETCH_THUMB_MAX_BYTES` in the API's media door. A
+ * cache cap below the door's turns bytes that were fetched and paid for into
+ * a refusal here; one above it can never be reached. Move both or neither.
+ */
+const THUMB_MAX_BYTES = 512 * 1024;
 const PREVIEW_MAX_BYTES = 1024 * 1024; // SEC-004
 const PREVIEW_CHUNK_BYTES = 1024 * 1024; // CON-007: chunk anything above 1 MiB
 
