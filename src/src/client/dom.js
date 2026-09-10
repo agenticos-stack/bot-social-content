@@ -127,6 +127,22 @@ const RELATIVE_UNITS = [
  * sandbox may not ship a locale for. Falls back to "just now" under a
  * minute — good enough for "Checked 2 min ago" / a card's timestamp.
  */
+const RELATIVE_UNITS_ZH = { year: "年", month: "個月", week: "星期", day: "日", hour: "小時", minute: "分鐘" };
+
+/**
+ * "3 days ago" / "3 日前", from one place.
+ *
+ * This phrasing existed three times over — twice in collection.js and once
+ * more the moment the drawer wanted a timestamp. Three copies of a plural
+ * rule is three chances for one of them to drift.
+ */
+export function relativeLabel(locale, iso, now = Date.now()) {
+  const rel = relativeTimeFrom(iso, now);
+  if (!rel) return null;
+  if (locale === "zh-HK") return `${rel.amount} ${RELATIVE_UNITS_ZH[rel.unit]}前`;
+  return `${rel.amount} ${rel.unit}${rel.amount === 1 ? "" : "s"} ago`;
+}
+
 export function relativeTimeFrom(iso, now = Date.now()) {
   if (typeof iso !== "string" || !iso) return null;
   const then = Date.parse(iso);

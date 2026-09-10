@@ -9,7 +9,7 @@
 // tests/social-localization-client.test.ts). The render half below it is
 // imperative DOM building that a smoke test exercises with a fake `gadget`.
 
-import { el, replace, relativeTimeFrom } from "./dom.js";
+import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";
 import { t } from "./i18n.js";
 
 // ---------------------------------------------------------------------------
@@ -168,18 +168,7 @@ function formatChecked(locale, iso) {
 
 function metaLine(locale, item) {
   const wrap = el("span", { class: "sl-meta" });
-  const time = relativeTimeFrom(item.publishedAt);
-  wrap.appendChild(
-    el(
-      "span",
-      null,
-      time
-        ? locale === "zh-HK"
-          ? `${time.amount} ${{ year: "年", month: "個月", week: "星期", day: "日", hour: "小時", minute: "分鐘" }[time.unit]}前`
-          : `${time.amount} ${time.unit}${time.amount === 1 ? "" : "s"} ago`
-        : ""
-    )
-  );
+  wrap.appendChild(el("span", null, relativeLabel(locale, item.publishedAt) || ""));
   const likes = item.metrics && typeof item.metrics.likes === "number" ? item.metrics.likes : null;
   wrap.appendChild(
     likes === null
