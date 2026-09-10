@@ -93,6 +93,23 @@ describe("the media cache refuses what it cannot hold", () => {
     expect((result as { total: number }).total).toBe(120 * 1024);
   });
 
+  it("holds a full-size feed photo as a thumb, because that is the only rendition there is", async () => {
+    // The provider publishes one `image_versions2.candidate` per photo, so a
+    // thumb IS the full-size file. At 256KB this cap refused the two largest
+    // photos of the first twelve from a real account, after the door had
+    // already fetched and been paid for them.
+    const gadget = withItem(doorServing(400 * 1024, "image/jpeg"));
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect((result as { ok?: boolean }).ok).not.toBe(false);
+    expect((result as { total: number }).total).toBe(400 * 1024);
+  });
+
+  it("still refuses a thumb over the cap the door itself would have refused", async () => {
+    const gadget = withItem(doorServing(600 * 1024, "image/jpeg"));
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect(result).toMatchObject({ ok: false, code: "media_too_large" });
+  });
+
   it("refuses an oversized rendition instead of storing a prefix of it", async () => {
     const gadget = withItem(doorServing(2_771_211));           // the real reel's size
     const result = await gadget.getMedia("item-1", "source-media", { rendition: "preview" });
