@@ -86,7 +86,7 @@ import {
   normalizeRefinementBrief,
   normalizeLedger,
   applyProtectedOverridesToLedger,
-  observationOrigin,
+  draftOrigin,
   rightsObligation,
   posterPngConstraints,
   validatePosterLayout,
@@ -1594,6 +1594,17 @@ export class Gadget extends DurableObject {
       return { ok: false, code: packedMedia.code, message: packedMedia.message };
     }
 
+    // TASK-015: the attribution the door carries is the observation record the
+    // ledger stands on, checked against it here rather than assumed.
+    const attribution = draftOrigin({
+      originLink: origin,
+      ledger: revision.ledger,
+      sourceId: batchItem.itemId
+    });
+    if (!attribution.ok) {
+      return { ok: false, code: attribution.code, message: attribution.message };
+    }
+
     // Both door calls below are wrapped: `socialCreateDraft` /
     // `socialSubmitForReview` (`doors.js`) throw when the door itself is
     // absent, and a real Social Hub RPC can reject on its own (a genuine
@@ -1605,7 +1616,7 @@ export class Gadget extends DurableObject {
         caption,
         media: packedMedia.media,
         targets: batchItem.destinationBindings.map((destinationBinding) => ({ destinationBinding })),
-        origin: observationOrigin(origin),
+        origin: attribution.origin,
         protectedLiterals,
         // The Social Hub owns schedule validation and time resolution. Carry
         // the normalized, owner-reviewed intent through the door instead of
