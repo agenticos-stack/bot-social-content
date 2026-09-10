@@ -203,6 +203,64 @@ describe("collection.js state", () => {
   });
 });
 
+/*
+ * A button that cannot work should say so before it is pressed.
+ *
+ * With no destination configured, Continue was enabled; pressing it refused
+ * with `batch_needs_destinations`, and that refusal went to `console.log` and
+ * nowhere else. On screen: nothing at all. Reproduced against the live gadget
+ * on 2026-09-10 — "[social-localization] Refresh failed: createBatch needs at
+ * least one destination binding."
+ */
+describe("the selection tray, when nothing is set up to publish to", () => {
+  const item = {
+    id: "i1", sourceBinding: "open:instagram:acct", sourceLabel: "@acct", provider: "instagram",
+    providerItemId: "p1", text: "a post", metrics: {}, publishedAt: "2026-09-01T00:00:00.000Z",
+    media: [], selected: true
+  };
+
+  function tray(summary: unknown) {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const state = setItems(createCollectionState(), { items: [item] as never, nextCursor: null });
+    renderCollection(root as never, state as never, {
+      locale: "en", sources: [], summary,
+      handlers: { onSelect() {}, onOpen() {}, onMore() {}, onContinue() {}, onOpenSettings() {} }
+    } as never);
+    return findAll(root as never, (e: { tagName?: string }) => e.tagName === "BUTTON")
+      .map((button: { textContent?: string }) => button.textContent ?? "");
+  }
+
+  it("points at settings instead of offering Continue", () => {
+    const labels = tray({ destinations: [] });
+    expect(labels.some((label) => label.includes("Add a destination"))).toBe(true);
+    expect(labels.some((label) => label.startsWith("Continue with"))).toBe(false);
+  });
+
+  it("offers Continue once a destination exists", () => {
+    const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
+    expect(labels.some((label) => label.includes("Continue with 1 post"))).toBe(true);
+    expect(labels.some((label) => label.includes("Add a destination"))).toBe(false);
+  });
+
+  /*
+   * UNKNOWN IS NOT ZERO. `summary()` has not resolved on the first paint, and
+   * reading its absence as "no destinations" would flash a setup prompt at
+   * every owner on every load and then take it back.
+   */
+  it("keeps Continue while the summary has not arrived", () => {
+    const labels = tray(undefined);
+    expect(labels.some((label) => label.includes("Continue with 1 post"))).toBe(true);
+  });
+
+  it("says one post, not 1 post(s)", () => {
+    const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
+    expect(labels.join(" ")).toContain("Continue with 1 post");
+    expect(labels.join(" ")).not.toContain("post(s)");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // steps.js — Continue -> Localize, block issues gate Submit, expired approval
 // ---------------------------------------------------------------------------

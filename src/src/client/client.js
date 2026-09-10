@@ -341,6 +341,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
 .sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
+.sl-announce { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; max-width: min(520px, calc(100vw - 32px)); pointer-events: none; }
+.sl-announce-card { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; background: var(--sl-surface); border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
+.sl-announce-card strong { font-size: 13px; }
+.sl-announce-card span { font-size: 12.5px; color: var(--sl-muted); line-height: 1.55; }
+.sl-announce-card > strong + span { margin-left: 0; }
+.sl-announce-card { flex-wrap: wrap; }
+.sl-announce-card strong { flex: 1 1 100%; }
+.sl-announce-card span { flex: 1 1 100%; }
+.sl-announce-action { flex: 0 0 auto; min-height: 32px; padding: 0 12px; font-size: 12.5px; cursor: pointer; background: var(--sl-accent, #f5b544); border: 1px solid var(--sl-accent, #f5b544); color: #1a1a1a; border-radius: var(--sl-radius-control); }
+.sl-announce-dismiss { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; cursor: pointer; border: 0; background: transparent; color: var(--sl-muted); font-size: 17px; line-height: 1; }
+.sl-announce-card { position: relative; padding-right: 34px; }
+.sl-needs-setup { white-space: normal; }
 .sl-preview-head { padding: 12px 20px; }
 .sl-preview-head strong { font-size: 16px; }
 .sl-preview-head span { font-size: 11px; }
@@ -482,7 +494,10 @@ function App() {
   }
 
   const locale = resolveLocale(document.documentElement.lang);
-  const { viewHost } = buildShell();
+  let announceTimer = null;
+  const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
+  const { root: shellRoot, viewHost } = buildShell();
+  shellRoot.appendChild(announceRegion);
   const previewDialog = buildPreviewDialog();
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
@@ -499,12 +514,46 @@ function App() {
   let drawerRequest = 0;
   let leavingEditor = false;
 
-  function toast(title, body) {
-    // Minimal, dependency-free toast; console.log also reaches the host via
-    // the sandbox bootstrap's forwarded console, so this is never the only
-    // trace of an action.
+  /**
+   * PUT IT ON THE SCREEN.
+   *
+   * This was `console.log`, and nothing else — so the four outcomes routed
+   * through it were invisible to the only person who needed them. Pressing
+   * Continue with no destination configured wrote "createBatch needs at least
+   * one destination binding" to a console the owner never opens, and on screen
+   * absolutely nothing happened: no error, no movement, a button that did not
+   * work and did not say why.
+   *
+   * `role="status"` with `aria-live="polite"` so a screen reader hears it
+   * without the interruption an alert would cause. The console line stays —
+   * the sandbox forwards it to the host, which is how a developer sees it —
+   * but it is no longer the only place the sentence exists.
+   */
+  function announce(title, body, action) {
     console.log(`[social-localization] ${title}: ${body || ""}`);
+    if (announceTimer) clearTimeout(announceTimer);
+    replace(announceRegion, [
+      el("div", { class: "sl-announce-card" }, [
+        el("strong", null, title),
+        body ? el("span", null, body) : null,
+        action
+          ? el("button", { type: "button", class: "sl-announce-action", onclick: () => { announce.clear(); action.run(); } }, action.label)
+          : null,
+        el("button", {
+          type: "button", class: "sl-announce-dismiss",
+          "aria-label": t(locale, "dismiss"), onclick: () => announce.clear()
+        }, "\u00d7")
+      ])
+    ]);
+    // Long enough to read a refusal, and it can be dismissed sooner. A notice
+    // that vanishes before it is read is the same as no notice.
+    announceTimer = setTimeout(() => announce.clear(), 12000);
   }
+  announce.clear = () => {
+    if (announceTimer) clearTimeout(announceTimer);
+    announceTimer = null;
+    replace(announceRegion, []);
+  };
 
   async function loadCollection(filter = collectionState.filter) {
     collectionState = setLoading(collectionState, true);
@@ -739,10 +788,10 @@ function App() {
       try {
         await rpc.refresh();
         await loadCollection(collectionState.filter);
-        toast(t(locale, "refreshedTitle"), "");
+        announce(t(locale, "refreshedTitle"), "");
       } catch (error) {
         console.error(error);
-        toast(t(locale, "refreshFailedTitle"), "");
+        announce(t(locale, "refreshFailedTitle"), error instanceof Error ? error.message : "");
       }
     },
     onClear: async () => {
@@ -789,6 +838,27 @@ function App() {
    * `createNewVersion` — the explicit opt-in the requirement asks for, made
    * by the person, not by this function retrying.
    */
+  /**
+   * A refusal, said to the person rather than to the caller.
+   *
+   * `refusalMessage` carries the server's own sentence, which is right for
+   * `duplicate_active` (it names the batch) and wrong for the codes that
+   * describe a missing setup step — "createBatch needs at least one
+   * destination binding" is a sentence about a function argument. Where this
+   * gadget knows the way out, it offers it.
+   */
+  function announceRefusal(refusal) {
+    if (refusal?.code === "batch_needs_destinations") {
+      announce(
+        t(locale, "batchNoDestinationTitle"),
+        t(locale, "batchNoDestinationBody"),
+        { label: t(locale, "settingsOpen"), run: () => collectionHandlers.onOpenSettings() }
+      );
+      return;
+    }
+    announce(t(locale, "batchBlockedTitle"), refusalMessage(refusal));
+  }
+
   async function continueWithSelection(createNewVersion) {
     const ids = selectedIds(collectionState);
     if (!ids.length) return;
@@ -808,7 +878,7 @@ function App() {
           return;
         }
         collectionState = clearNotice(collectionState);
-        toast(t(locale, "refreshFailedTitle"), refusalMessage(batch));
+        announceRefusal(batch);
         renderCurrentView();
         return;
       }
@@ -1031,7 +1101,7 @@ function App() {
         await rpc.exportAs(format);
       } catch (error) {
         console.error(error);
-        toast(t(locale, "exportFailed"), "");
+        announce(t(locale, "exportFailed"), "");
       }
     },
     onStartAnother: async () => {
@@ -1255,9 +1325,8 @@ function App() {
           saving = false;
           draw();
         } catch (thrown) {
-          // Logged for the sandbox's own forwarded console (client.js's
-          // `toast` comment above notes it reaches the host that way) AND
-          // shown inline, because a thrown error before the RPC ever
+          // Logged for the sandbox's own forwarded console (see `announce`)
+          // AND shown inline, because a thrown error before the RPC ever
           // reaches `env` is exactly the failure mode this cannot rely on
           // console access to diagnose.
           console.error(thrown);

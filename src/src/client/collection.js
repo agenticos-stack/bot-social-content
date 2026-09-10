@@ -296,6 +296,10 @@ export function renderCollection(root, state, ctx) {
   const covers = [];
   const items = visibleItems(state);
   const nSelected = selectedCount(state);
+  // UNKNOWN IS NOT ZERO. Before `summary()` resolves there is no destination
+  // list, and treating that as "none configured" would flash a setup prompt at
+  // every owner on every load and then take it back.
+  const hasDestination = !summary || !Array.isArray(summary.destinations) || summary.destinations.length > 0;
   const nNew = newCount(state);
 
   const searchInput = el("input", {
@@ -384,11 +388,30 @@ export function renderCollection(root, state, ctx) {
         el("strong", null, t(locale, "selectedCount", { n: nSelected })),
       ]),
       el("button", { type: "button", class: "sl-clear", onclick: handlers.onClear }, t(locale, "clear")),
-      el(
-        "button",
-        { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
-        nSelected ? t(locale, "continueWithPosts", { n: nSelected }) : t(locale, "continueSelectPrompt")
-      )
+      /*
+       * A button that cannot work says so before it is pressed.
+       *
+       * With no destination configured, Continue was enabled, and pressing it
+       * refused with `batch_needs_destinations` — into a console the owner
+       * never opens. Nothing happened on screen at all. `summary.destinations`
+       * is the same list the call would send, so the tray can tell the owner
+       * what is missing while there is still something to do about it.
+       */
+      hasDestination
+        ? el(
+            "button",
+            { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
+            nSelected
+              // `{n} post(s)` was the shipped copy. English has a plural; the
+              // parenthesis is a way of not choosing one.
+              ? t(locale, nSelected === 1 ? "continueWithPost" : "continueWithPosts", { n: nSelected })
+              : t(locale, "continueSelectPrompt")
+          )
+        : el(
+            "button",
+            { type: "button", class: "sl-secondary sl-needs-setup", onclick: () => handlers.onOpenSettings && handlers.onOpenSettings() },
+            t(locale, "continueNeedsDestination")
+          )
     ])
   ]);
 
