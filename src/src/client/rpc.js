@@ -89,6 +89,7 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
   const parts = [];
   let mime = "application/octet-stream";
   let expectedChunks = 1;
+  let expectedTotal = null;
   let chunk = 0;
   do {
     const page = await rpc.getMedia(itemId, mediaId, { rendition, chunk });
@@ -101,10 +102,29 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
     if (page.ok === false) throw new Error(page.message || "This media is not available.");
     if (page.mime) mime = page.mime;
     if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
+    if (typeof page.total === "number" && expectedTotal === null) expectedTotal = page.total;
     const bytes = chunkBytes(page.bytes);
     parts.push(bytes);
     chunk += 1;
   } while (chunk < expectedChunks);
+  /*
+   * COUNT WHAT ARRIVED against what the server said it was sending.
+   *
+   * Every way these bytes can be lost loses them quietly: a shape `chunkBytes`
+   * cannot read yields an empty array, a dropped chunk simply is not there,
+   * and `new Blob()` accepts all of it without complaint. The caller then gets
+   * a perfectly valid `blob:` URL for a broken picture, which renders as
+   * nothing at all — indistinguishable from a post that has no media. Both of
+   * this file's byte-shape bugs reached a screen that way before anything
+   * reported them.
+   *
+   * `total` is the server's own count of the bytes for this rendition, so a
+   * mismatch is a transport fault, not a missing source, and it says so.
+   */
+  const assembled = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  if (expectedTotal !== null && assembled !== expectedTotal) {
+    throw new Error(`This media arrived as ${assembled} of ${expectedTotal} bytes.`);
+  }
   const blob = new Blob(parts, { type: mime });
   return { url: URL.createObjectURL(blob), mime };
 }
