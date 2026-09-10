@@ -28,9 +28,10 @@ import {
   setSearch,
   setSourceFilter
 } from "./collection.js";
-import { el, icon, replace } from "./dom.js";
+import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
+import { createMediaStage } from "./preview-media.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
@@ -309,8 +310,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-close { margin-left: auto; flex-shrink: 0; border: 0; background: transparent; color: var(--sl-ink); font-size: 24px; height: 44px; width: 44px; border-radius: var(--sl-radius-row); }
 .sl-preview-close:hover { background: var(--sl-hover); }
 .sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
-.sl-preview-media { height: clamp(140px, 28dvh, 260px); background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 20px; display: grid; place-items: center; overflow: hidden; }
-.sl-preview-media img { width: 100%; height: 100%; object-fit: contain; }
+/* The media stage. See preview-media.js for why the cap is a length. */
+.sl-preview-stage-wrap { margin-bottom: 20px; }
+.sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 260px; padding: 18px; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
+.sl-stage-surface { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; }
+.sl-stage-img { position: relative; display: block; width: auto; height: auto; max-width: 100%; box-shadow: 0 10px 34px rgba(0,0,0,.5); }
+.sl-stage-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(34px) brightness(.42) saturate(1.15); transform: scale(1.15); pointer-events: none; }
+.sl-stage-chip { position: absolute; z-index: 2; top: 12px; font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 4px 8px; color: #f3f0e9; background: rgba(13,12,10,.74); border: 1px solid rgba(243,240,233,.16); }
+.sl-stage-kind { left: 12px; }
+.sl-stage-count { right: 12px; font-variant-numeric: tabular-nums; }
+.sl-stage-nav { position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 34px; height: 56px; cursor: pointer; color: #f3f0e9; background: rgba(13,12,10,.6); border: 1px solid rgba(243,240,233,.18); font-size: 17px; line-height: 1; }
+.sl-stage-nav:hover { background: rgba(13,12,10,.9); }
+.sl-stage-prev { left: 8px; }
+.sl-stage-next { right: 8px; }
+.sl-stage-state { display: grid; place-items: center; gap: 8px; text-align: center; padding: 26px 12px; }
+.sl-stage-state p { margin: 0; color: #9d968a; font-size: 12.5px; line-height: 1.55; max-width: 34ch; }
+.sl-stage-state strong { color: #f3f0e9; font-size: 13.5px; }
+.sl-stage-skeleton { width: 108px; height: 136px; background: linear-gradient(100deg, #24211a 30%, #3a3427 50%, #24211a 70%) 0 0 / 300% 100%; animation: sl-shimmer 1.5s linear infinite; }
+@keyframes sl-shimmer { to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-stage-skeleton { animation: none; } }
+.sl-stage-retry { cursor: pointer; font-size: 11.5px; font-weight: 600; padding: 6px 11px; color: #f3f0e9; background: transparent; border: 1px solid rgba(243,240,233,.32); }
+.sl-stage-retry:hover { background: rgba(243,240,233,.1); }
+.sl-stage-strip { display: flex; gap: 6px; padding: 8px 10px; background: #080807; border: 1px solid var(--sl-line); border-top: 0; border-radius: 0 0 var(--sl-radius-card) var(--sl-radius-card); overflow-x: auto; overscroll-behavior-x: contain; }
+.sl-stage-thumb { flex: 0 0 auto; width: 34px; height: 42px; cursor: pointer; display: grid; place-items: center; color: #9d968a; background: #14120f; border: 1px solid rgba(243,240,233,.18); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sl-stage-thumb[aria-selected="true"] { color: #f3f0e9; border-color: var(--sl-accent, #f5b544); }
+.sl-drawer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--sl-line); border: 1px solid var(--sl-line); margin: 0 0 18px; }
+.sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
+.sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.sl-preview-who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
 .sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
 .sl-preview-head { padding: 12px 20px; }
 .sl-preview-head strong { font-size: 16px; }
@@ -370,6 +399,54 @@ function providerFormatKey(item) {
   return "drawerFormatImage";
 }
 
+/** The handle that posted it, `@`-prefixed once, falling back to the watch it arrived on. */
+function authorLabel(item) {
+  const handle = typeof item?.authorHandle === "string" ? item.authorHandle.trim() : "";
+  if (handle) return handle.startsWith("@") ? handle : `@${handle}`;
+  return item?.sourceLabel || "";
+}
+
+/** An absolute instant an owner can quote, plus the relative one they scan by. */
+function postedLabel(locale, item) {
+  if (!item?.publishedAt) return null;
+  const when = new Date(item.publishedAt);
+  if (Number.isNaN(when.getTime())) return null;
+  const absolute = when.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-GB", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC"
+  });
+  const ago = relativeLabel(locale, item.publishedAt);
+  return ago ? `${absolute} UTC · ${ago}` : `${absolute} UTC`;
+}
+
+/**
+ * The facts the record actually holds.
+ *
+ * This was one line — "Format: Video post · Engagement: 3" — where
+ * "engagement" was `metrics.likes` alone and nothing else on the record
+ * reached the screen. The posting time, the comment count and the number of
+ * frames all bear on whether this is the post to localize. Anything the
+ * record does not carry is left out rather than rendered as zero (GUD-003).
+ */
+function drawerFacts(locale, item, frameCount) {
+  const cells = [];
+  const posted = postedLabel(locale, item);
+  if (posted) cells.push([t(locale, "drawerPosted"), posted]);
+  cells.push([t(locale, "drawerFormat"), t(locale, providerFormatKey(item))]);
+  if (frameCount > 1) cells.push([t(locale, "drawerFrames"), String(frameCount)]);
+  const number = (value) => typeof value === "number"
+    ? value.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-US")
+    : null;
+  const likes = number(item?.metrics?.likes);
+  if (likes !== null) cells.push([t(locale, "drawerLikes"), likes]);
+  const comments = number(item?.metrics?.comments);
+  if (comments !== null) cells.push([t(locale, "drawerComments"), comments]);
+
+  return el("dl", { class: "sl-drawer-facts" }, cells.map(([label, value]) => el("div", { class: "sl-fact" }, [
+    el("dt", null, label),
+    el("dd", null, value)
+  ])));
+}
+
 function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
@@ -417,7 +494,7 @@ function App() {
   let inboxState = createInboxState();
   let wizard = createWizardState();
   let activePreviewItem = null;
-  let activePreviewBlobUrl = null;
+  let activePreviewStage = null;
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
   let leavingEditor = false;
@@ -465,40 +542,40 @@ function App() {
     activePreviewItem = item;
     const body = el("div", { class: "sl-preview-scroll" });
 
-  const media = el("div", { class: "sl-preview-media" }, [el("span", null, t(locale, "mediaUnavailable"))]);
-    if (item.media && item.media.length && item.media[0].id) {
-      loadMediaAsBlobUrl(rpc, item.id, item.media[0].id, "preview")
-        .then(({ url }) => {
-          if (activePreviewItem !== item) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          activePreviewBlobUrl = url;
-          replace(media, [el("img", { src: url, alt: "" })]);
-        })
-        .catch((error) => console.error(error));
-    }
+    if (activePreviewStage) activePreviewStage.dispose();
+    activePreviewStage = createMediaStage(rpc, item, locale);
 
-    const rightsStatus = item.rightsStatus || "pending";
-    const rightsBlock = el("div", { class: `sl-rights sl-rights-${rightsStatus}` }, [
-      el("strong", null, t(locale, `drawerRights${rightsStatus[0].toUpperCase()}${rightsStatus.slice(1)}Title`)),
-      el("span", null, t(locale, `drawerRights${rightsStatus[0].toUpperCase()}${rightsStatus.slice(1)}Body`))
-    ]);
-
-    const metrics = item.metrics && typeof item.metrics.likes === "number" ? item.metrics.likes.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-US") : t(locale, "metricsUnavailable");
-    const metaLine = el("p", { class: "sl-field-note" }, [
-      t(locale, "drawerFormat"),
-      ": ",
-      t(locale, providerFormatKey(item)),
-      "  ·  ",
-      t(locale, "drawerEngagement"),
-      ": ",
-      metrics
+    /*
+     * THE RULE, NOT AN INVENTED STATUS.
+     *
+     * This read `item.rightsStatus || "pending"`, and a source item has no
+     * `rightsStatus` — `hydrateItem` does not return one, because rights are
+     * recorded on the batch item that a draft creates, not on the post it was
+     * derived from. So every post in this drawer reported "Rights not yet
+     * confirmed / this item cannot be submitted for review", a per-item
+     * verdict about an item that has no such field.
+     *
+     * What is true is the rule `createBatch` will apply: a source whose origin
+     * is `open` always requires confirmation, whatever the org's policy says
+     * (server.js, `effectivePolicy`). State that, from the source row the
+     * summary already carries, and say it as something that happens next
+     * rather than something already wrong.
+     */
+    const sourceRow = Array.isArray(summary?.sources)
+      ? summary.sources.find((row) => row.binding === item.sourceBinding)
+      : null;
+    const willNeedRights = sourceRow?.origin === "open" || policy.rightsPolicy !== "owner_asserted";
+    const rightsBlock = el("div", { class: `sl-rights sl-rights-${willNeedRights ? "pending" : "confirmed"}` }, [
+      el("strong", null, t(locale, willNeedRights ? "drawerRightsAheadTitle" : "drawerRightsClearTitle")),
+      el("span", null, t(locale, willNeedRights ? "drawerRightsAheadBody" : "drawerRightsClearBody"))
     ]);
 
     replace(body, [
-      media,
-      metaLine,
+      el("div", { class: "sl-preview-stage-wrap" }, [
+        activePreviewStage.node,
+        activePreviewStage.strip
+      ]),
+      drawerFacts(locale, item, activePreviewStage.frameCount),
       el("p", { class: "sl-preview-caption" }, item.text || ""),
       item.permalink
         ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
@@ -540,7 +617,23 @@ function App() {
     replace(previewDialog, [
       el("div", { class: "sl-preview-sheet" }, [
         el("header", { class: "sl-preview-head" }, [
-          el("div", null, [el("span", null, t(locale, "drawerEyebrow")), el("strong", { id: "sl-preview-title" }, item.sourceLabel || item.authorHandle || "")]),
+          /*
+           * WHO POSTED IT, then which watch it arrived on.
+           *
+           * This showed `item.sourceLabel` first, which is the account being
+           * watched — so four of the twelve posts a real account produced were
+           * headed @essentialfoodsofficial while belonging to @hilde.oest,
+           * @junior_the_copenhagen_lab, @nordictail and @arcticspots. Those
+           * are precisely the posts whose rights are somebody else's, so the
+           * one screen that has to get the author right had it wrong.
+           */
+          el("div", { class: "sl-preview-who" }, [
+            el("span", null, t(locale, "drawerEyebrow")),
+            el("strong", { id: "sl-preview-title" }, authorLabel(item)),
+            item.sourceLabel && authorLabel(item) !== item.sourceLabel
+              ? el("span", { class: "sl-preview-via" }, t(locale, "drawerVia", { source: item.sourceLabel }))
+              : null
+          ]),
           el("button", { type: "button", class: "sl-preview-close", "aria-label": t(locale, "close"), onclick: () => closePreview() }, "×")
         ]),
         body,
@@ -591,9 +684,9 @@ function App() {
   }
 
   function closePreview() {
-    if (activePreviewBlobUrl) {
-      URL.revokeObjectURL(activePreviewBlobUrl);
-      activePreviewBlobUrl = null;
+    if (activePreviewStage) {
+      activePreviewStage.dispose();
+      activePreviewStage = null;
     }
     activePreviewItem = null;
     if (previewDialog.open) previewDialog.close();

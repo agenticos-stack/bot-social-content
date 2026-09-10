@@ -126,5 +126,7 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
     throw new Error(`This media arrived as ${assembled} of ${expectedTotal} bytes.`);
   }
   const blob = new Blob(parts, { type: mime });
-  return { url: URL.createObjectURL(blob), mime };
+  // `total` travels with the URL because the drawer states the size of the
+  // frame an owner is looking at, and this is the only place that knows it.
+  return { url: URL.createObjectURL(blob), mime, total: assembled };
 }
