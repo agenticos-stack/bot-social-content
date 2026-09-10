@@ -233,6 +233,10 @@ export class DocumentShim {
   createElement(tag: string): ElementShim {
     return new ElementShim(tag);
   }
+  /** Icons are namespaced elements; this shim only needs attributes and children, so the namespace is discarded. */
+  createElementNS(_namespace: string, tag: string): ElementShim {
+    return new ElementShim(tag);
+  }
   createTextNode(data: string): TextNodeShim {
     return new TextNodeShim(data);
   }

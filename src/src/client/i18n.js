@@ -158,13 +158,6 @@ export const STRINGS = Object.freeze({
     drawerSelectAndContinue: "Select & continue",
     mediaUnavailable: "Preview not available",
 
-    // --- Steps -------------------------------------------------------------
-    stepSelect: "Select source",
-    stepLocalize: "Refine",
-    stepReview: "Review",
-    stepPublish: "Publish",
-    stepResult: "Result",
-
     // --- Localize (step 2) --------------------------------------------------
     localizeTitle: "Refine content",
     localizeDesc: "Written Hong Kong Chinese, side by side with the source. Protected literals stay exactly as published.",
@@ -379,12 +372,6 @@ export const STRINGS = Object.freeze({
     drawerContinueSelected: "繼續處理此帖文",
     drawerSelectAndContinue: "選取並繼續",
     mediaUnavailable: "預覽暫時無法顯示",
-
-    stepSelect: "選取來源",
-    stepLocalize: "修訂",
-    stepReview: "審閱",
-    stepPublish: "發布",
-    stepResult: "結果",
 
     localizeTitle: "修訂內容",
     localizeDesc: "書面香港中文，與來源並列顯示。受保護的內容將維持原文，不作更動。",

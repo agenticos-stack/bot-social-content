@@ -300,13 +300,14 @@ export function renderCollection(root, state, ctx) {
       {
         type: "button",
         class: `sl-filter-btn${state.filter === "new" ? " sl-filter-active" : ""}`,
+        "aria-pressed": String(state.filter === "new"),
         onclick: () => handlers.onFilter("new")
       },
-      [t(locale, "filterNew"), " ", el("small", null, String(nNew))]
+      [t(locale, "filterNew"), el("span", { class: "sl-filter-count" }, String(nNew))]
     ),
     el(
       "button",
-      { type: "button", class: `sl-filter-btn${state.filter === "all" ? " sl-filter-active" : ""}`, onclick: () => handlers.onFilter("all") },
+      { type: "button", class: `sl-filter-btn${state.filter === "all" ? " sl-filter-active" : ""}`, "aria-pressed": String(state.filter === "all"), onclick: () => handlers.onFilter("all") },
       t(locale, "filterAll")
     ),
 

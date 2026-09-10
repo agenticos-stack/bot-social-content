@@ -28,7 +28,7 @@ import {
   setSearch,
   setSourceFilter
 } from "./collection.js";
-import { el, replace } from "./dom.js";
+import { el, icon, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
@@ -62,13 +62,11 @@ import {
   setMobilePane,
   setSaving,
   setWizardError,
-  STEPS,
   toConfigPayload,
   toggleConfirmedClaim,
   updateDraft
 } from "./steps.js";
 
-const STEP_LABEL_KEY = { select: "stepSelect", localize: "stepLocalize", review: "stepReview", publish: "stepPublish", result: "stepResult" };
 const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
@@ -100,6 +98,12 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
   --sl-radius-card: var(--studio-v2-radius-card, 14px);
   --sl-radius-control: var(--studio-v2-radius-control, 9px);
+  /* One height for every toolbar control, so the search field and the filter
+     buttons beside it cannot drift apart again. */
+  --sl-control-h: 40px;
+  /* One height for every toolbar control, so a search field and the filter
+     buttons beside it cannot drift apart. */
+  --sl-control-h: 40px;
   --sl-radius-row: var(--studio-v2-radius-row, 8px);
   --sl-focus: var(--gadget-focus, var(--sl-ink));
   --sl-font: var(--font-sans, system-ui, sans-serif);
@@ -117,22 +121,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
 .sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
 .sl-main-actions { margin-left:auto; display:flex; gap:4px; }
-.sl-main-actions .sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; font-size:20px; display:grid; place-items:center; }
-.sl-icon-action:hover { background:var(--sl-hover); }
-.sl-icon-action:disabled { opacity:.45; cursor:not-allowed; }
+.sl-main-actions .sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; }
+.sl-icon-action svg { width:18px; height:18px; display:block; }
+.sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
+.sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
 @media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
-.sl-stepper { display: flex; gap: 20px; margin: 18px 0; border-bottom: 1px solid var(--sl-line); flex-wrap: wrap; }
-.sl-step-tab { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; padding: 0 0 10px; border-bottom: 2px solid transparent; display: flex; align-items: center; gap: 6px; }
-.sl-step-tab[aria-current="step"] { color: var(--sl-ink); border-color: var(--sl-ink); font-weight: 650; }
-.sl-step-tab:disabled { opacity: 0.4; cursor: not-allowed; }
-.sl-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--sl-surface-2); display: grid; place-items: center; font-size: 9px; }
-.sl-step-tab[aria-current="step"] .sl-step-num { background: var(--sl-ink); color: #fff; }
 .sl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .sl-search { flex: 1 1 200px; }
-.sl-search-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-filter-btn { height: 40px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
-.sl-filter-btn.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
+.sl-search-input { width: 100%; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
+.sl-filter-btn.sl-filter-active { background: var(--sl-selected); color: var(--sl-ink); font-weight: 650; }
+/* The count is a reading of the filter, not part of its name: it stays legible
+   at a glance and stops "New" and "3" reading as one word. */
+.sl-filter-count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font: 600 9.5px/18px var(--sl-font); font-variant-numeric: tabular-nums; text-align: center; }
+.sl-filter-active .sl-filter-count { background: var(--sl-ink); color: var(--sl-surface); }
 .sl-sync-refresh { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--sl-muted); font-size: 10.5px; }
 .sl-sync-refresh button { height: 32px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
 .sl-chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
@@ -165,10 +168,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-post-body { display: block; padding: 16px; }
 .sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
 .sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
-.sl-app { --bot-control-height: 34px; }
+.sl-app { --bot-control-height: 34px; --sl-control-h: 36px; }
 .sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
-.sl-app .sl-search-input { height: 36px; }
-@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
+@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; --sl-control-h: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
@@ -180,15 +182,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-notice p { flex: 1; margin: 0; font-size: 10.5px; line-height: 1.5; }
 .sl-notice-action { padding: 5px 10px; border: 1px solid var(--sl-line); border-radius: 6px; background: var(--sl-surface); font: 600 10px var(--sl-font); }
 .sl-notice-dismiss { padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--sl-muted); font: 700 12px var(--sl-font); }
-.sl-selection { position: sticky; bottom: 0; margin: 18px calc(-1 * clamp(16px, 3vw, 36px)) 0; padding: 12px clamp(16px, 3vw, 36px); border-top: 1px solid var(--sl-line); background: color-mix(in srgb, var(--sl-surface) 96%, transparent); backdrop-filter: blur(8px); }
-.sl-selection-inner { display: flex; align-items: center; gap: 12px; }
+/* A dock rather than a bar: it pulls in from the canvas edges and floats over
+   the list it acts on, so the action follows the reader without a full-bleed
+   band cutting the page in two. It is only as wide as its own buttons. */
+.sl-selection { position: sticky; bottom: clamp(10px, 2vh, 18px); z-index: 5; width: fit-content; max-width: 100%; margin: 28px auto 0; padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
+.sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
-.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; }
+.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-control-h); padding: 0 10px; }
+.sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
 .sl-primary, .sl-secondary { min-height: 40px; padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
 .sl-primary { margin-left: auto; border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
-.sl-primary:disabled { opacity: .45; cursor: not-allowed; }
+.sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
+/* A faded brand fill reads as a broken button. An unavailable action is inert,
+   so it drops the brand entirely instead of wearing a washed-out version. */
+.sl-primary:disabled, .sl-app .sl-primary.sl-primary:disabled {
+  border-color: var(--sl-line); background: var(--sl-surface-2); color: var(--sl-muted); opacity: 1; cursor: not-allowed;
+}
 .sl-secondary { border: 1px solid var(--sl-line-strong); background: var(--sl-surface); }
+.sl-secondary:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-setup-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sl-open-source-field { display: grid; gap: 6px; }
 .sl-open-source-input { height: 34px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 12px; }
@@ -269,8 +282,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
 .sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
 .sl-tag-field input { width: 100%; border: 0; height: 30px; }
-.sl-preview-dialog { width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); }
-.sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); }
+.sl-preview-dialog { width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/* The drawer slides in from the edge it is docked to. The display and overlay
+   properties have to transition discretely or the closing frames are never
+   painted: a dialog leaves the top layer the instant close() runs. The
+   starting-style rule carries the pre-open frame, which an element entering the
+   top layer cannot otherwise express, having no previous style to start from. */
+.sl-preview-dialog:not([open]) { translate: 100% 0; opacity: 0; }
+@starting-style { .sl-preview-dialog[open] { translate: 100% 0; opacity: 0; } }
+.sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog:not([open])::backdrop { opacity: 0; }
+@starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
 .sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: center; gap: 10px; }
 .sl-preview-head strong { display: block; font-size: 13px; }
@@ -320,11 +343,10 @@ function buildShell() {
   style.textContent = BASE_STYLE;
   document.head.appendChild(style);
   const root = el("main", { class: "sl-app" });
-  const stepperHost = el("nav", { class: "sl-stepper", "aria-label": "Social Content progress", hidden: true });
   const viewHost = el("div", { class: "sl-view-host" });
-  root.append(stepperHost, viewHost);
+  root.append(viewHost);
   document.getElementById("gadget-root").appendChild(root);
-  return { root, stepperHost, viewHost };
+  return { root, viewHost };
 }
 
 function buildPreviewDialog() {
@@ -344,7 +366,7 @@ function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
   const locale = resolveLocale(document.documentElement.lang);
-  const { stepperHost, viewHost } = buildShell();
+  const { viewHost } = buildShell();
   const previewDialog = buildPreviewDialog();
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
@@ -396,38 +418,6 @@ function App() {
     summary = await rpc.summary();
     policy = summary?.config || {};
     return summary;
-  }
-
-  function stepIndex(step) {
-    return STEPS.indexOf(step);
-  }
-
-  function renderStepper() {
-    if (!wizard.batch) {
-      stepperHost.hidden = true;
-      return;
-    }
-    stepperHost.hidden = false;
-    const current = stepIndex(wizard.step);
-    replace(
-      stepperHost,
-      STEPS.map((step, index) =>
-        el(
-          "button",
-          {
-            type: "button",
-            class: "sl-step-tab",
-            "aria-current": step === wizard.step ? "step" : null,
-            disabled: wizard.submitting || index > current,
-            onclick: () => {
-              wizard = goToWizardStep(wizard, step);
-              renderCurrentView();
-            }
-          },
-          [el("span", { class: "sl-step-num" }, String(index)), t(locale, STEP_LABEL_KEY[step])]
-        )
-      )
-    );
   }
 
   // --- Preview drawer (REQ-021 / PAT-005) ---------------------------------
@@ -746,7 +736,8 @@ function App() {
           confirmedClaims: submittedDraft.confirmedClaims,
           publicationIntent: submittedDraft.publicationIntent,
           refinementBrief: submittedDraft.refinementBrief,
-          acceptedVisualMode: submittedDraft.acceptedVisualMode
+          acceptedVisualMode: submittedDraft.acceptedVisualMode,
+          ledger: submittedDraft.ledger
         });
         if (result?.ok) wizard = applySavedRevision(wizard, id, result, submittedDraft);
         // A `{ ok: false }` refusal (a validation `block` issue, or a
@@ -931,7 +922,6 @@ function App() {
   }
 
   function renderCurrentView() {
-    renderStepper();
     if (!summary?.configured) return; // setup screen owns viewHost until configured
     if (!wizard.batch) {
       const section = activeSection || 'sources';
@@ -949,8 +939,8 @@ function App() {
               catch (error) { inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') }; }
               renderCurrentView();
             }
-          }, el('span', { 'aria-hidden': 'true' }, '↻')),
-          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, el('span', { 'aria-hidden': 'true' }, '⚙'))
+          }, icon('refresh')),
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
         ])
       ]);
       if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers });

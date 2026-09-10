@@ -49,6 +49,64 @@ export function text(value) {
   return document.createTextNode(String(value ?? ""));
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** `el()` for the SVG namespace, which `createElement` cannot produce. */
+export function svgEl(tag, attrs, children) {
+  const node = document.createElementNS(SVG_NS, tag);
+  if (attrs) {
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === null || value === undefined || value === false) continue;
+      node.setAttribute(key, value === true ? "" : String(value));
+    }
+  }
+  for (const child of Array.isArray(children) ? children : children != null ? [children] : []) {
+    if (child instanceof Node) node.appendChild(child);
+  }
+  return node;
+}
+
+/**
+ * Studio's icon vocabulary, drawn with Studio's geometry.
+ *
+ * Studio itself keeps two implementations of one set: `StudioIcon.svelte` maps
+ * names onto Hugeicons, and `agenticos-ui/Icon.svelte` draws the same names by
+ * hand for surfaces that cannot take the dependency. A gadget canvas is that
+ * second case twice over — it is vanilla DOM in a sandboxed iframe, and the
+ * archive it ships in is self-contained flat JavaScript — so the path data
+ * below is copied from `Icon.svelte` rather than re-drawn. Same names, same
+ * 24 grid, same 1.8 round stroke, so a gadget's chrome cannot drift away from
+ * the app that hosts it. Add a name here only when Studio already has it.
+ */
+const ICON_PATHS = {
+  refresh: [
+    "M20 6v5h-5",
+    "M4 18v-5h5",
+    "M18.2 10.5A6.6 6.6 0 0 0 6.6 7.2L4 9.7",
+    "M5.8 13.5a6.6 6.6 0 0 0 11.6 3.3L20 14.3"
+  ],
+  settings: [
+    "M12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z",
+    "M19.4 13.5a7.7 7.7 0 0 0 .05-3l2-1.55-2-3.45-2.45 1a8 8 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A8 8 0 0 0 7 6.5l-2.45-1-2 3.45 2 1.55a7.7 7.7 0 0 0 .05 3l-2.05 1.55 2 3.45L7 17.5a8 8 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a8 8 0 0 0 2.6-1.5l2.45 1 2-3.45-2.05-1.55Z"
+  ]
+};
+
+/**
+ * One named icon, sized and coloured by CSS.
+ *
+ * Built as nodes rather than injected as markup, so an icon stays subject to
+ * the same no-innerHTML rule as everything else in this module. Decorative by
+ * construction: every icon button carries its own `aria-label`.
+ */
+export function icon(name) {
+  const paths = ICON_PATHS[name];
+  if (!paths) throw new Error(`Unknown icon: ${name}`);
+  return svgEl("svg", {
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.8,
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"
+  }, paths.map((d) => svgEl("path", { d })));
+}
+
 /** Clears a container and appends fresh children in one step. */
 export function replace(container, children) {
   container.replaceChildren(...(Array.isArray(children) ? children.filter(Boolean) : [children].filter(Boolean)));

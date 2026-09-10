@@ -13,8 +13,14 @@ body #gadget-root .sl-post:nth-child(2) .sl-media::before{background:var(--color
 body #gadget-root .sl-post:nth-child(3) .sl-media{background:var(--color-panel-subtle)}
 body #gadget-root .sl-post:nth-child(3) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(-5deg)}
 body #gadget-root .sl-post-body{padding:16px}
-body #gadget-root .sl-selection{background:var(--color-panel);border-color:var(--color-panel-subtle)}
+/* The dock floats over the list, so it takes the card surface at partial alpha
+   rather than the page colour an opaque bar used to need. */
+body #gadget-root .sl-selection{background:color-mix(in srgb,var(--color-paper) 82%,transparent);border-color:var(--color-panel-subtle)}
 body #gadget-root .sl-primary{background:var(--color-act-hover);color:var(--color-ink);border-color:var(--color-act-hover);border-radius:8px}
+/* This skin outranks the gadget's own stylesheet (every rule here carries an id),
+   so it has to restate the disabled state or preview shows an unavailable action
+   wearing the full brand fill. Mirrors `.sl-primary:disabled` in the client. */
+body #gadget-root .sl-primary:disabled{background:var(--color-panel-subtle);color:var(--color-ink-faint);border-color:var(--color-line);opacity:1}
 body #gadget-root .sl-filter-btn{border-radius:8px}
 body #gadget-root .sl-bottom-bar{background:var(--color-panel);border-color:var(--color-panel-subtle)}
 body #gadget-root .sl-inbox{border-color:var(--color-panel-subtle);background:var(--color-panel)}
