@@ -32,7 +32,7 @@ globalThis.gadget=new Proxy({}, {get(_,method){
     if(calls.size>=32)throw new Error('Too many pending local calls');
     const id=++next;
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{calls.delete(id);reject(new Error('Local call timed out'));},20000);
+      const timer=setTimeout(()=>{calls.delete(id);reject(new Error('The local host did not answer '+method+' within 30 seconds.'));},30000);
       calls.set(id,{resolve,reject,timer});port.postMessage({id,method,args});
     });
   };
