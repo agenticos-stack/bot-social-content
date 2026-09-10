@@ -9,7 +9,7 @@
 // tests/social-localization-client.test.ts). The render half below it is
 // imperative DOM building that a smoke test exercises with a fake `gadget`.
 
-import { el, replace, relativeTimeFrom } from "./dom.js";
+import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";
 import { t } from "./i18n.js";
 
 // ---------------------------------------------------------------------------
@@ -168,18 +168,7 @@ function formatChecked(locale, iso) {
 
 function metaLine(locale, item) {
   const wrap = el("span", { class: "sl-meta" });
-  const time = relativeTimeFrom(item.publishedAt);
-  wrap.appendChild(
-    el(
-      "span",
-      null,
-      time
-        ? locale === "zh-HK"
-          ? `${time.amount} ${{ year: "年", month: "個月", week: "星期", day: "日", hour: "小時", minute: "分鐘" }[time.unit]}前`
-          : `${time.amount} ${time.unit}${time.amount === 1 ? "" : "s"} ago`
-        : ""
-    )
-  );
+  wrap.appendChild(el("span", null, relativeLabel(locale, item.publishedAt) || ""));
   const likes = item.metrics && typeof item.metrics.likes === "number" ? item.metrics.likes : null;
   wrap.appendChild(
     likes === null
@@ -189,7 +178,8 @@ function metaLine(locale, item) {
   return wrap;
 }
 
-function renderCard(locale, item, handlers, sources) {
+function renderCard(locale, item, handlers, sources, covers) {
+  let coverSlot = null;
   const checkboxId = `sl-check-${item.id}`;
   const checkbox = el("input", {
     type: "checkbox",
@@ -201,14 +191,32 @@ function renderCard(locale, item, handlers, sources) {
   });
   const selectbox = el("label", { class: "sl-selectbox", for: checkboxId }, [checkbox]);
 
+/**
+ * Which media a card's cover comes from, or null when it has none.
+ *
+ * The canvas is served `img-src blob: data:` with `connect-src 'none'`, so a
+ * cover cannot be a remote URL however convenient that would be — it has to be
+ * bytes the gadget already holds, handed over as a `blob:`. That containment
+ * is deliberate: a gadget's UI must not be able to phone home, nor exfiltrate
+ * data by encoding it into an image URL.
+ *
+ * So the card only marks WHICH media it wants. `renderCollection` fills it
+ * afterwards, because the fetch is asynchronous and a grid must not wait on
+ * fifteen of them before it draws.
+ */
+function coverMediaId(item) {
+  const media = Array.isArray(item?.media) ? item.media[0] : null;
+  return media && media.id !== undefined && media.id !== null ? String(media.id) : null;
+}
+
   const openButton = el(
     "button",
     { type: "button", class: "sl-post-open", "aria-label": item.text ? item.text.slice(0, 80) : "Preview post", onclick: () => handlers.onOpen(item) },
     [
-      el("span", { class: "sl-media" }, [
+      (coverSlot = el("span", { class: "sl-media" }, [
         el("span", { class: "sl-provider-glyph", "data-glyph": glyphKeyFor(item, sources) || "" }, providerGlyph(item, sources)),
         el("span", { class: "sl-media-kicker" }, sourceLabel(locale, item))
-      ]),
+      ])),
       el("span", { class: "sl-post-body" }, [
         el("strong", null, item.text ? item.text.split("\n")[0].slice(0, 90) : item.sourceLabel || ""),
         el("p", null, item.text || ""),
@@ -216,6 +224,11 @@ function renderCard(locale, item, handlers, sources) {
       ])
     ]
   );
+
+  const mediaId = coverMediaId(item);
+  // Collected while building rather than queried for afterwards: the card
+  // holds its own slot, so nothing has to find it again by selector.
+  if (covers && coverSlot && mediaId) covers.push({ slot: coverSlot, itemId: item.id, mediaId });
 
   const card = el("article", { class: "sl-post" }, [
     selectbox,
@@ -279,9 +292,14 @@ function renderChip(locale, source, active, onToggle) {
  * this function only builds and updates markup from `state`.
  */
 export function renderCollection(root, state, ctx) {
-  const { locale, summary, handlers } = ctx;
+  const { locale, summary, handlers, loadCover } = ctx;
+  const covers = [];
   const items = visibleItems(state);
   const nSelected = selectedCount(state);
+  // UNKNOWN IS NOT ZERO. Before `summary()` resolves there is no destination
+  // list, and treating that as "none configured" would flash a setup prompt at
+  // every owner on every load and then take it back.
+  const hasDestination = !summary || !Array.isArray(summary.destinations) || summary.destinations.length > 0;
   const nNew = newCount(state);
 
   const searchInput = el("input", {
@@ -300,34 +318,17 @@ export function renderCollection(root, state, ctx) {
       {
         type: "button",
         class: `sl-filter-btn${state.filter === "new" ? " sl-filter-active" : ""}`,
+        "aria-pressed": String(state.filter === "new"),
         onclick: () => handlers.onFilter("new")
       },
-      [t(locale, "filterNew"), " ", el("small", null, String(nNew))]
+      [t(locale, "filterNew"), el("span", { class: "sl-filter-count" }, String(nNew))]
     ),
     el(
       "button",
-      { type: "button", class: `sl-filter-btn${state.filter === "all" ? " sl-filter-active" : ""}`, onclick: () => handlers.onFilter("all") },
+      { type: "button", class: `sl-filter-btn${state.filter === "all" ? " sl-filter-active" : ""}`, "aria-pressed": String(state.filter === "all"), onclick: () => handlers.onFilter("all") },
       t(locale, "filterAll")
     ),
-    el("div", { class: "sl-sync-refresh" }, [
-      el("span", null, formatChecked(locale, state.lastCheckedAt)),
-      el(
-        "button",
-        { type: "button", disabled: state.loading, onclick: handlers.onRefresh },
-        state.loading ? t(locale, "refreshing") : t(locale, "refresh")
-      ),
-      // THE WAY BACK. Setup used to be a one-way door: it ran only while the
-      // gadget was unconfigured, so an owner who chose the wrong timezone on
-      // day one could never change it — not from here, and not from the
-      // workspace page, which owns door grants and schedules but not the
-      // gadget's own config. Last in the row because it is the least frequent
-      // control here and the only one that leaves the collection.
-      el(
-        "button",
-        { type: "button", class: "sl-settings-btn", onclick: handlers.onOpenSettings },
-        t(locale, "settingsOpen")
-      )
-    ])
+
   ]);
 
   const sources = Array.isArray(summary?.sources) ? summary.sources : [];
@@ -359,7 +360,7 @@ export function renderCollection(root, state, ctx) {
     body = el(
       "div",
       { class: "sl-collection" },
-      items.map((item) => renderCard(locale, item, handlers, sources))
+      items.map((item) => renderCard(locale, item, handlers, sources, covers))
     );
   }
 
@@ -385,27 +386,105 @@ export function renderCollection(root, state, ctx) {
     el("div", { class: "sl-selection-inner" }, [
       el("div", { class: "sl-selected-copy" }, [
         el("strong", null, t(locale, "selectedCount", { n: nSelected })),
-        el("span", null, t(locale, "continueReady"))
       ]),
       el("button", { type: "button", class: "sl-clear", onclick: handlers.onClear }, t(locale, "clear")),
-      el(
-        "button",
-        { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
-        nSelected ? t(locale, "continueWithPosts", { n: nSelected }) : t(locale, "continueSelectPrompt")
-      )
+      /*
+       * A button that cannot work says so before it is pressed.
+       *
+       * With no destination configured, Continue was enabled, and pressing it
+       * refused with `batch_needs_destinations` — into a console the owner
+       * never opens. Nothing happened on screen at all. `summary.destinations`
+       * is the same list the call would send, so the tray can tell the owner
+       * what is missing while there is still something to do about it.
+       */
+      hasDestination
+        ? el(
+            "button",
+            { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
+            nSelected
+              // `{n} post(s)` was the shipped copy. English has a plural; the
+              // parenthesis is a way of not choosing one.
+              ? t(locale, nSelected === 1 ? "continueWithPost" : "continueWithPosts", { n: nSelected })
+              : t(locale, "continueSelectPrompt")
+          )
+        : el(
+            "button",
+            { type: "button", class: "sl-secondary sl-needs-setup", onclick: () => handlers.onOpenSettings && handlers.onOpenSettings() },
+            t(locale, "continueNeedsDestination")
+          )
     ])
   ]);
 
   replace(root, [
     ctx.inboxState ? (() => { const host = el("div"); renderInboxInto(host, ctx.inboxState, ctx); return host; })() : null,
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "collectionTitle")), el("p", null, t(locale, "collectionDesc"))]),
+    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "collectionTitle"))]),
     toolbar,
     chipRow,
     body,
     notice,
     tray
   ]);
+
+  /*
+   * Fill the covers after the grid is on screen, never before it.
+   *
+   * Each is a separate round trip for cached bytes, so awaiting fifteen of
+   * them up front would trade a grid that draws immediately for one that
+   * appears all at once, later. A card that never gets its cover keeps the
+   * provider glyph it already had, which is what a source with no media —
+   * or no fetch door — looks like anyway.
+   */
+  if (typeof loadCover === "function") fillCovers(covers, loadCover);
 }
+
+/*
+ * A FEW AT A TIME, in the order the cards are on screen.
+ *
+ * This has been each of the two obvious answers, and both were wrong for the
+ * same reason: the right number is neither one nor all of them.
+ *
+ * It started as all-at-once, which timed out. The development host ran every
+ * browser call in a single line and armed each call's clock the moment it was
+ * made, so nine of twelve covers spent their whole budget queued and died
+ * looking exactly like a broken fetch door.
+ *
+ * The fix for that was strictly sequential, and it worked — every call's clock
+ * then covered its own work. But it made the grid the sum of its parts: twelve
+ * covers at roughly half a second each is ten seconds of watching pictures
+ * arrive one by one, and the queue it was avoiding no longer exists. The host
+ * runs a bounded pool now (testkit `local-session.js`), so the line that made
+ * sequential necessary is gone and sequential is simply the slowest thing left.
+ *
+ * `COVER_FETCHES` matches that pool. Asking for more would only rebuild the
+ * queue on the other side of the wire, which is where this started.
+ */
+const COVER_FETCHES = 4;
+
+async function fillCovers(covers, loadCover) {
+  const queue = [...covers];
+  const draw = async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const { slot, itemId, mediaId } = next;
+      try {
+        const url = await loadCover(itemId, mediaId);
+        if (url) slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
+      } catch (error) {
+        // A cover that cannot be fetched is not an error to put on the card: it
+        // keeps the provider glyph it already had, which is what a post with no
+        // media looks like anyway. But a silent `catch {}` here is how nine
+        // timed-out covers looked identical to nine posts without pictures, so
+        // the reason goes to the console where whoever is developing the gadget
+        // can read it. `getMedia`'s refusal codes carry the same reason to the
+        // preview dialog, where an owner sees it.
+        console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
+      }
+    }
+  };
+  // Workers share one queue, so a slow cover holds up only itself: the next
+  // free worker takes the next card rather than the whole grid waiting on it.
+  await Promise.all(Array.from({ length: Math.min(COVER_FETCHES, queue.length) }, draw));
+}
+
 
 function renderInboxInto(root, state, ctx) {
   // Kept as an injected renderer to avoid making collection state own saved

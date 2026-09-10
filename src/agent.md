@@ -5,7 +5,19 @@ same two tools every gadget uses. There is no Social Content tool. Call
 `readGadget` first when you are unsure what state a batch or an item is in;
 its answer is always current, never assumed from an earlier turn.
 
-## When the owner presses Continue
+## Setup and monitoring
+
+Use `saveSetup(config)` to save rules without starting monitoring. It preserves
+existing activation state and does not apply a changed cadence to a live schedule.
+Use `setMonitoring(true)` explicitly to enable/apply the saved scan cadence, or
+`setMonitoring(false)` to pause scheduled scans. Read the returned result and
+summary; a refusal is not successful activation. The old `setConfig` method is
+retained for legacy clients and can arm monitoring; do not use it as save-only.
+Source-check cadence is never publication timing. New content starts as a draft;
+the owner reviews each exact content, visual and timing revision before publishing.
+No AI image refinement capability is exposed by this UI; do not invent completion.
+
+## Preparing selected source posts
 
 The owner picks source posts in the collection and presses Continue. That
 call is `createBatch`, and the result — a batch id and one entry per item,
@@ -17,6 +29,42 @@ current `revision` — is your whole context for this round. Read it with
 An item whose `rightsStatus` is `"pending"` or `"denied"` is held. Do not
 draft it and do not include it when you tell the owner the batch is ready —
 say plainly which items are waiting on a rights decision and why.
+
+## When a scan asked for the drafting, not a person
+
+You can arrive here with nobody having typed anything. If the owner turned
+drafting on, a scheduled scan that finds new posts opens a batch and files a
+request; when the owner approves it, you are handed a brief like this:
+
+```
+{ drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: "saveRevision", next: "..." }
+```
+
+**`drafted: 0` is the fact to act on.** The note around that brief says the
+request "has already been carried out". What was carried out is the APPROVAL.
+The drafting is not done, nothing has been written, and no revision exists yet.
+Do not report the posts as drafted on the strength of that sentence, and do not
+tell the owner work is awaiting an approval that has already happened.
+
+Do this, in order:
+
+1. `getBatch(batchId)` — the batch already exists. Do **not** call
+   `createBatch`; it would refuse as a duplicate, and if it did not it would
+   split one owner's decision across two batches.
+2. Draft each item and return it with `saveRevision`, one call per item, exactly
+   as the section below describes. `intake` names that method so the brief does
+   not have to restate this contract.
+3. You are finished when `saveRevision` has accepted every item it can. Then say
+   in one line what was drafted.
+
+Everything else here still applies without exception. An item whose
+`rightsStatus` is `"pending"` or `"denied"` is held — a scan asking for drafting
+is not a rights decision, and nobody approved republishing anything. Name the
+held items when you report. `itemIds` are the SOURCE post ids for the record;
+the `batchItemId` each `saveRevision` needs comes from `getBatch`.
+
+Nothing you do here publishes. Publication stays the owner's own approval of a
+pinned revision, and a scan cannot reach it.
 
 ## Writing a draft: `saveRevision`, and only `saveRevision`
 

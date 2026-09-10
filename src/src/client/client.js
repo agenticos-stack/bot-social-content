@@ -28,9 +28,10 @@ import {
   setSearch,
   setSourceFilter
 } from "./collection.js";
-import { el, replace } from "./dom.js";
+import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
+import { createMediaStage } from "./preview-media.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
@@ -62,16 +63,23 @@ import {
   setMobilePane,
   setSaving,
   setWizardError,
-  STEPS,
   toConfigPayload,
   toggleConfirmedClaim,
   updateDraft
 } from "./steps.js";
 
-const STEP_LABEL_KEY = { select: "stepSelect", localize: "stepLocalize", review: "stepReview", publish: "stepPublish", result: "stepResult" };
 const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
 
-const BASE_STYLE = `
+import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
+import sharedComponents from '@agenticos-dev/bot-shell/components.css';
+
+const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
+.sl-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sl-setup-section { min-width: 0; border: 1px solid var(--sl-line); border-radius: 12px; padding: 20px; margin: 0 0 20px; background: var(--sl-surface); }
+.sl-setup-section legend { font-size: 16px; font-weight: 650; padding: 0 6px; }
+.sl-setup-section .sl-field { margin-block: 16px; }
+.sl-setup-section textarea { width: 100%; min-height: 90px; resize: vertical; font: inherit; }
+.sl-setup-actions { flex-wrap: wrap; gap: 10px; }
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
@@ -91,6 +99,12 @@ const BASE_STYLE = `
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
   --sl-radius-card: var(--studio-v2-radius-card, 14px);
   --sl-radius-control: var(--studio-v2-radius-control, 9px);
+  /* One height for every toolbar control, so the search field and the filter
+     buttons beside it cannot drift apart again. */
+  --sl-control-h: 40px;
+  /* One height for every toolbar control, so a search field and the filter
+     buttons beside it cannot drift apart. */
+  --sl-control-h: 40px;
   --sl-radius-row: var(--studio-v2-radius-row, 8px);
   --sl-focus: var(--gadget-focus, var(--sl-ink));
   --sl-font: var(--font-sans, system-ui, sans-serif);
@@ -104,18 +118,34 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .sl-app { max-width: 1080px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 36px) 96px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
+.sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
+.sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
+.sl-main-actions { margin-left:auto; display:flex; gap:4px; }
+/*
+ * The BUTTON carries its own size, not the row it happens to sit in.
+ *
+ * These rules lived on a .sl-main-actions .sl-icon-action selector, so the
+ * same class used anywhere else -- the drawer's close, for one -- came out
+ * unsized. A component that only works inside one parent is not a component.
+ *
+ * (No backticks anywhere in this stylesheet: it is a template literal.)
+ */
+.sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
+.sl-icon-action svg { width:18px; height:18px; display:block; }
+.sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
+.sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
+@media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
-.sl-stepper { display: flex; gap: 20px; margin: 18px 0; border-bottom: 1px solid var(--sl-line); flex-wrap: wrap; }
-.sl-step-tab { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; padding: 0 0 10px; border-bottom: 2px solid transparent; display: flex; align-items: center; gap: 6px; }
-.sl-step-tab[aria-current="step"] { color: var(--sl-ink); border-color: var(--sl-ink); font-weight: 650; }
-.sl-step-tab:disabled { opacity: 0.4; cursor: not-allowed; }
-.sl-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--sl-surface-2); display: grid; place-items: center; font-size: 9px; }
-.sl-step-tab[aria-current="step"] .sl-step-num { background: var(--sl-ink); color: #fff; }
 .sl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .sl-search { flex: 1 1 200px; }
-.sl-search-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-filter-btn { height: 40px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
-.sl-filter-btn.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
+.sl-search-input { width: 100%; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
+.sl-filter-btn.sl-filter-active { background: var(--sl-selected); color: var(--sl-ink); font-weight: 650; }
+/* The count is a reading of the filter, not part of its name: it stays legible
+   at a glance and stops "New" and "3" reading as one word. */
+.sl-filter-count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font: 600 9.5px/18px var(--sl-font); font-variant-numeric: tabular-nums; text-align: center; }
+.sl-filter-active .sl-filter-count { background: var(--sl-ink); color: var(--sl-surface); }
 .sl-sync-refresh { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--sl-muted); font-size: 10.5px; }
 .sl-sync-refresh button { height: 32px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
 .sl-chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
@@ -126,10 +156,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-degraded .sl-chip-dot { background: var(--sl-warning); }
 .sl-collection { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-mobile-panes { display: none; }
-.sl-inbox { margin: 0 0 22px; padding: 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); }
-.sl-inbox-tabs { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 36px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); white-space: nowrap; font-size: 10.5px; }
-.sl-inbox-tabs button.sl-filter-active { background: var(--sl-selected); font-weight: 650; }
+.sl-inbox { margin: 0 0 24px; padding: 0 0 20px; border-bottom: 1px solid var(--sl-line); background: var(--sl-surface); }
+.sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
+.sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
@@ -143,9 +173,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-selectbox { position: absolute; z-index: 2; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.9); display: grid; place-items: center; cursor: pointer; }
 .sl-post-open { display: block; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; }
 .sl-media { display: block; position: relative; aspect-ratio: 1.15/1; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); }
+.sl-media-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .sl-provider-glyph { position: absolute; left: 10px; bottom: 10px; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.92); font: 700 9px var(--sl-font); }
 .sl-media-kicker { position: absolute; left: 10px; top: 10px; font: 600 8px var(--sl-font); letter-spacing: .04em; color: var(--sl-muted); text-transform: uppercase; }
-.sl-post-body { padding: 12px 13px; }
+.sl-post-body { display: block; padding: 16px; }
+.sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
+.sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
+.sl-app { --bot-control-height: 34px; --sl-control-h: 36px; }
+.sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
+@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; --sl-control-h: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
@@ -157,15 +193,33 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-notice p { flex: 1; margin: 0; font-size: 10.5px; line-height: 1.5; }
 .sl-notice-action { padding: 5px 10px; border: 1px solid var(--sl-line); border-radius: 6px; background: var(--sl-surface); font: 600 10px var(--sl-font); }
 .sl-notice-dismiss { padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--sl-muted); font: 700 12px var(--sl-font); }
-.sl-selection { position: sticky; bottom: 0; margin: 18px calc(-1 * clamp(16px, 3vw, 36px)) 0; padding: 12px clamp(16px, 3vw, 36px); border-top: 1px solid var(--sl-line); background: color-mix(in srgb, var(--sl-surface) 96%, transparent); backdrop-filter: blur(8px); }
-.sl-selection-inner { display: flex; align-items: center; gap: 12px; }
+/* A dock rather than a bar: it pulls in from the canvas edges and floats over
+   the list it acts on, so the action follows the reader without a full-bleed
+   band cutting the page in two. It is only as wide as its own buttons.
+
+   Fixed, not sticky. Sticky can only hold an element inside its own containing
+   block, and the view host is exactly as tall as its content — so on a list
+   shorter than the canvas the dock parked at the end of the content with dead
+   space beneath it, instead of above the bottom edge. The canvas is its own
+   iframe, so the viewport this pins to is the gadget's, not the page's. The
+   bottom padding on .sl-app is what lets the last row scroll clear of it. */
+.sl-selection { position: fixed; bottom: clamp(10px, 2vh, 18px); left: 50%; translate: -50% 0; z-index: 5; width: fit-content; max-width: calc(100% - 32px); padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
+.sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
-.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; }
+.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-control-h); padding: 0 10px; }
+.sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
 .sl-primary, .sl-secondary { min-height: 40px; padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
 .sl-primary { margin-left: auto; border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
-.sl-primary:disabled { opacity: .45; cursor: not-allowed; }
+.sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
+/* A faded brand fill reads as a broken button. An unavailable action is inert,
+   so it drops the brand entirely instead of wearing a washed-out version. */
+.sl-primary:disabled, .sl-app .sl-primary.sl-primary:disabled {
+  border-color: var(--sl-line); background: var(--sl-surface-2); color: var(--sl-muted); opacity: 1; cursor: not-allowed;
+}
 .sl-secondary { border: 1px solid var(--sl-line-strong); background: var(--sl-surface); }
+.sl-secondary:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-setup-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sl-open-source-field { display: grid; gap: 6px; }
 .sl-open-source-input { height: 34px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 12px; }
@@ -235,25 +289,118 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
 .sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
-.sl-setup-form { display: grid; gap: 4px; max-width: 560px; }
+.sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
+.sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
+.sl-setup-section .sl-field label { font-size: 13px; }
+.sl-setup-section input, .sl-setup-section select { min-height: 42px; }
+.sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
 .sl-tag-field { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px; }
 .sl-tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
 .sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
 .sl-tag-field input { width: 100%; border: 0; height: 30px; }
-.sl-preview-dialog { width: min(480px, calc(100vw - 40px)); max-width: none; height: 100dvh; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); }
-.sl-preview-dialog::backdrop { background: rgba(24,24,27,.28); }
-.sl-preview-sheet { height: 100%; display: grid; grid-template-rows: auto 1fr auto; }
-.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: center; gap: 10px; }
+/*
+ * SLIM, because the media is tall.
+ *
+ * 640px was a generic drawer width. Nine of the twelve posts a real account
+ * produces are portrait -- 1080x1350 or 480x852 -- so a wide sheet spends its
+ * width on empty ground beside the picture and its height on the thing that
+ * matters. 440 is a 4:5 frame at full bleed with the caption still reading
+ * near 60 characters; a 9:16 reel sits inside it without the sheet having to
+ * grow. The blurred fill behind the frame went with it: it existed only to
+ * cover the gap a too-wide sheet left, and there is no gap now.
+ */
+.sl-preview-dialog { width: min(440px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/* The drawer slides in from the edge it is docked to. The display and overlay
+   properties have to transition discretely or the closing frames are never
+   painted: a dialog leaves the top layer the instant close() runs. The
+   starting-style rule carries the pre-open frame, which an element entering the
+   top layer cannot otherwise express, having no previous style to start from. */
+.sl-preview-dialog:not([open]) { translate: 100% 0; opacity: 0; }
+@starting-style { .sl-preview-dialog[open] { translate: 100% 0; opacity: 0; } }
+/*
+ * No dim. The drawer is for looking at one post while the others stay in
+ * view; darkening them makes the grid a wall instead of a row you are moving
+ * along. The sheet reads as a layer from its own edge and shadow.
+ *
+ * The backdrop element stays (showModal still traps focus and Escape still
+ * closes) but it is transparent, so a click on it is a click on something the
+ * owner can plainly see -- and that click now closes the drawer, because a
+ * visible grid that swallows clicks is worse than a dimmed one that does.
+ */
+.sl-preview-dialog::backdrop { background: transparent; opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog:not([open])::backdrop { opacity: 0; }
+@starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: -18px 0 40px -16px rgba(24,24,27,.28); }
+.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
+.sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
+.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
+/*
+ * Scoped to the eyebrow, not to every span in the header.
+ *
+ * A .sl-preview-head span rule styled ANY span the header grew, so the
+ * 'via your watch on ...' line came out as a second 9px uppercase kicker, and
+ * the .sl-preview-via rule meant to fix it lost on specificity (0,1,0 against
+ * 0,1,1). An element selector inside a container is a rule about a shape
+ * nobody declared; it holds only until the shape changes.
+ *
+ * (No backticks in here: this stylesheet is a template literal.)
+ */
 .sl-preview-head strong { display: block; font-size: 13px; }
-.sl-preview-head span { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
-.sl-preview-close { margin-left: auto; border: 0; background: transparent; font-size: 16px; height: 32px; width: 32px; border-radius: 8px; }
-.sl-preview-close:hover { background: var(--sl-hover); }
-.sl-preview-scroll { overflow: auto; padding: 18px; }
-.sl-preview-media { aspect-ratio: 1.2/1; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); margin-bottom: 14px; display: grid; place-items: center; overflow: hidden; }
-.sl-preview-media img { width: 100%; height: 100%; object-fit: cover; }
-.sl-preview-caption { font-size: 12px; line-height: 1.7; }
+.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+
+.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
+/* The media stage. See preview-media.js for why the cap is a length. */
+.sl-preview-stage-wrap { margin-bottom: 20px; }
+.sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; padding: 0; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
+.sl-stage-surface { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; }
+.sl-stage-img { position: relative; display: block; width: auto; height: auto; max-width: 100%; }
+.sl-stage-chip { position: absolute; z-index: 2; top: 12px; font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 4px 8px; color: #f3f0e9; background: rgba(13,12,10,.74); border: 1px solid rgba(243,240,233,.16); }
+.sl-stage-kind { left: 12px; }
+.sl-stage-count { right: 12px; font-variant-numeric: tabular-nums; }
+.sl-stage-nav { position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 34px; height: 56px; cursor: pointer; color: #f3f0e9; background: rgba(13,12,10,.6); border: 1px solid rgba(243,240,233,.18); font-size: 17px; line-height: 1; }
+.sl-stage-nav:hover { background: rgba(13,12,10,.9); }
+.sl-stage-prev { left: 8px; }
+.sl-stage-next { right: 8px; }
+.sl-stage-state { display: grid; place-items: center; gap: 8px; text-align: center; padding: 26px 12px; }
+.sl-stage-state p { margin: 0; color: #9d968a; font-size: 12.5px; line-height: 1.55; max-width: 34ch; }
+.sl-stage-state strong { color: #f3f0e9; font-size: 13.5px; }
+.sl-stage-skeleton { width: 108px; height: 136px; background: linear-gradient(100deg, #24211a 30%, #3a3427 50%, #24211a 70%) 0 0 / 300% 100%; animation: sl-shimmer 1.5s linear infinite; }
+@keyframes sl-shimmer { to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-stage-skeleton { animation: none; } }
+.sl-stage-retry { cursor: pointer; font-size: 11.5px; font-weight: 600; padding: 6px 11px; color: #f3f0e9; background: transparent; border: 1px solid rgba(243,240,233,.32); }
+.sl-stage-retry:hover { background: rgba(243,240,233,.1); }
+.sl-stage-strip { display: flex; gap: 6px; padding: 8px 10px; background: #080807; border: 1px solid var(--sl-line); border-top: 0; border-radius: 0 0 var(--sl-radius-card) var(--sl-radius-card); overflow-x: auto; overscroll-behavior-x: contain; }
+.sl-stage-thumb { flex: 0 0 auto; width: 34px; height: 42px; cursor: pointer; display: grid; place-items: center; color: #9d968a; background: #14120f; border: 1px solid rgba(243,240,233,.18); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sl-stage-thumb[aria-selected="true"] { color: #f3f0e9; border-color: var(--sl-accent, #f5b544); }
+.sl-drawer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--sl-line); border: 1px solid var(--sl-line); margin: 0 0 18px; }
+.sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
+.sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.sl-preview-who { display: flex; flex-direction: column; gap: 1px; }
+.sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
+.sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
+.sl-announce { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; max-width: min(520px, calc(100vw - 32px)); pointer-events: none; }
+.sl-announce-card { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; background: var(--sl-surface); border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
+.sl-announce-card strong { font-size: 13px; }
+.sl-announce-card span { font-size: 12.5px; color: var(--sl-muted); line-height: 1.55; }
+.sl-announce-card > strong + span { margin-left: 0; }
+.sl-announce-card { flex-wrap: wrap; }
+.sl-announce-card strong { flex: 1 1 100%; }
+.sl-announce-card span { flex: 1 1 100%; }
+.sl-announce-action { flex: 0 0 auto; min-height: 32px; padding: 0 12px; font-size: 12.5px; cursor: pointer; background: var(--sl-accent, #f5b544); border: 1px solid var(--sl-accent, #f5b544); color: #1a1a1a; border-radius: var(--sl-radius-control); }
+.sl-announce-dismiss { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; cursor: pointer; border: 0; background: transparent; color: var(--sl-muted); font-size: 17px; line-height: 1; }
+.sl-announce-card { position: relative; padding-right: 34px; }
+.sl-needs-setup { white-space: normal; }
+.sl-preview-head { padding: 12px 20px; }
+.sl-preview-head strong { font-size: 16px; }
+.sl-preview-kicker { font-size: 11px; }
+.sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
+.sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
+.sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
+.sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 .sl-rights { margin-top: 14px; padding: 12px; border-radius: var(--sl-radius-control); }
 .sl-rights-confirmed { background: color-mix(in srgb, var(--sl-success) 14%, var(--sl-surface)); }
 .sl-rights-pending { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); }
@@ -261,7 +408,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-rights strong { display: block; font-size: 10.5px; }
 .sl-rights span { display: block; margin-top: 2px; font-size: 9.5px; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
-.sl-preview-actions button { flex: 1; }
+.sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -286,15 +433,28 @@ function buildShell() {
   style.textContent = BASE_STYLE;
   document.head.appendChild(style);
   const root = el("main", { class: "sl-app" });
-  const stepperHost = el("nav", { class: "sl-stepper", "aria-label": "Localization progress", hidden: true });
   const viewHost = el("div", { class: "sl-view-host" });
-  root.append(stepperHost, viewHost);
+  root.append(viewHost);
   document.getElementById("gadget-root").appendChild(root);
-  return { root, stepperHost, viewHost };
+  return { root, viewHost };
 }
 
-function buildPreviewDialog() {
+function buildPreviewDialog(onDismiss) {
   const dialog = el("dialog", { class: "sl-preview-dialog", "aria-labelledby": "sl-preview-title" });
+  /*
+   * A click on what is NOT the sheet closes it.
+   *
+   * With the dim gone the grid behind the drawer is legible, and a legible
+   * thing that ignores clicks reads as a frozen page. `showModal` puts a
+   * transparent backdrop over it, so the click lands on the dialog element
+   * itself rather than on any of its content — which is exactly the test for
+   * "outside".
+   */
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    if (typeof onDismiss === "function") onDismiss();
+    else dialog.close();
+  });
   document.body.appendChild(dialog);
   return dialog;
 }
@@ -306,32 +466,149 @@ function providerFormatKey(item) {
   return "drawerFormatImage";
 }
 
+/** The handle that posted it, `@`-prefixed once, falling back to the watch it arrived on. */
+function authorLabel(item) {
+  const handle = typeof item?.authorHandle === "string" ? item.authorHandle.trim() : "";
+  if (handle) return handle.startsWith("@") ? handle : `@${handle}`;
+  return item?.sourceLabel || "";
+}
+
+/** An absolute instant an owner can quote, plus the relative one they scan by. */
+function postedLabel(locale, item) {
+  if (!item?.publishedAt) return null;
+  const when = new Date(item.publishedAt);
+  if (Number.isNaN(when.getTime())) return null;
+  const absolute = when.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-GB", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC"
+  });
+  const ago = relativeLabel(locale, item.publishedAt);
+  return ago ? `${absolute} UTC · ${ago}` : `${absolute} UTC`;
+}
+
+/**
+ * The facts the record actually holds.
+ *
+ * This was one line — "Format: Video post · Engagement: 3" — where
+ * "engagement" was `metrics.likes` alone and nothing else on the record
+ * reached the screen. The posting time, the comment count and the number of
+ * frames all bear on whether this is the post to localize. Anything the
+ * record does not carry is left out rather than rendered as zero (GUD-003).
+ */
+function drawerFacts(locale, item, frameCount) {
+  const cells = [];
+  const posted = postedLabel(locale, item);
+  if (posted) cells.push([t(locale, "drawerPosted"), posted]);
+  cells.push([t(locale, "drawerFormat"), t(locale, providerFormatKey(item))]);
+  if (frameCount > 1) cells.push([t(locale, "drawerFrames"), String(frameCount)]);
+  const number = (value) => typeof value === "number"
+    ? value.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-US")
+    : null;
+  const likes = number(item?.metrics?.likes);
+  if (likes !== null) cells.push([t(locale, "drawerLikes"), likes]);
+  const comments = number(item?.metrics?.comments);
+  if (comments !== null) cells.push([t(locale, "drawerComments"), comments]);
+
+  return el("dl", { class: "sl-drawer-facts" }, cells.map(([label, value]) => el("div", { class: "sl-fact" }, [
+    el("dt", null, label),
+    el("dd", null, value)
+  ])));
+}
+
 function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
+
+  /*
+   * A grid cover: cached bytes, as a `blob:` the canvas is allowed to show.
+   *
+   * Remote URLs are refused here — `img-src blob: data:` — so this is the only
+   * shape a picture can take. Blob URLs are kept per media id and reused
+   * across re-renders: the grid rebuilds on every selection change, and
+   * minting a fresh URL each time would leak one per card per keystroke.
+   */
+  /*
+   * The PROMISE is what is kept, not the finished URL.
+   *
+   * A re-render can start a second fill while the first is still running —
+   * a selection change rebuilds the grid — and a map of finished URLs is
+   * empty for everything still in flight, so the second pass would refetch
+   * every one of them down a transport that runs one call at a time. Keyed on
+   * the promise, a second asker waits on the first fetch instead of starting
+   * another. A failure is dropped from the map so the next render may retry.
+   */
+  const coverUrls = new Map();
+  function loadCover(itemId, mediaId) {
+    const key = `${itemId}::${mediaId}`;
+    const existing = coverUrls.get(key);
+    if (existing) return existing;
+    const pending = loadMediaAsBlobUrl(rpc, itemId, mediaId, "thumb")
+      .then(({ url }) => url)
+      .catch((error) => { coverUrls.delete(key); throw error; });
+    coverUrls.set(key, pending);
+    return pending;
+  }
+
   const locale = resolveLocale(document.documentElement.lang);
-  const { stepperHost, viewHost } = buildShell();
-  const previewDialog = buildPreviewDialog();
+  let announceTimer = null;
+  const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
+  const { root: shellRoot, viewHost } = buildShell();
+  shellRoot.appendChild(announceRegion);
+  const previewDialog = buildPreviewDialog(() => closePreview());
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
 
   let summary = null;
+  let activeSection = null;
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
   let wizard = createWizardState();
   let activePreviewItem = null;
-  let activePreviewBlobUrl = null;
+  let activePreviewStage = null;
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
   let leavingEditor = false;
 
-  function toast(title, body) {
-    // Minimal, dependency-free toast; console.log also reaches the host via
-    // the sandbox bootstrap's forwarded console, so this is never the only
-    // trace of an action.
+  /**
+   * PUT IT ON THE SCREEN.
+   *
+   * This was `console.log`, and nothing else — so the four outcomes routed
+   * through it were invisible to the only person who needed them. Pressing
+   * Continue with no destination configured wrote "createBatch needs at least
+   * one destination binding" to a console the owner never opens, and on screen
+   * absolutely nothing happened: no error, no movement, a button that did not
+   * work and did not say why.
+   *
+   * `role="status"` with `aria-live="polite"` so a screen reader hears it
+   * without the interruption an alert would cause. The console line stays —
+   * the sandbox forwards it to the host, which is how a developer sees it —
+   * but it is no longer the only place the sentence exists.
+   */
+  function announce(title, body, action) {
     console.log(`[social-localization] ${title}: ${body || ""}`);
+    if (announceTimer) clearTimeout(announceTimer);
+    replace(announceRegion, [
+      el("div", { class: "sl-announce-card" }, [
+        el("strong", null, title),
+        body ? el("span", null, body) : null,
+        action
+          ? el("button", { type: "button", class: "sl-announce-action", onclick: () => { announce.clear(); action.run(); } }, action.label)
+          : null,
+        el("button", {
+          type: "button", class: "sl-announce-dismiss",
+          "aria-label": t(locale, "dismiss"), onclick: () => announce.clear()
+        }, "\u00d7")
+      ])
+    ]);
+    // Long enough to read a refusal, and it can be dismissed sooner. A notice
+    // that vanishes before it is read is the same as no notice.
+    announceTimer = setTimeout(() => announce.clear(), 12000);
   }
+  announce.clear = () => {
+    if (announceTimer) clearTimeout(announceTimer);
+    announceTimer = null;
+    replace(announceRegion, []);
+  };
 
   async function loadCollection(filter = collectionState.filter) {
     collectionState = setLoading(collectionState, true);
@@ -345,6 +622,7 @@ function App() {
       try {
         const summaries = await rpc.listBatchSummaries({ limit: 50 });
         inboxState = setInboxSummaries(inboxState, summaries);
+        if (activeSection === null) activeSection = inboxState.summaries.some(b => b.draftCount || b.reviewCount || b.attentionCount) ? 'content' : 'sources';
       } catch (error) {
         inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, "batchLoadFailed") };
       }
@@ -362,78 +640,46 @@ function App() {
     return summary;
   }
 
-  function stepIndex(step) {
-    return STEPS.indexOf(step);
-  }
-
-  function renderStepper() {
-    if (!wizard.batch) {
-      stepperHost.hidden = true;
-      return;
-    }
-    stepperHost.hidden = false;
-    const current = stepIndex(wizard.step);
-    replace(
-      stepperHost,
-      STEPS.map((step, index) =>
-        el(
-          "button",
-          {
-            type: "button",
-            class: "sl-step-tab",
-            "aria-current": step === wizard.step ? "step" : null,
-            disabled: wizard.submitting || index > current,
-            onclick: () => {
-              wizard = goToWizardStep(wizard, step);
-              renderCurrentView();
-            }
-          },
-          [el("span", { class: "sl-step-num" }, String(index)), t(locale, STEP_LABEL_KEY[step])]
-        )
-      )
-    );
-  }
-
   // --- Preview drawer (REQ-021 / PAT-005) ---------------------------------
   async function openPreview(item) {
     lastFocusedBeforePreview = document.activeElement;
     activePreviewItem = item;
     const body = el("div", { class: "sl-preview-scroll" });
 
-    const media = el("div", { class: "sl-preview-media" }, [el("span", null, t(locale, "mediaUnavailable"))]);
-    if (item.media && item.media.length && item.media[0].id) {
-      loadMediaAsBlobUrl(rpc, item.id, item.media[0].id, "preview")
-        .then(({ url }) => {
-          if (activePreviewItem !== item) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          activePreviewBlobUrl = url;
-          replace(media, [el("img", { src: url, alt: "" })]);
-        })
-        .catch((error) => console.error(error));
-    }
+    if (activePreviewStage) activePreviewStage.dispose();
+    activePreviewStage = createMediaStage(rpc, item, locale);
 
-    const rightsStatus = item.rightsStatus || "pending";
-    const rightsBlock = el("div", { class: `sl-rights sl-rights-${rightsStatus}` }, [
-      el("strong", null, t(locale, `drawerRights${rightsStatus[0].toUpperCase()}${rightsStatus.slice(1)}Title`)),
-      el("span", null, t(locale, `drawerRights${rightsStatus[0].toUpperCase()}${rightsStatus.slice(1)}Body`))
-    ]);
-
-    const metrics = item.metrics && typeof item.metrics.likes === "number" ? item.metrics.likes.toLocaleString(locale === "zh-HK" ? "zh-HK" : "en-US") : t(locale, "metricsUnavailable");
-    const metaLine = el("p", { class: "sl-field-note" }, [
-      t(locale, "drawerFormat"),
-      ": ",
-      t(locale, providerFormatKey(item)),
-      "  ·  ",
-      t(locale, "drawerEngagement"),
-      ": ",
-      metrics
+    /*
+     * THE RULE, NOT AN INVENTED STATUS.
+     *
+     * This read `item.rightsStatus || "pending"`, and a source item has no
+     * `rightsStatus` — `hydrateItem` does not return one, because rights are
+     * recorded on the batch item that a draft creates, not on the post it was
+     * derived from. So every post in this drawer reported "Rights not yet
+     * confirmed / this item cannot be submitted for review", a per-item
+     * verdict about an item that has no such field.
+     *
+     * What is true is the rule `createBatch` will apply: a source whose origin
+     * is `open` always requires confirmation, whatever the org's policy says
+     * (server.js, `effectivePolicy`). State that, from the source row the
+     * summary already carries, and say it as something that happens next
+     * rather than something already wrong.
+     */
+    const sourceRow = Array.isArray(summary?.sources)
+      ? summary.sources.find((row) => row.binding === item.sourceBinding)
+      : null;
+    const willNeedRights = sourceRow?.origin === "open" || policy.rightsPolicy !== "owner_asserted";
+    const rightsBlock = el("div", { class: `sl-rights sl-rights-${willNeedRights ? "pending" : "confirmed"}` }, [
+      el("strong", null, t(locale, willNeedRights ? "drawerRightsAheadTitle" : "drawerRightsClearTitle")),
+      el("span", null, t(locale, willNeedRights ? "drawerRightsAheadBody" : "drawerRightsClearBody"))
     ]);
 
     replace(body, [
-      media,
-      metaLine,
+      el("div", { class: "sl-preview-stage-wrap" }, [
+        activePreviewStage.node,
+        activePreviewStage.strip
+      ]),
+      drawerFacts(locale, item, activePreviewStage.frameCount),
       el("p", { class: "sl-preview-caption" }, item.text || ""),
       item.permalink
         ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
@@ -442,41 +688,79 @@ function App() {
       item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
     ]);
 
-    const selected = !!item.selected;
-    const actions = el("footer", { class: "sl-preview-actions" }, [
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-secondary",
-          onclick: async () => {
-            const next = !activePreviewItem.selected;
-            await handleSelect(item.id, next);
-            activePreviewItem = { ...activePreviewItem, selected: next };
-            openPreview(activePreviewItem);
-          }
-        },
-        selected ? t(locale, "drawerRemove") : t(locale, "drawerSelect")
-      ),
+    /*
+     * RELABEL THE FOOTER; DO NOT REBUILD THE DRAWER.
+     *
+     * Selecting used to call `openPreview` again, which disposes the media
+     * stage and builds a new one — so pressing "Select post" threw away the
+     * picture and refetched it, and the only visible result of the press was
+     * that the image vanished for several seconds and came back. Nothing else
+     * on screen acknowledged the action at all.
+     *
+     * The footer is the only part that depends on `selected`, so the footer is
+     * the only part that is redrawn, and the selection is confirmed where the
+     * owner is looking rather than only in the grid behind the drawer.
+     */
+    /*
+     * ONE ACTION.
+     *
+     * The footer offered "Select post" beside "Select & continue", which are
+     * the same decision asked twice: both select, and the difference is only
+     * whether the drawer stays open. Two buttons of near-identical weight is
+     * a choice the owner has to read before making the one that matters.
+     *
+     * Deselecting does not belong here either — the card's own checkbox and
+     * the tray's Clear are where a selection is taken back, and this drawer is
+     * open on the post you are deciding about.
+     */
+    const actions = el("footer", { class: "sl-preview-actions" });
+    const drawActions = (isSelected) => replace(actions, [
       el(
         "button",
         {
           type: "button",
           class: "sl-primary",
           onclick: async () => {
-            if (!activePreviewItem.selected) await handleSelect(item.id, true);
+            if (!activePreviewItem.selected) {
+              await handleSelect(item.id, true);
+              activePreviewItem = { ...activePreviewItem, selected: true };
+              announce(t(locale, "drawerSelectedNotice"), "");
+            }
             closePreview();
           }
         },
-        selected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
+        isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
       )
     ]);
+    drawActions(!!item.selected);
 
     replace(previewDialog, [
       el("div", { class: "sl-preview-sheet" }, [
         el("header", { class: "sl-preview-head" }, [
-          el("div", null, [el("span", null, t(locale, "drawerEyebrow")), el("strong", { id: "sl-preview-title" }, item.sourceLabel || item.authorHandle || "")]),
-          el("button", { type: "button", class: "sl-preview-close", "aria-label": t(locale, "close"), onclick: () => closePreview() }, "×")
+          /*
+           * WHO POSTED IT, then which watch it arrived on.
+           *
+           * This showed `item.sourceLabel` first, which is the account being
+           * watched — so four of the twelve posts a real account produced were
+           * headed @essentialfoodsofficial while belonging to @hilde.oest,
+           * @junior_the_copenhagen_lab, @nordictail and @arcticspots. Those
+           * are precisely the posts whose rights are somebody else's, so the
+           * one screen that has to get the author right had it wrong.
+           */
+          el("div", { class: "sl-preview-who" }, [
+            el("span", { class: "sl-preview-kicker" }, t(locale, "drawerEyebrow")),
+            el("strong", { id: "sl-preview-title" }, authorLabel(item)),
+            item.sourceLabel && authorLabel(item) !== item.sourceLabel
+              ? el("span", { class: "sl-preview-via" }, t(locale, "drawerVia", { source: item.sourceLabel }))
+              : null
+          ]),
+          el("div", { class: "sl-preview-head-actions" }, [
+            el("button", {
+              type: "button", class: "sl-icon-action",
+              title: t(locale, "close"), "aria-label": t(locale, "close"),
+              onclick: () => closePreview()
+            }, icon("close"))
+          ])
         ]),
         body,
         actions
@@ -514,7 +798,13 @@ function App() {
       ]))
     ]);
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
-      el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("button", { type: "button", class: "sl-preview-close", "aria-label": t(locale, "drawerClose"), onclick: () => batchDialog.close() }, "×")]),
+      el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
+        el("button", {
+          type: "button", class: "sl-icon-action",
+          title: t(locale, "drawerClose"), "aria-label": t(locale, "drawerClose"),
+          onclick: () => batchDialog.close()
+        }, icon("close"))
+      ])]),
       body,
       el("footer", { class: "sl-preview-actions" }, [
         el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
@@ -526,9 +816,9 @@ function App() {
   }
 
   function closePreview() {
-    if (activePreviewBlobUrl) {
-      URL.revokeObjectURL(activePreviewBlobUrl);
-      activePreviewBlobUrl = null;
+    if (activePreviewStage) {
+      activePreviewStage.dispose();
+      activePreviewStage = null;
     }
     activePreviewItem = null;
     if (previewDialog.open) previewDialog.close();
@@ -581,10 +871,10 @@ function App() {
       try {
         await rpc.refresh();
         await loadCollection(collectionState.filter);
-        toast(t(locale, "refreshedTitle"), "");
+        announce(t(locale, "refreshedTitle"), "");
       } catch (error) {
         console.error(error);
-        toast(t(locale, "refreshFailedTitle"), "");
+        announce(t(locale, "refreshFailedTitle"), error instanceof Error ? error.message : "");
       }
     },
     onClear: async () => {
@@ -631,6 +921,27 @@ function App() {
    * `createNewVersion` — the explicit opt-in the requirement asks for, made
    * by the person, not by this function retrying.
    */
+  /**
+   * A refusal, said to the person rather than to the caller.
+   *
+   * `refusalMessage` carries the server's own sentence, which is right for
+   * `duplicate_active` (it names the batch) and wrong for the codes that
+   * describe a missing setup step — "createBatch needs at least one
+   * destination binding" is a sentence about a function argument. Where this
+   * gadget knows the way out, it offers it.
+   */
+  function announceRefusal(refusal) {
+    if (refusal?.code === "batch_needs_destinations") {
+      announce(
+        t(locale, "batchNoDestinationTitle"),
+        t(locale, "batchNoDestinationBody"),
+        { label: t(locale, "settingsOpen"), run: () => collectionHandlers.onOpenSettings() }
+      );
+      return;
+    }
+    announce(t(locale, "batchBlockedTitle"), refusalMessage(refusal));
+  }
+
   async function continueWithSelection(createNewVersion) {
     const ids = selectedIds(collectionState);
     if (!ids.length) return;
@@ -650,7 +961,7 @@ function App() {
           return;
         }
         collectionState = clearNotice(collectionState);
-        toast(t(locale, "refreshFailedTitle"), refusalMessage(batch));
+        announceRefusal(batch);
         renderCurrentView();
         return;
       }
@@ -670,10 +981,14 @@ function App() {
       renderCurrentView();
     },
     onMobilePane: (pane) => { wizard = setMobilePane(wizard, pane); renderCurrentView(); },
-    onDraftChange: (id, patch) => {
+    onDraftChange: (id, patch, redraw = true) => {
       const field = document.activeElement;
       const selection = field?.classList?.contains("sl-zh-edit") ? [field.selectionStart, field.selectionEnd] : null;
       wizard = updateDraft(wizard, id, patch);
+      if (!redraw) {
+        viewHost.querySelector?.(".sl-selection .sl-primary")?.setAttribute("disabled", "");
+        return;
+      }
       renderCurrentView();
       if (selection) {
         const replacement = document.querySelector(".sl-zh-edit");
@@ -703,7 +1018,11 @@ function App() {
           expectedRevision: item.revision ?? 0,
           caption: submittedDraft.caption,
           posterLayout: { template: submittedDraft.template, headline: submittedDraft.headline, subline: submittedDraft.subline, background: { kind: "solid", value: submittedDraft.background }, textColor: submittedDraft.textColor, align: submittedDraft.align },
-          confirmedClaims: submittedDraft.confirmedClaims
+          confirmedClaims: submittedDraft.confirmedClaims,
+          publicationIntent: submittedDraft.publicationIntent,
+          refinementBrief: submittedDraft.refinementBrief,
+          acceptedVisualMode: submittedDraft.acceptedVisualMode,
+          ledger: submittedDraft.ledger
         });
         if (result?.ok) wizard = applySavedRevision(wizard, id, result, submittedDraft);
         // A `{ ok: false }` refusal (a validation `block` issue, or a
@@ -865,7 +1184,7 @@ function App() {
         await rpc.exportAs(format);
       } catch (error) {
         console.error(error);
-        toast(t(locale, "exportFailed"), "");
+        announce(t(locale, "exportFailed"), "");
       }
     },
     onStartAnother: async () => {
@@ -888,10 +1207,30 @@ function App() {
   }
 
   function renderCurrentView() {
-    renderStepper();
     if (!summary?.configured) return; // setup screen owns viewHost until configured
     if (!wizard.batch) {
-          renderCollection(viewHost, collectionState, { locale, summary, handlers: collectionHandlers, inboxState, renderInbox });
+      const section = activeSection || 'sources';
+      const body = el('div');
+      const navigation = el('nav', { class: 'sl-main-nav', 'aria-label': t(locale, 'appTitle') }, [
+        ...[['sources', locale === 'zh-HK' ? '來源' : 'Sources'], ['content', locale === 'zh-HK' ? '內容' : 'Content']].map(([key, label]) => el('button', {
+          type: 'button', 'aria-pressed': String(section === key), onclick: () => { activeSection = key; renderCurrentView(); }
+        }, label)),
+        el('div', { class: 'sl-main-actions' }, [
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'refresh'), 'aria-label': t(locale, 'refresh'), disabled: collectionState.loading || inboxState.loading,
+            onclick: async () => {
+              if (section === 'sources') return collectionHandlers.onRefresh();
+              inboxState = setInboxLoading(inboxState, true); renderCurrentView();
+              try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); }
+              catch (error) { inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') }; }
+              renderCurrentView();
+            }
+          }, icon('refresh')),
+          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
+        ])
+      ]);
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
+      replace(viewHost, [navigation, body]);
       return;
     }
     if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });
@@ -919,6 +1258,8 @@ function App() {
     const editing = options.editing === true;
     let draft = editing ? draftFromConfig(summary?.config) : createSetupDraft();
     let saving = false;
+    let savedDraft = editing ? JSON.stringify(draft) : null;
+    let notice = null;
     // Finding C: a failed `setConfig` used to reset `saving` and redraw the
     // identical form with nothing telling the owner it had failed — the
     // click looked like it did nothing. This is what makes a failure
@@ -939,6 +1280,9 @@ function App() {
         saving,
         error,
         editing,
+        summary,
+        dirty: JSON.stringify(draft) !== savedDraft,
+        notice,
         openSources,
         // Namespaced, NOT `busy`/`error`. A first version passed `error`
         // twice in this literal, so the public-account error silently
@@ -997,23 +1341,56 @@ function App() {
 
       // Leaves the form without writing anything, back to the collection the
       // owner came from. Only rendered while `editing`.
-      onCancel: () => {
+      onCancel: async () => {
         if (saving) return;
-        renderCurrentView();
+        if (JSON.stringify(draft) !== savedDraft) {
+          const decision = await confirmUnsavedNavigation(leaveDialog, locale);
+          if (decision === "keep") return;
+          if (decision === "save") {
+            await setupHandlers.onSubmit();
+            if (error) return;
+          }
+        }
+        if (summary?.configured) await loadCollection("new");
       },
       onChange: (patch) => {
-        draft = { ...draft, ...patch };
+        if (saving) return;
+        draft = { ...draft, ...patch, ...(patch.refinementBrief ? { refinementBrief: { ...draft.refinementBrief, ...patch.refinementBrief } } : {}) };
         error = null;
-        draw();
+        notice = null;
+        // Do not replace the clicked Save button during the input's blur/change
+        // event: replacement would consume the user's first click.
+        viewHost.querySelector?.("[data-monitor-enable]")?.setAttribute("disabled", "");
+        const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
+        if (savedNotice) savedNotice.textContent = "";
+        viewHost.querySelector?.(".sl-setup-error")?.remove();
       },
       onAdd: (field, value) => {
         draft = addListEntry(draft, field, value);
         error = null;
+        notice = null;
         draw();
       },
       onRemove: (field, value) => {
         draft = removeListEntry(draft, field, value);
         error = null;
+        notice = null;
+        draw();
+      },
+      onMonitoring: async (enabled) => {
+        if (saving || (enabled && JSON.stringify(draft) !== savedDraft)) return;
+        saving = true;
+        error = null;
+        notice = null;
+        draw();
+        try {
+          const result = await rpc.setMonitoring(enabled);
+          if (!result?.ok) error = result?.message || t(locale, "genericError");
+          await refreshSummary();
+        } catch (thrown) {
+          error = thrown instanceof Error ? thrown.message : String(thrown);
+        }
+        saving = false;
         draw();
       },
       onSubmit: async () => {
@@ -1022,13 +1399,17 @@ function App() {
         error = null;
         try {
           draw();
-          await rpc.setConfig(toConfigPayload(draft));
+          const result = await rpc.saveSetup(toConfigPayload(draft));
+          if (result?.ok === false) throw new Error(result.message || t(locale, "setupError"));
           await refreshSummary();
-          await loadCollection("new");
+          draft = draftFromConfig(summary.config);
+          savedDraft = JSON.stringify(draft);
+          notice = t(locale, "setupSaved");
+          saving = false;
+          draw();
         } catch (thrown) {
-          // Logged for the sandbox's own forwarded console (client.js's
-          // `toast` comment above notes it reaches the host that way) AND
-          // shown inline, because a thrown error before the RPC ever
+          // Logged for the sandbox's own forwarded console (see `announce`)
+          // AND shown inline, because a thrown error before the RPC ever
           // reaches `env` is exactly the failure mode this cannot rely on
           // console access to diagnose.
           console.error(thrown);

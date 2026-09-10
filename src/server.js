@@ -84,10 +84,15 @@ import {
   normalizeProtectedOverrides,
   normalizePublicationIntent,
   normalizeRefinementBrief,
+  normalizeLedger,
+  applyProtectedOverridesToLedger,
+  draftOrigin,
+  rightsObligation,
   posterPngConstraints,
-  validateLocalization,
   validatePosterLayout,
+  validateRevisionDraft,
   normalizeOpenInstagramPosts,
+  publicationMedia,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -114,7 +119,8 @@ import {
   socialCreateDraft,
   socialReadStatus,
   socialSubmitForReview,
-  listOpenAccountPosts
+  listOpenAccountPosts,
+  mediaUrlFor
 } from "./doors.js";
 
 /**
@@ -136,11 +142,57 @@ const MAX_ITEMS_PER_SOURCE = 100; // REQ-013
 const PAGE_SIZE = 25; // one connector call's `limit` — small enough to isolate a mid-scan failure to a few items
 const STALE_RUN_MS = 5 * 60 * 1000; // a "running" scan_runs row older than this is a crash, not a live overlap
 
-const THUMB_MAX_BYTES = 256 * 1024; // SEC-004
+/*
+ * SEC-004. Matched to the media door's own thumb cap, deliberately.
+ *
+ * "Thumb" is not a smaller picture here: Instagram's payload carries exactly
+ * one `image_versions2.candidate` per photo, so a thumb IS the full-size file
+ * and there is nothing smaller to ask the door for. At 256 KiB this cache
+ * refused two of the first twelve photos from a real account -- the two
+ * largest, which are the two a grid most wants to show.
+ *
+ * Kept equal to `MEDIA_FETCH_THUMB_MAX_BYTES` in the API's media door. A
+ * cache cap below the door's turns bytes that were fetched and paid for into
+ * a refusal here; one above it can never be reached. Move both or neither.
+ */
+const THUMB_MAX_BYTES = 512 * 1024;
 const PREVIEW_MAX_BYTES = 1024 * 1024; // SEC-004
 const PREVIEW_CHUNK_BYTES = 1024 * 1024; // CON-007: chunk anything above 1 MiB
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * The schedule door deliberately returns a human-readable cadence string, not
+ * its stored object. Keep the comparison at this boundary in the same shape
+ * as that public door contract; the object fallback preserves compatibility
+ * with older local harnesses that returned the stored cadence directly.
+ */
+function cadenceDescription(cadence) {
+  if (!cadence || typeof cadence !== "object") return null;
+  if (cadence.kind === "interval" && Number.isInteger(cadence.everyMinutes)) {
+    return `every ${cadence.everyMinutes} minutes`;
+  }
+  if (cadence.kind === "daily" && typeof cadence.at === "string" && typeof cadence.timezone === "string") {
+    return `daily at ${cadence.at} ${cadence.timezone}`;
+  }
+  if (
+    cadence.kind === "weekly" &&
+    Number.isInteger(cadence.weekday) &&
+    cadence.weekday >= 0 &&
+    cadence.weekday < WEEKDAY_NAMES.length &&
+    typeof cadence.at === "string" &&
+    typeof cadence.timezone === "string"
+  ) {
+    return `every ${WEEKDAY_NAMES[cadence.weekday]} at ${cadence.at} ${cadence.timezone}`;
+  }
+  return null;
+}
+
+function cadenceMatches(schedule, cadence) {
+  if (typeof schedule?.cadence === "string") return schedule.cadence === cadenceDescription(cadence);
+  return JSON.stringify(schedule?.cadence) === JSON.stringify(cadence);
+}
 
 /**
  * Provider -> everything that is provider-specific about reading it: the
@@ -269,6 +321,10 @@ export class Gadget extends DurableObject {
       const mediaLimits = description?.mediaLimits;
       return {
         binding: row.binding,
+        origin: row.origin ?? "binding",
+        displayName: row.displayName ?? null,
+        lastServedBy: row.lastServedBy ?? null,
+        lastCostCredits: row.lastCostCredits ?? null,
         label: row.label,
         provider: row.provider,
         glyphKey: readString(description?.glyphKey),
@@ -301,25 +357,95 @@ export class Gadget extends DurableObject {
    * validated strictly (REQ-002: 1 to 20, unique bindings).
    */
   async setConfig(input) {
+    // Compatibility: old installed clients coupled Save to starting monitoring.
+    try { return await this.saveConfiguration(input, true); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  }
+
+  async saveSetup(input) {
+    if (this.monitoringChanging) return { ok: false, message: "Wait for the monitoring change to finish before saving." };
+    try { return await this.saveConfiguration(input, false); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  }
+
+  async saveConfiguration(input, legacyActivation) {
     const record = input && typeof input === "object" ? input : {};
-    const config = normalizeConfig(record);
-    const derived =
-      record.sources === undefined || record.destinations === undefined ? await this.deriveBindingsFromGrants() : null;
+    const previous = this.storage.getConfig();
+    const config = {
+      ...normalizeConfig(record),
+      // A caller cannot enable monitoring by smuggling this field into Save.
+      monitoringEnabled: previous ? previous.monitoringEnabled !== false : legacyActivation
+    };
+    const derived = (legacyActivation || !previous) && (record.sources === undefined || record.destinations === undefined)
+      ? await this.deriveBindingsFromGrants() : null;
     const sources =
       record.sources !== undefined
         ? await this.describedBindings(normalizeBindingList(record.sources, "sources"))
-        : derived.sources;
+        : derived?.sources;
     const destinations =
       record.destinations !== undefined
         ? await this.describedBindings(normalizeBindingList(record.destinations, "destinations"))
-        : derived.destinations;
+        : derived?.destinations;
 
     this.storage.setConfig(config);
-    this.storage.setSources(sources);
-    this.storage.setDestinations(destinations);
-    await this.armSchedule(config.cadence, config.timeZone);
+    if (sources) this.storage.setSources(sources);
+    if (destinations) this.storage.setDestinations(destinations);
+    if (legacyActivation) await this.armSchedule(config.cadence, config.timeZone);
 
     return this.summary();
+  }
+
+  async setMonitoring(enabled) {
+    if (this.monitoringChanging) return { ok: false, message: "A monitoring change is already in progress." };
+    this.monitoringChanging = true;
+    try { return await this.changeMonitoring(enabled); }
+    catch (error) { return { ok: false, message: errorMessage(error) }; }
+    finally { this.monitoringChanging = false; }
+  }
+
+  async changeMonitoring(enabled) {
+    const config = this.storage.getConfig();
+    if (!config || typeof enabled !== "boolean") {
+      return { ok: false, message: "Save setup first, then explicitly enable or pause monitoring." };
+    }
+    if (!enabled) {
+      // Stop execution first, even if cancelling a remote schedule needs approval.
+      this.storage.setConfig({ ...config, monitoringEnabled: false });
+      try {
+        for (const row of await scheduleList(this.env)) {
+          if (row.hook !== SCAN_HOOK_NAME || row.status === "cancelled") continue;
+          const cancelled = await scheduleCancel(this.env, row.id);
+          if (cancelled?.cancelled !== true) {
+            return {
+              ok: false,
+              message: "Monitoring is paused locally. Resolve the existing schedule before cleaning it up."
+            };
+          }
+        }
+      } catch (error) {
+        return { ok: false, message: `Monitoring is paused locally. Schedule cleanup: ${errorMessage(error)}` };
+      }
+      return { ok: true, summary: await this.summary() };
+    }
+    try {
+      const schedules = (await scheduleList(this.env)).filter(row => row.hook === SCAN_HOOK_NAME && row.status !== "cancelled");
+      if (schedules.length === 1 && schedules[0].status === "active" && cadenceMatches(schedules[0], config.cadence)) {
+        this.storage.setConfig({ ...config, monitoringEnabled: true });
+        return { ok: true, summary: await this.summary() };
+      }
+      // Do not create a second live scan schedule when applying a changed cadence.
+      this.storage.setConfig({ ...config, monitoringEnabled: false });
+      for (const row of schedules) {
+        const cancelled = await scheduleCancel(this.env, row.id);
+        if (cancelled?.cancelled !== true) return { ok: false, message: "Monitoring is paused. Resolve the existing schedule before applying a new cadence." };
+      }
+      const schedule = await scheduleCreate(this.env, SCAN_HOOK_NAME, config.cadence);
+      if (!schedule?.id) return { ok: false, message: "Monitoring is not enabled. Complete the schedule decision in the workspace, then retry." };
+      this.storage.setConfig({ ...config, monitoringEnabled: true });
+      return { ok: true, summary: await this.summary() };
+    } catch (error) {
+      return { ok: false, message: errorMessage(error) };
+    }
   }
 
   /**
@@ -571,6 +697,9 @@ export class Gadget extends DurableObject {
    * `UNIQUE(source_binding, provider_item_id)` upsert) still holds either way.
    */
   async scan(firing) {
+    if (this.storage.getConfig()?.monitoringEnabled === false) {
+      return { skipped: true, reason: "Monitoring is paused." };
+    }
     const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
     return this.runScan(runId, firingInstant(firing));
   }
@@ -629,14 +758,98 @@ export class Gadget extends DurableObject {
     );
     await this.broadcast({ type: "scan", runId, new: newCount, changed: changedCount, perSource });
 
+    /**
+     * ASKING FOR THE WORK, SEPARATELY FROM ANNOUNCING IT (REQ-014, TASK-019).
+     *
+     * Deliberately not inside `notifyNewItems` and not gated by anything it
+     * reads. A notification must not be the mechanism by which work is
+     * requested, and the practical shape of that rule is this: `mode: "off"`,
+     * quiet hours and a spent `daily` digest all decide whether somebody is
+     * INTERRUPTED, and none of them may decide whether the work gets asked for.
+     * An owner who silenced notices did not thereby cancel the drafting they
+     * turned on.
+     *
+     * Returned rather than sent. There is nothing here for the gadget to call
+     * (SEC-003): the platform reads this off the hook's result and files an
+     * action its owner answers.
+     */
+    const workRequest = this.workRequestFor(perSource, config);
+
     return {
       new: newCount,
       changed: changedCount,
       unchanged: unchangedCount,
       failedSafe: failedSafeCount,
       unknown: unknownCount,
-      perSource
+      perSource,
+      ...(workRequest ? { workRequest } : {})
     };
+  }
+
+  /**
+   * What a scan asks for, or nothing at all (TASK-019).
+   *
+   * OFF BY DEFAULT and unrecognised reads as off (`normalizeDrafting`). A scan
+   * that started requesting agent turns because an owner upgraded would spend
+   * the organization's credits on a cadence nobody armed for that purpose.
+   *
+   * ONE REQUEST PER SCAN, batching every source's findings into one brief. The
+   * unit an owner answers is the scan, not the post: twelve found references are
+   * one decision about one afternoon's work, and one card per item would make
+   * approving the obvious case worse than doing it by hand. The platform holds
+   * its own ceiling as well, so this is the agreed shape rather than the only
+   * thing standing between an owner and a queue.
+   *
+   * THE BATCH IS OPENED HERE because a draft has nowhere to go without one:
+   * `saveRevision` takes a `batchItemId`. Every granted destination, which is
+   * exactly what the client's own picker sends today — a scan has no narrower
+   * intent to represent, and inventing one would be this method guessing at a
+   * choice the owner never made.
+   *
+   * Never throws: a scan's stored findings must survive a failure to ask about
+   * them, and the ask is the cheap half.
+   */
+  workRequestFor(perSource, config) {
+    if (config?.drafting !== "on_new") return null;
+
+    const itemIds = perSource.flatMap((result) => result.newIds ?? []);
+    if (!itemIds.length) return null;
+
+    try {
+      const destinationBindings = this.storage.listDestinations().map((row) => row.binding);
+      const opened = this.openBatch({ itemIds, destinationBindings });
+      // By value, never a throw (PAT-007). A refusal here — no destination
+      // granted, or these items already have an active localization — is not a
+      // scan failure and is not something to ask an owner about.
+      if (!opened || opened.ok === false || !opened.items?.length) return null;
+
+      return {
+        batchId: opened.id,
+        // The accounts the posts came from, in the owner's own words for them.
+        // The platform bounds this before it reaches an approval card.
+        sourceLabel: [
+          ...new Set(perSource.filter((result) => (result.newIds ?? []).length > 0).map((result) => result.label))
+        ]
+          .filter(Boolean)
+          .join(", "),
+        /**
+         * The SOURCE item ids, not the batch item ids, and taken from what was
+         * actually opened rather than from what was asked for.
+         *
+         * Source ids because they are the observation identity the ledger stands
+         * on (`source:<id>`), which is what an audit trail links by (REQ-008).
+         * The agent reaches the batch items it must write through by reading
+         * `getBatch(batchId)`, so nothing here needs to carry them.
+         */
+        itemIds: opened.items.map((item) => item.sourceItem?.id).filter(Boolean),
+        // The one method a finished draft is returned through. `agent.md`
+        // carries the contract; this names it so the brief does not have to
+        // repeat it.
+        intake: "saveRevision"
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** One source, cursor-paginated, at most `MAX_ITEMS_PER_SOURCE` items, isolated so one source's failure never stops another's. */
@@ -697,8 +910,22 @@ export class Gadget extends DurableObject {
     }
 
     let cursor = source.cursor ?? null;
+    /*
+     * Every cursor this run has already asked with.
+     *
+     * A pager that does not advance is not a pager. `treg.instagram.user.posts`
+     * RETURNS a `next_cursor` but does not accept one — sending it back yields
+     * the identical page, verified against the live endpoint — so the loop
+     * refetched page one until `MAX_ITEMS_PER_SOURCE` stopped it: roughly
+     * eight billed provider calls to read twelve posts, on every scan.
+     *
+     * Detecting the repeat rather than special-casing this endpoint keeps it
+     * true for the next provider whose cursor loops, and costs one Set.
+     */
+    const askedWith = new Set([cursor]);
     let fetched = 0;
     let newCount = 0;
+    const newIds = [];
     let changedCount = 0;
     let unchangedCount = 0;
     let outcome = "confirmed";
@@ -740,8 +967,12 @@ export class Gadget extends DurableObject {
           if (fetched >= MAX_ITEMS_PER_SOURCE) break;
           const result = this.storage.upsertItem(item);
           fetched += 1;
-          if (result.isNew) newCount += 1;
-          else if (result.changed) changedCount += 1;
+          // The ids as well as the count, because a work request has to name
+          // what it found (TASK-019) and a number cannot be drafted from.
+          if (result.isNew) {
+            newCount += 1;
+            newIds.push(item.id);
+          } else if (result.changed) changedCount += 1;
           else unchangedCount += 1;
         }
 
@@ -750,6 +981,11 @@ export class Gadget extends DurableObject {
         cursor = normalized.nextCursor;
         this.storage.recordSourceOutcome(source.binding, { outcome: "confirmed", cursor });
         if (!cursor || normalized.items.length === 0) break;
+        // A cursor we have already used cannot take us anywhere new, so this
+        // page is the last one — not an error, and the items just read are
+        // kept. Reaching here is the provider saying "no more", clumsily.
+        if (askedWith.has(cursor)) break;
+        askedWith.add(cursor);
       }
     } catch (error) {
       outcome = "failed_safe";
@@ -759,8 +995,12 @@ export class Gadget extends DurableObject {
     this.storage.recordSourceOutcome(source.binding, { outcome, message, cursor });
     return {
       binding: source.binding,
+      // The owner's own words for the account, carried so a work request can name
+      // where the posts came from without re-reading the sources table.
+      label: source.label,
       outcome,
       new: newCount,
+      newIds,
       changed: changedCount,
       unchanged: unchangedCount,
       message
@@ -868,6 +1108,20 @@ export class Gadget extends DurableObject {
 
     let cached = this.storage.getMedia(itemId, mediaId, rendition);
     if (!cached) cached = await this.fetchAndCacheMedia(itemId, mediaId, rendition);
+    // Too large is not missing, and saying so is the point: an owner who is
+    // told "no media" goes looking for a broken source, while one told the
+    // size and the cap knows the media is fine and the cache is the limit.
+    if (cached?.refused) {
+      return { ok: false, code: cached.refused.code, message: cached.refused.message };
+    }
+    if (cached?.tooLarge) {
+      const { byteLength, cap } = cached.tooLarge;
+      return {
+        ok: false,
+        code: "media_too_large",
+        message: `That ${rendition} is ${Math.ceil(byteLength / 1024)}KB, over the ${Math.floor(cap / 1024)}KB this cache holds.`
+      };
+    }
     // EXPECTED: a source URL expired, the door revoked mid-fetch, or the
     // media id was never valid — an owner opening a stale preview, not a
     // caller bug. `rpc.js`'s `loadMediaAsBlobUrl` turns this back into a
@@ -892,20 +1146,103 @@ export class Gadget extends DurableObject {
    */
   async fetchAndCacheMedia(itemId, mediaId, rendition) {
     const item = this.storage.getItem(itemId);
-    const media = item ? item.media.find((entry) => entry.id === mediaId) : null;
-    if (!item || !media || !media.url) return null;
+    /*
+     * Say which of the three was missing.
+     *
+     * This returned a bare `null` for all of them, and the caller turned that
+     * into "No thumb media for <id>" — a sentence about the media that is
+     * false for two of the three causes. An unknown item, a media id that
+     * matches nothing on a known item, and an entry with no URL send a reader
+     * to three different places.
+     */
+    if (!item) {
+      return { refused: { code: "item_missing", message: `No item ${itemId}.` } };
+    }
+    const media = item.media.find((entry) => String(entry.id) === String(mediaId));
+    if (!media) {
+      const known = item.media.map((entry) => JSON.stringify(entry.id)).join(", ") || "none";
+      return { refused: { code: "media_id_unknown", message: `That item has no media ${JSON.stringify(mediaId)}; it has: ${known}.` } };
+    }
+    if (!media.url) {
+      return { refused: { code: "media_missing_url", message: "That media entry carries no URL." } };
+    }
 
-    const response = await fetchMedia(this.env, item.sourceBinding, media, rendition);
-    if (response.outcome !== "confirmed" || !response.data) return null;
+    /*
+     * ALREADY HELD IS ALREADY PAID FOR.
+     *
+     * The grid fetches a `thumb`; opening the drawer asked for a `preview`,
+     * and the cache is keyed by rendition, so the same file was fetched a
+     * second time through the metered door, over the network, and stored a
+     * second time — every one of the four thumb/preview pairs in a real
+     * account's cache is byte-identical, same length and same header. That is
+     * the whole of "why is the drawer slow when we already have the picture".
+     *
+     * `mediaUrlFor` is the door's own rule about which file a rendition asks
+     * for. When both renditions name the same URL the bytes are the same
+     * bytes, so the ones already stored are copied across rather than
+     * refetched. The target rendition's cap still applies: a file that fits
+     * the preview cap may be too big to hold as a thumb, and reusing it would
+     * quietly raise a limit that exists on purpose.
+     */
+    const other = rendition === "thumb" ? "preview" : "thumb";
+    if (mediaUrlFor(media, rendition) === mediaUrlFor(media, other)) {
+      const held = this.storage.getMedia(itemId, mediaId, other);
+      const cap = rendition === "thumb" ? THUMB_MAX_BYTES : PREVIEW_MAX_BYTES;
+      if (held && held.bytes.byteLength <= cap) {
+        this.storage.putMedia(itemId, mediaId, rendition, held.mime, held.bytes);
+        return { mime: held.mime, bytes: held.bytes };
+      }
+    }
+
+    // The source's own origin decides which door owns its bytes; a media id
+    // cannot be read for it, and guessing from the binding's shape is what
+    // `scanOneSource` already refuses to do.
+    const source = this.storage.getSource(item.sourceBinding);
+    const response = await fetchMedia(this.env, item.sourceBinding, media, rendition, source?.origin);
+    // Carry the door's own words. Returning a bare null here turned every
+    // distinct refusal — no door granted, host not allowlisted, the CDN
+    // answered 403 — into "No thumb media", which sends a reader looking at
+    // the item instead of at the reason.
+    if (response.outcome !== "confirmed" || !response.data) {
+      return { refused: { code: response.outcome ?? "unknown", message: response.message ?? "The media could not be fetched." } };
+    }
 
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
-    if (!raw) return null;
+    /*
+     * The last bare `null` on this path, and the one that hid the door working.
+     *
+     * A door confirms and hands back bytes; if `toBytes` cannot read the shape
+     * they arrived in, returning null made `getMedia` answer "No thumb media",
+     * which is a sentence about the source and false about what happened. Say
+     * what was actually received instead — the shape is the clue.
+     */
+    if (!raw) {
+      const shape = response.data?.bytes === undefined
+        ? Object.keys(response.data ?? {}).join(", ") || typeof response.data
+        : `bytes as ${Object.keys(response.data.bytes ?? {}).slice(0, 4).join("|") || Object.prototype.toString.call(response.data.bytes)}`;
+      return { refused: { code: "media_unreadable", message: `The door returned media this gadget could not read (${shape}).` } };
+    }
     const cap = rendition === "thumb" ? THUMB_MAX_BYTES : PREVIEW_MAX_BYTES;
-    const bytes = raw.slice(0, cap);
+    /*
+     * REFUSE what does not fit. Do not store a prefix of it.
+     *
+     * This used to be `raw.slice(0, cap)`, which turns a file too big for the
+     * cap into a corrupt one of exactly the cap's size — and then stores it as
+     * though it were the media. Every format here is length-sensitive: a
+     * truncated MP4 will not play and a truncated JPEG will not decode. The
+     * first item this gadget ever scanned is a 2.7 MB reel, so the very first
+     * real fetch would have cached 1 MB of unusable bytes and reported success.
+     *
+     * A cap is a statement about what this cache will hold, so exceeding it is
+     * an answer ("too large for a <rendition>"), not a licence to store part of
+     * it. The caller turns this into a refusal an owner can read, rather than a
+     * broken image with no explanation.
+     */
+    if (raw.byteLength > cap) return { tooLarge: { byteLength: raw.byteLength, cap } };
     const mime = typeof response.data.mime === "string" ? response.data.mime : "application/octet-stream";
 
-    this.storage.putMedia(itemId, mediaId, rendition, mime, bytes);
-    return { mime, bytes };
+    this.storage.putMedia(itemId, mediaId, rendition, mime, raw);
+    return { mime, bytes: raw };
   }
 
   // -----------------------------------------------------------------------
@@ -941,7 +1278,30 @@ export class Gadget extends DurableObject {
    * to this gadget's own `?w=<gadgetId>` (TASK-104), the same reason
    * `notifyNewItems` above never builds one either.
    */
-  async createBatch({ itemIds, destinationBindings, createNewVersion = false }) {
+  async createBatch(input) {
+    const opened = this.openBatch(input);
+    if (opened.ok === false) return opened;
+
+    const postWord = opened.items.length === 1 ? "post" : "posts";
+    await notify(this.env, {
+      title: `${opened.items.length} ${postWord} ready to localize`,
+      body: `${opened.items.length} ${postWord} moved to Localize. Drafts start from here.`
+    });
+    return opened;
+  }
+
+  /**
+   * The batch rows, written without announcing them.
+   *
+   * SPLIT OUT FOR TASK-019, and the notice is the reason. `createBatch` above is
+   * the owner's own Continue and its `notify()` is that action made visible. A
+   * scan that opened a batch through it would send that notice on its own
+   * cadence, past `notifications.mode` and past quiet hours — the settings whose
+   * whole purpose is to decide when this gadget may interrupt somebody.
+   *
+   * Refuses by value, never by throw (PAT-007).
+   */
+  openBatch({ itemIds, destinationBindings, createNewVersion = false }) {
     const ids = Array.isArray(itemIds) ? [...new Set(itemIds.filter((id) => typeof id === "string"))] : [];
     const destinations = Array.isArray(destinationBindings)
       ? [...new Set(destinationBindings.filter((binding) => typeof binding === "string"))]
@@ -952,7 +1312,9 @@ export class Gadget extends DurableObject {
       return {
         ok: false,
         code: "batch_needs_destinations",
-        message: "createBatch needs at least one destination binding."
+        // Read by an owner, not only by the caller that made the mistake:
+        // the client puts this sentence on screen verbatim.
+        message: "No destination is set up yet. Add a destination account before moving posts to Localize."
       };
     }
 
@@ -995,12 +1357,6 @@ export class Gadget extends DurableObject {
     }
 
     const batch = this.storage.getBatch(batchId);
-    const postWord = items.length === 1 ? "post" : "posts";
-    await notify(this.env, {
-      title: `${items.length} ${postWord} ready to localize`,
-      body: `${items.length} ${postWord} moved to Localize. Drafts start from here.`
-    });
-
     return { id: batch.id, createdAt: batch.created_at, status: batch.status, items };
   }
 
@@ -1083,9 +1439,15 @@ export class Gadget extends DurableObject {
    */
   projectBatchItem(batchItem) {
     const latest = this.storage.latestRevision(batchItem.id);
+    const sourceItem = this.storage.getItem(batchItem.itemId);
+    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
+    const obligation = rightsObligation({
+      ledger: latest?.ledger,
+      sourceOrigin: sourceRow?.origin
+    });
     return {
       id: batchItem.id,
-      sourceItem: this.storage.getItem(batchItem.itemId),
+      sourceItem,
       destinationBindings: batchItem.destinationBindings,
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
@@ -1096,12 +1458,14 @@ export class Gadget extends DurableObject {
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
       confirmedClaims: latest?.confirmedClaims ?? [],
-      refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(null),
+      refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
       originalMediaRefs: latest?.originalMediaRefs ?? [],
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
+      ledger: latest?.ledger ?? { spans: [], media: [] },
       rightsStatus: batchItem.rightsStatus,
+      rightsRequired: obligation.required,
       state: batchItem.state,
       approval: batchItem.version
         ? {
@@ -1149,7 +1513,8 @@ export class Gadget extends DurableObject {
     originalMediaRefs,
     derivedMediaRefs,
     publicationIntent,
-    acceptedVisualMode
+    acceptedVisualMode,
+    ledger
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -1162,51 +1527,11 @@ export class Gadget extends DurableObject {
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
     const previous = this.storage.latestRevision(batchItemId);
-    const validation = validateLocalization({
-      source: { text: sourceItem ? sourceItem.text : "" },
-      draft: caption,
-      policy: {
-        protectedTerms: config?.protectedTerms,
-        protectedHashtags: config?.protectedHashtags,
-        disclaimers: config?.disclaimers,
-        claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
-        confirmedClaims
-      },
-      // REQ-016: the destinations' own reported limits, not a constant here.
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
-    });
-    if (!validation.ok) return { ok: false, issues: validation.issues };
-
-    if (posterLayout) {
-      const posterValidation = validatePosterLayout(posterLayout);
-      if (!posterValidation.ok) {
-        return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
-      }
-    }
-
     const refinement = normalizeRefinementBrief(
       refinementBrief === undefined
         ? (previous?.refinementBrief ?? (previous ? null : config?.refinementBrief))
         : refinementBrief
     );
-    const intent = normalizePublicationIntent(
-      publicationIntent === undefined ? (previous?.publicationIntent ?? undefined) : publicationIntent
-    );
-    if (!intent.ok) return { ok: false, issues: [{ code: intent.code, severity: "block", message: intent.message }] };
-    const sourceMedia = Array.isArray(sourceItem?.media)
-      ? sourceItem.media.map((media) => ({
-          assetId: media.id,
-          kind: media.kind,
-          url: media.url,
-          source: "original"
-        }))
-      : [];
-    const originals =
-      originalMediaRefs === undefined
-        ? (previous?.originalMediaRefs ?? (batchItem.currentRevision === 0 ? normalizeAssetRefs(sourceMedia) : []))
-        : normalizeAssetRefs(originalMediaRefs);
-    const derived =
-      derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
     if (
       acceptedVisualMode !== undefined &&
       !["keep_original", "text_poster", "ai_refinement"].includes(acceptedVisualMode)
@@ -1226,6 +1551,52 @@ export class Gadget extends DurableObject {
       protectedOverrides === undefined
         ? (previous?.protectedOverrides ?? [])
         : normalizeProtectedOverrides(protectedOverrides);
+    const storedLedger = applyProtectedOverridesToLedger(
+      ledger === undefined ? (previous?.ledger ?? { spans: [], media: [] }) : normalizeLedger(ledger),
+      overrides
+    );
+
+    const validation = validateRevisionDraft({
+      source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
+      draft: caption,
+      brief,
+      ledger: storedLedger,
+      policy: {
+        protectedTerms: config?.protectedTerms,
+        protectedHashtags: config?.protectedHashtags,
+        disclaimers: config?.disclaimers,
+        claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
+        confirmedClaims
+      },
+      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
+    });
+    if (!validation.ok) return { ok: false, issues: validation.issues };
+
+    if (posterLayout) {
+      const posterValidation = validatePosterLayout(posterLayout);
+      if (!posterValidation.ok) {
+        return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
+      }
+    }
+
+    const intent = normalizePublicationIntent(
+      publicationIntent === undefined ? (previous?.publicationIntent ?? undefined) : publicationIntent
+    );
+    if (!intent.ok) return { ok: false, issues: [{ code: intent.code, severity: "block", message: intent.message }] };
+    const sourceMedia = Array.isArray(sourceItem?.media)
+      ? sourceItem.media.map((media) => ({
+          assetId: media.id,
+          kind: media.kind,
+          url: media.url,
+          source: "original"
+        }))
+      : [];
+    const originals =
+      originalMediaRefs === undefined
+        ? (previous?.originalMediaRefs ?? (batchItem.currentRevision === 0 ? normalizeAssetRefs(sourceMedia) : []))
+        : normalizeAssetRefs(originalMediaRefs);
+    const derived =
+      derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption,
@@ -1236,7 +1607,8 @@ export class Gadget extends DurableObject {
       protectedOverrides: overrides,
       originalMediaRefs: originals,
       derivedMediaRefs: derived,
-      publicationIntent: intent.intent
+      publicationIntent: intent.intent,
+      ledger: storedLedger
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -1316,7 +1688,8 @@ export class Gadget extends DurableObject {
       protectedOverrides: previous?.protectedOverrides ?? [],
       originalMediaRefs: previous?.originalMediaRefs ?? [],
       derivedMediaRefs: previous?.derivedMediaRefs ?? [],
-      publicationIntent: previous?.publicationIntent ?? null
+      publicationIntent: previous?.publicationIntent ?? null,
+      ledger: previous?.ledger ?? { spans: [], media: [] }
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -1358,7 +1731,8 @@ export class Gadget extends DurableObject {
       rights_confirmed_at: new Date().toISOString(),
       state: status === "confirmed" ? "drafting" : "held_rights"
     });
-    return this.storage.getBatchItem(batchItemId);
+    const updated = this.storage.getBatchItem(batchItemId);
+    return updated ? this.projectBatchItem(updated) : updated;
   }
 
   // -----------------------------------------------------------------------
@@ -1401,21 +1775,31 @@ export class Gadget extends DurableObject {
         message: `Revision mismatch: this batch item is at revision ${batchItem.currentRevision}.`
       };
     }
-    // REQ-019: never submit while rights are pending or denied.
-    if (batchItem.rightsStatus !== "confirmed") {
+    const revision = this.storage.getRevision(batchItemId, expectedRevision);
+    const origin = this.storage.getOriginLink(batchItemId);
+    if (!revision || !origin) {
+      return { ok: false, code: "revision_missing", message: "Nothing to submit yet. Save a revision first." };
+    }
+
+    const sourceItem = this.storage.getItem(batchItem.itemId);
+    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
+    const obligation = rightsObligation({
+      ledger: revision.ledger,
+      sourceOrigin: sourceRow?.origin
+    });
+    // REQ-019: never submit while a computed rights obligation is unmet.
+    if (obligation.required && batchItem.rightsStatus !== "confirmed") {
       return {
         ok: false,
         code: "rights_unconfirmed",
         message: `Rights must be confirmed before submitting (currently ${batchItem.rightsStatus}).`
       };
     }
-
-    const revision = this.storage.getRevision(batchItemId, expectedRevision);
-    const origin = this.storage.getOriginLink(batchItemId);
-    if (!revision || !origin) {
-      return { ok: false, code: "revision_missing", message: "Nothing to submit yet. Save a revision first." };
-    }
     const caption = revision.caption ?? "";
+    const publication = normalizePublicationIntent(revision.publicationIntent ?? undefined);
+    if (!publication.ok) {
+      return { ok: false, code: publication.code, message: publication.message };
+    }
 
     const config = this.storage.getConfig();
     const protectedLiterals = detectProtectedLiterals(caption, {
@@ -1424,6 +1808,25 @@ export class Gadget extends DurableObject {
       disclaimers: config?.disclaimers,
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     }).map((span) => span.value);
+
+    const packedMedia = publicationMedia({
+      derivedMediaRefs: revision.derivedMediaRefs,
+      sourceMedia: sourceItem?.media
+    });
+    if (!packedMedia.ok) {
+      return { ok: false, code: packedMedia.code, message: packedMedia.message };
+    }
+
+    // TASK-015: the attribution the door carries is the observation record the
+    // ledger stands on, checked against it here rather than assumed.
+    const attribution = draftOrigin({
+      originLink: origin,
+      ledger: revision.ledger,
+      sourceId: batchItem.itemId
+    });
+    if (!attribution.ok) {
+      return { ok: false, code: attribution.code, message: attribution.message };
+    }
 
     // Both door calls below are wrapped: `socialCreateDraft` /
     // `socialSubmitForReview` (`doors.js`) throw when the door itself is
@@ -1434,17 +1837,14 @@ export class Gadget extends DurableObject {
     try {
       draft = await socialCreateDraft(this.env, {
         caption,
+        media: packedMedia.media,
         targets: batchItem.destinationBindings.map((destinationBinding) => ({ destinationBinding })),
-        origin: {
-          provider: origin.provider,
-          sourceLabel: origin.sourceLabel,
-          providerItemId: origin.providerItemId,
-          permalink: origin.permalink,
-          sourceContentHash: origin.sourceContentHash,
-          sourcePublishedAt: origin.sourcePublishedAt,
-          retrievedAt: origin.retrievedAt
-        },
-        protectedLiterals
+        origin: attribution.origin,
+        protectedLiterals,
+        // The Social Hub owns schedule validation and time resolution. Carry
+        // the normalized, owner-reviewed intent through the door instead of
+        // silently downgrading every revision to save_draft.
+        schedule: publication.intent
       });
     } catch (error) {
       return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
@@ -1779,6 +2179,45 @@ function toBytes(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (Array.isArray(value)) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  /*
+   * A Buffer that has crossed the facet RPC as JSON.
+   *
+   * Bytes do not survive that boundary as a typed array: Node serialises a
+   * Buffer to `{ type: "Buffer", data: [...] }`, so every `instanceof` above
+   * misses and the media reads as unreadable. This is the shape a door's
+   * bytes ACTUALLY have by the time the gadget sees them — the door was
+   * working long before this function could tell, and the bare `null` it
+   * returned reported that as "no media".
+   */
+  if (value && typeof value === "object" && value.type === "Buffer" && Array.isArray(value.data)) {
+    return new Uint8Array(value.data);
+  }
+  /*
+   * A typed array that has crossed the facet RPC.
+   *
+   * `Uint8Array` does not survive that boundary as itself: it arrives as a
+   * plain object keyed by index, so every `instanceof` above misses and the
+   * bytes look unreadable. This is the shape a door's media actually has by
+   * the time the gadget sees it — the door was working long before this
+   * function could tell.
+   *
+   * Read by INDEX up to `length`, rather than by `Object.values`, because key
+   * order is not part of the contract and a stray non-index property would
+   * otherwise be spliced into the middle of an image.
+   */
+  if (value && typeof value === "object") {
+    const length = Number(value.length ?? value.byteLength);
+    if (Number.isInteger(length) && length >= 0) {
+      const bytes = new Uint8Array(length);
+      for (let index = 0; index < length; index += 1) {
+        const byte = value[index];
+        if (typeof byte !== "number") return null;
+        bytes[index] = byte;
+      }
+      return bytes;
+    }
+  }
   if (typeof value === "string") {
     try {
       const binary = atob(value);

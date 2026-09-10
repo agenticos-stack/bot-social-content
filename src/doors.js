@@ -48,6 +48,8 @@
 // (`server.js`'s `deriveBindingsFromGrants`), never guessed or reconstructed
 // here.
 
+import { isPublisherAddressableUrl } from "./model.js";
+
 /**
  * This blueprint's three fixed single-binding capability doors, keyed
  * exactly as the platform binds them (see the header note above). The one
@@ -55,7 +57,7 @@
  * `server.js`'s `FIXED_DOOR_KEYS` / `availableConnectorBindings` — resolves
  * against, so the key strings exist in exactly one place.
  */
-export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace", "fetch"]);
+export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace", "metered_fetch"]);
 
 /**
  * The door that fetches a PUBLIC account's posts, when the owner granted it.
@@ -66,7 +68,14 @@ export const FIXED_DOOR_KEYS = Object.freeze(["social", "schedule", "workspace",
  * fault. Everything that reads it must treat "not granted" as "this workspace
  * does not watch open accounts", never as an error.
  */
-export const FETCH_DOOR_KEY = "fetch";
+/*
+ * The platform mints this door as `env.metered_fetch` — that is the key in the
+ * gatekeeper registry, and the key a grant reports back (`env.metered_fetch`).
+ * This module called it `fetch`, so `methodsByDoor[door.envKey]` never matched,
+ * the door never entered the isolate's `env`, and the open-account path was
+ * unreachable however the owner granted it. Use the platform's own name.
+ */
+export const FETCH_DOOR_KEY = "metered_fetch";
 
 /**
  * Whether each fixed capability door is currently granted — `env.<key>`
@@ -86,7 +95,7 @@ export function doorGrantStatus(env) {
  * Calls one pinned action on a granted connector door.
  *
  * `binding` is the owner-chosen label slug the door was granted under
- * (`env.INSTAGRAM_SOURCE`); `method` is the pinned
+ * (`env.IG_ESSENTIAL_FOODS`, TASK-101, PR #1484); `method` is the pinned
  * action's own name. As shipped, the only READ actions are
  * `instagram_list_media` and `facebook_list_page_posts` (full underscored
  * slugs, not `list_media`/`list_page_posts`) — see `listInstagramMedia` /
@@ -237,8 +246,62 @@ export async function listOpenAccountPosts(env, source, { after } = {}) {
  * so `callConnector` reports the same "does not offer fetch_media" `unknown`
  * this always fell back to — no special-casing needed here either way.
  */
-export async function fetchMedia(env, binding, media, rendition) {
-  return callConnector(env, binding, "fetch_media", [{ url: media?.url, rendition }]);
+/**
+ * Bytes for one piece of media, from whichever door owns the source.
+ *
+ * Routed by the source's ORIGIN, the same way `scanOneSource` picks its
+ * reader — not by the binding's shape, and not by trying one and falling back,
+ * which would reach for a grant that does not exist and report its absence as
+ * a provider failure.
+ *
+ * An OPEN source has no connector binding, so before `metered_fetch` grew a
+ * `fetch_media` it had no route to bytes at all. That was not merely a
+ * durability gap: a gadget's canvas is served `img-src blob: data:` with
+ * `connect-src 'none'`, so a picture reaches it only as bytes the gadget
+ * already holds. Without this, a public account's posts render as empty boxes
+ * permanently, and no amount of client work changes it.
+ *
+ * A VIDEO FETCHES ITS POSTER, never its file. `model.js` keeps both on the
+ * media entry; the file is multi-megabyte and cannot fit the cache, and a
+ * still is what both the grid and any later derivation actually want.
+ */
+/**
+ * WHICH FILE a rendition asks the provider for.
+ *
+ * Exported because `server.js` asks the same question before paying for a
+ * second fetch: when two renditions resolve to the same URL they are the same
+ * file, and bytes already held for one are the bytes for the other. Today that
+ * is every media entry — the rendition is advisory, and the provider's payload
+ * carries one candidate per photo — but the comparison is written out rather
+ * than assumed, so a rendition-specific URL later changes this in one place.
+ */
+export function mediaUrlFor(media, rendition) {
+  return media?.kind === "video" && media?.posterUrl ? media.posterUrl : media?.url;
+}
+
+export async function fetchMedia(env, binding, media, rendition, origin) {
+  const url = mediaUrlFor(media, rendition);
+  if (!url) {
+    return { outcome: "unknown", message: "That media has no fetchable URL." };
+  }
+  if (origin === "open") {
+    const door = env && typeof env === "object" ? env[FETCH_DOOR_KEY] : null;
+    if (!door || typeof door.fetch_media !== "function") {
+      return { outcome: "unknown", message: "Public account fetching is not granted for this workspace." };
+    }
+    let result;
+    try {
+      result = await door.fetch_media({ url, rendition });
+    } catch (error) {
+      // The door refuses by value, so reaching here means the RPC itself broke.
+      return { outcome: "failed_safe", message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result || result.ok !== true) {
+      return { outcome: "failed_safe", message: (result && result.message) || "The fetch door refused." };
+    }
+    return { outcome: "confirmed", data: { mime: result.mime, bytes: result.bytes, byteLength: result.byteLength } };
+  }
+  return callConnector(env, binding, "fetch_media", [{ url, rendition }]);
 }
 
 /** `env.workspace.notify({ title, body, href })` — TASK-104. Never throws; logs and continues. */
@@ -302,6 +365,21 @@ export async function socialCreateDraft(env, input) {
   const social = env && env.social;
   if (!social || typeof social.createDraft !== "function") {
     throw new Error("The Social Hub door is not granted. Ask the owner to grant it during setup.");
+  }
+  const media = input && Array.isArray(input.media) ? input.media : null;
+  if (media) {
+    for (const item of media) {
+      const record = item && typeof item === "object" ? item : null;
+      const assetId = record && typeof record.assetId === "string" ? record.assetId.trim() : "";
+      const url = record && typeof record.url === "string" ? record.url : "";
+      if (!assetId || !isPublisherAddressableUrl(url)) {
+        return {
+          refused: true,
+          code: "media_unaddressable",
+          message: "Every media item needs a publisher-addressable https url."
+        };
+      }
+    }
   }
   return social.createDraft(input);
 }

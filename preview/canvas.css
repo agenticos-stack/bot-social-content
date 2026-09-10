@@ -1,0 +1,36 @@
+/*
+ * The dev canvas shows the REAL media.
+ *
+ * This file used to draw a stand-in over every `.sl-media` — a rotated blob in
+ * `::before` and a "SAMPLE ARTWORK" label in `::after` — which is fine for a
+ * layout mock and wrong for the loop this preview exists to serve. Use case 2
+ * is "derive a post from the selected reference", and an owner selects a
+ * reference by LOOKING at it. Twelve identical grey blobs cannot be chosen
+ * between, so the one judgement the canvas is for could not be exercised here.
+ *
+ * The placeholder is preview-only — `canvas.css` is not in the gadget's
+ * manifest — so production was always showing real imagery. Only the
+ * development loop was blind, which is the worst place to be blind.
+ */
+html body{margin:0;background:var(--color-panel);color:var(--color-ink);font-family:var(--font-sans)}
+body #gadget-root .sl-app{max-width:none;padding:22px 28px 90px}
+body #gadget-root .sl-titleline h1{font-size:18px;letter-spacing:-.4px;margin-bottom:9px}
+body #gadget-root .sl-titleline p{font-size:11px;line-height:1.7;max-width:58ch}
+body #gadget-root .sl-search-input{border-radius:8px;background:var(--color-paper);border-color:var(--color-line-strong)}
+body #gadget-root .sl-toolbar{margin-top:22px;margin-bottom:14px}
+body #gadget-root .sl-post{border-radius:12px;overflow:hidden;border-color:var(--color-panel-subtle);box-shadow:0 3px 12px transparent}
+body #gadget-root .sl-media{background:var(--color-panel-subtle);position:relative;isolation:isolate}
+body #gadget-root .sl-post-body{padding:16px}
+/* The dock floats over the list, so it takes the card surface at partial alpha
+   rather than the page colour an opaque bar used to need. */
+body #gadget-root .sl-selection{background:color-mix(in srgb,var(--color-paper) 82%,transparent);border-color:var(--color-panel-subtle)}
+body #gadget-root .sl-primary{background:var(--color-act-hover);color:var(--color-ink);border-color:var(--color-act-hover);border-radius:8px}
+/* This skin outranks the gadget's own stylesheet (every rule here carries an id),
+   so it has to restate the disabled state or preview shows an unavailable action
+   wearing the full brand fill. Mirrors `.sl-primary:disabled` in the client. */
+body #gadget-root .sl-primary:disabled{background:var(--color-panel-subtle);color:var(--color-ink-faint);border-color:var(--color-line);opacity:1}
+body #gadget-root .sl-filter-btn{border-radius:8px}
+body #gadget-root .sl-bottom-bar{background:var(--color-panel);border-color:var(--color-panel-subtle)}
+body #gadget-root .sl-inbox{border-color:var(--color-panel-subtle);background:var(--color-panel)}
+body #gadget-root button:focus-visible{outline:2px solid var(--color-act-hover);outline-offset:3px}
+@media(max-width:600px){body #gadget-root .sl-app{padding:18px 16px 100px}body #gadget-root .sl-toolbar{margin-top:16px}}

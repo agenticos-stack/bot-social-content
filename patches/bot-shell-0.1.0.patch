@@ -1,0 +1,278 @@
+diff --git a/GadgetSplitView.svelte b/GadgetSplitView.svelte
+index 2463376..cfb4720 100644
+--- a/GadgetSplitView.svelte
++++ b/GadgetSplitView.svelte
+@@ -5,7 +5,7 @@
+   // Labels are supplied by the host's locale, not imported from Studio.
+   let {
+     chat, canvas, chatLabel = "Conversation", canvasLabel = "App",
+-    canvasScroll = "auto", chatOpen = true
++    canvasScroll = "auto", chatOpen = true, chatSide = "right", mobilePane = "both"
+   } = $props<{
+     chat: Snippet;
+     canvas: Snippet;
+@@ -13,21 +13,30 @@
+     canvasLabel?: string;
+     canvasScroll?: "auto" | "clip";
+     chatOpen?: boolean;
++    chatSide?: "left" | "right";
++    mobilePane?: "chat" | "canvas" | "both";
+   }>();
+ </script>
+ 
+-<div class="split" class:chat-open={chatOpen}>
++<div class="split" class:chat-open={chatOpen} class:chat-left={chatSide === "left"} data-mobile-pane={mobilePane}>
++  {#if chatSide === "left"}
++    <section class="chat" aria-label={chatLabel} hidden={!chatOpen}>
++      {#if chatOpen}{@render chat()}{/if}
++    </section>
++  {/if}
+   <section class="canvas" class:canvas-clip={canvasScroll === "clip"} aria-label={canvasLabel}>
+     {@render canvas()}
+   </section>
+-  <section class="chat" aria-label={chatLabel} hidden={!chatOpen}>
++  {#if chatSide === "right"}<section class="chat" aria-label={chatLabel} hidden={!chatOpen}>
+     {#if chatOpen}{@render chat()}{/if}
+-  </section>
++  </section>{/if}
+ </div>
+ 
+ <style>
+   .split { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; height: 100%; }
+   .split.chat-open { grid-template-columns: minmax(0, 1fr) 392px; }
++  .split.chat-open.chat-left { grid-template-columns: var(--bot-chat-width, 380px) minmax(0, 1fr); }
++  .chat-left .chat { border-left: 0; border-right: 1px solid var(--color-border, #e6e6e9); }
+   .chat {
+     border-left: 1px solid var(--color-border, #e6e6e9);
+     display: flex; flex-direction: column; min-width: 0; min-height: 0;
+@@ -44,4 +53,13 @@
+     }
+     .chat { border-left: 0; border-top: 1px solid var(--color-border, #e6e6e9); }
+   }
++  @media (max-width: 760px) {
++    .split.chat-open.chat-left { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
++    .chat-left[data-mobile-pane="canvas"] .chat { display: none; }
++    .chat-left[data-mobile-pane="chat"] .canvas { display: none; }
++    .chat-left[data-mobile-pane="both"] { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
++  }
++  @media (min-width: 761px) and (max-width: 1180px) {
++    .split.chat-open.chat-left { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(280px, var(--bot-chat-width, 340px)) minmax(0, 1fr); }
++  }
+ </style>
+diff --git a/GadgetSplitView.svelte.d.ts b/GadgetSplitView.svelte.d.ts
+index e24714f..4668777 100644
+--- a/GadgetSplitView.svelte.d.ts
++++ b/GadgetSplitView.svelte.d.ts
+@@ -7,6 +7,8 @@ export interface GadgetSplitViewProps {
+   canvasLabel?: string;
+   canvasScroll?: "auto" | "clip";
+   chatOpen?: boolean;
++  chatSide?: "left" | "right";
++  mobilePane?: "chat" | "canvas" | "both";
+ }
+ 
+ /** Presentation only. Compiling this entry requires a Svelte-capable bundler. */
+diff --git a/package.json b/package.json
+index 4409d8b..eeaa0f6 100644
+--- a/package.json
++++ b/package.json
+@@ -4,6 +4,9 @@
+   "private": false,
+   "type": "module",
+   "files": [
++    "tokens.css",
++    "components.css",
++    "showcase.html",
+     "GadgetSplitView.svelte",
+     "GadgetSplitView.svelte.d.ts",
+     "README.md",
+@@ -11,6 +14,9 @@
+     "NOTICE"
+   ],
+   "exports": {
++    "./tokens.css": "./tokens.css",
++    "./components.css": "./components.css",
++    "./showcase.html": "./showcase.html",
+     "./GadgetSplitView.svelte": {
+       "types": "./GadgetSplitView.svelte.d.ts",
+       "svelte": "./GadgetSplitView.svelte",
+diff --git a/tokens.css b/tokens.css
+new file mode 100644
+--- /dev/null
++++ b/tokens.css
+@@ -0,0 +1,97 @@
++/* AgenticOS shared token snapshot. Source: Studio e9cd821b845a6d6e24be4b9028067a39424a1f86
++ * src/lib/agenticos-ui/tokens.css. Owner-approved extract; Apache-2.0.
++ * Base element styles intentionally omitted. Fonts are host-loaded, never fetched here. */
++:root {
++  color-scheme: light;
++
++  --font-sans: "Plus Jakarta Sans Variable", "CJK Sans Fallback", "Jakarta Fallback", ui-sans-serif, system-ui, sans-serif;
++  --font-brand: "Geist Variable", "Plus Jakarta Sans Variable", "CJK Sans Fallback", "Jakarta Fallback", ui-sans-serif, system-ui, sans-serif;
++  --font-mono: "Geist Mono Variable", "Geist Mono Fallback", ui-monospace, SFMono-Regular, Consolas, monospace;
++
++  /* neutral ink ramp (.agos) */
++  --color-ink: #18181b;
++  --color-ink-soft: #3f3f46;
++  --color-ink-faint: #8e8e96;
++
++  /* surfaces */
++  --color-paper: #fafafa;
++  --color-paper-2: #f0f0f1;
++  --color-panel: #ffffff;
++  --color-panel-subtle: #f4f4f5;
++  --color-line: #e7e7ea;
++  --color-line-strong: #d9d9de;
++
++  /* brand gold action; signal green stays for live state */
++  --color-signal: #34e597;
++  --color-act: #f5b544;
++  --color-act-hover: #e09a2e;
++  --color-act-press: #c9851f;
++  --color-act-ink: #1a1a1a;
++
++  /* status accents + soft fills (green = live/success, kept) */
++  --color-green: #15b079;
++  --color-green-dark: #0e8a5f;
++  --color-green-soft: #d8f6e8;
++  --color-cyan: #4dd8ff;
++  --color-cyan-soft: #e8f9ff;
++  --color-amber: #b26b00;
++  --color-amber-soft: #fdf2da;
++  --color-red: #df1b41;
++  --color-red-soft: #fce8ec;
++
++  --radius-xs: 0;
++  --radius-sm: 0;
++  --radius-md: 0;
++  --radius-lg: 0;
++
++  --shadow-sm: 0 1px 1px rgba(50, 50, 93, 0.04), 0 1px 2px rgba(50, 50, 93, 0.04);
++  --shadow-card: 0 2px 5px -1px rgba(50, 50, 93, 0.1), 0 1px 3px -1px rgba(0, 0, 0, 0.06);
++  --shadow-lg: 0 13px 27px -5px rgba(50, 50, 93, 0.12), 0 8px 16px -8px rgba(0, 0, 0, 0.16);
++
++  --signal-ink: #04130a;
++  --signal-glow: rgba(52, 229, 151, 0.4);
++  --ease: cubic-bezier(0.22, 1, 0.36, 1);
++  --focus-ring: 0 0 0 3px rgba(245, 181, 68, 0.28);
++  --statusbar-h: 30px;
++
++  /* page background wash (gold-tinted) */
++  --bg-wash: radial-gradient(120% 70% at 100% 0%, rgba(245, 181, 68, 0.06), transparent 55%);
++}
++
++:root[data-theme='dark'] {
++  color-scheme: dark;
++
++  --color-ink: #f5f3ee;
++  --color-ink-soft: #b3ab97;
++  --color-ink-faint: #8a8273;
++
++  --color-paper: #16140f;
++  --color-paper-2: #1a1711;
++  --color-panel: #1f1c15;
++  --color-panel-subtle: #1a1711;
++  --color-line: #2e2a20;
++  --color-line-strong: #3d382b;
++
++  /* gold action brightens on dark surfaces */
++  --color-act: #f5b544;
++  --color-act-hover: #ffc75a;
++  --color-act-press: #e09a2e;
++  --color-act-ink: #1a1a1a;
++
++  --color-green: #2bd08a;
++  --color-green-dark: #34e597;
++  --color-green-soft: #0f2a20;
++  --color-cyan: #5fdcff;
++  --color-cyan-soft: #08222d;
++  --color-amber: #e8a13a;
++  --color-amber-soft: #2a1e08;
++  --color-red: #ff5774;
++  --color-red-soft: #2c0f16;
++
++  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.3);
++  --shadow-card: 0 2px 6px -1px rgba(0, 0, 0, 0.45), 0 1px 3px -1px rgba(0, 0, 0, 0.4);
++  --shadow-lg: 0 16px 30px -6px rgba(0, 0, 0, 0.6), 0 8px 16px -8px rgba(0, 0, 0, 0.5);
++
++  --focus-ring: 0 0 0 3px rgba(245, 181, 68, 0.32);
++  --bg-wash: radial-gradient(120% 70% at 100% 0%, rgba(245, 181, 68, 0.08), transparent 55%);
++}
+diff --git a/components.css b/components.css
+new file mode 100644
+--- /dev/null
++++ b/components.css
+@@ -0,0 +1,58 @@
++/* Opt-in, framework-neutral UI primitives. Load tokens.css first.
++ * Native HTML owns semantics and interaction; classes only own presentation. */
++:root {
++  --bot-space-1: 4px;
++  --bot-space-2: 8px;
++  --bot-space-3: 12px;
++  --bot-space-4: 16px;
++  --bot-space-6: 24px;
++  --bot-radius-control: 9px;
++  --bot-radius-card: 14px;
++  --bot-control-height: 40px;
++  --bot-text-body: 14px;
++  --bot-text-meta: 12px;
++}
++.bot-button.bot-button, .bot-input.bot-input {
++  box-sizing: border-box;
++  min-height: var(--bot-control-height);
++  border: 1px solid var(--color-line-strong);
++  border-radius: var(--bot-radius-control);
++  padding: var(--bot-space-2) var(--bot-space-3);
++  font: 500 var(--bot-text-body)/1.5 var(--font-sans);
++  color: var(--color-ink);
++  background: var(--color-panel);
++}
++.bot-button.bot-button { cursor: pointer; }
++.bot-button.bot-button:hover:not(:disabled) { background: var(--color-panel-subtle); }
++.bot-button.bot-button[data-variant="primary"] {
++  background: var(--color-act); border-color: var(--color-act-hover); color: var(--color-act-ink);
++}
++.bot-button.bot-button[data-variant="primary"]:hover:not(:disabled) { background: var(--color-act-hover); }
++.bot-button.bot-button:disabled { opacity: .5; cursor: not-allowed; }
++.bot-button.bot-button[aria-pressed="true"], .bot-button.bot-button[aria-selected="true"] {
++  background: var(--color-panel-subtle); font-weight: 650;
++}
++.bot-input.bot-input { width: 100%; min-width: 0; }
++textarea.bot-input.bot-input { min-height: 140px; resize: vertical; line-height: 1.8; }
++.bot-input.bot-input[aria-invalid="true"] { border-color: var(--color-red); }
++.bot-input.bot-input:disabled { background: var(--color-panel-subtle); opacity: .65; }
++.bot-button.bot-button:focus-visible, .bot-input.bot-input:focus-visible {
++  outline: 2px solid var(--color-act-hover); outline-offset: 2px;
++}
++.bot-card.bot-card { border: 1px solid var(--color-line); border-radius: var(--bot-radius-card); background: var(--color-panel); overflow: hidden; }
++.bot-card-body.bot-card-body { padding: var(--bot-space-4); }
++.bot-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--bot-space-2); }
++.bot-field { display: grid; gap: var(--bot-space-2); }
++.bot-field > label { font: 600 var(--bot-text-meta)/1.5 var(--font-sans); color: var(--color-ink-soft); }
++.bot-empty { padding: var(--bot-space-6); color: var(--color-ink-soft); text-align: center; font: 400 var(--bot-text-body)/1.7 var(--font-sans); }
++.bot-badge { display: inline-flex; padding: var(--bot-space-1) var(--bot-space-2); border-radius: var(--bot-radius-control); background: var(--color-panel-subtle); color: var(--color-ink-soft); font: 500 var(--bot-text-meta)/1.5 var(--font-sans); }
++/* Modal dialog is document-scoped: in a canvas iframe it cannot cover the host.
++ * Do not portal this to a parent document. Use showModal()/close() for native focus/Escape. */
++dialog.bot-drawer { box-sizing: border-box; width: min(640px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--color-line); background: var(--color-panel); color: var(--color-ink); }
++.bot-drawer-sheet { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
++.bot-drawer-head, .bot-drawer-actions { display: flex; align-items: center; gap: var(--bot-space-2); padding: var(--bot-space-4); }
++.bot-drawer-head { border-bottom: 1px solid var(--color-line); }
++.bot-drawer-actions { border-top: 1px solid var(--color-line); }
++.bot-drawer-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--bot-space-6); overflow-wrap: anywhere; }
++@media (pointer: coarse) { :root { --bot-control-height: 44px; } .bot-input.bot-input { font-size: 16px; } }
++@media (max-width: 600px) { dialog.bot-drawer { width: 100%; } .bot-drawer-body { padding: var(--bot-space-4); } }
+diff --git a/showcase.html b/showcase.html
+new file mode 100644
+--- /dev/null
++++ b/showcase.html
+@@ -0,0 +1,10 @@
++<!doctype html>
++<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bot UI components</title>
++<link rel="stylesheet" href="./tokens.css"><link rel="stylesheet" href="./components.css">
++<style>body{margin:0;padding:24px;background:var(--color-paper);color:var(--color-ink);font:14px/1.7 var(--font-sans)}main{max-width:900px;margin:auto;display:grid;gap:24px}h1,h2,p{margin:0 0 12px}section{padding:24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}</style></head>
++<body><main><header><h1>Bot UI</h1><p>Shared native controls · English / <span lang="zh-HK">繁體中文</span></p><span class="bot-badge">Development reference</span></header>
++<section class="bot-card"><h2>Actions</h2><div class="bot-toolbar"><button class="bot-button" data-variant="primary">Save draft · 儲存草稿</button><button class="bot-button">Cancel · 取消</button><button class="bot-button" disabled>Unavailable</button><button class="bot-button" disabled aria-busy="true">Saving…</button></div></section>
++<section class="bot-card"><h2>Fields</h2><div class="grid"><div class="bot-field"><label for="caption">Caption · 文案</label><textarea class="bot-input" id="caption">Review the source before publishing.</textarea></div><div class="bot-field"><label for="language">Language · 語言</label><select class="bot-input" id="language"><option>English</option><option>繁體中文（香港）</option></select><label for="invalid">Validation error</label><input class="bot-input" id="invalid" aria-invalid="true" aria-describedby="error"><p id="error">Enter a title before continuing.</p></div></div></section>
++<section class="bot-card"><h2>Empty state</h2><div class="bot-empty">No content yet. Add a source to get started.</div></section>
++<section class="bot-card"><h2>Drawer contract</h2><p>Use a native dialog with bot-drawer, containing bot-drawer-sheet and head/body/actions sections. Call showModal() inside the canvas document, not the parent. The application owns labels, confirmation of unsaved changes, and focus restoration.</p></section>
++</main></body></html>
