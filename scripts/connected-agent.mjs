@@ -55,15 +55,15 @@ export async function createConnectedAgent({
   workspaceId: boundWorkspaceId,
   stateDirectory,
   title,
-  sourceHash,
-  methods,
+  sourceHash: initialSourceHash,
+  methods: initialMethods,
   /**
    * What this source declares it needs, so the platform can resolve its doors
    * (REQ-008). Declaring grants nothing — consent is the owner's, read
    * server-side on every call — so a requirement nobody granted simply yields
    * no door.
    */
-  requirements = [],
+  requirements: initialRequirements = [],
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -79,6 +79,16 @@ export async function createConnectedAgent({
     assertLocalApiOrigin(apiOrigin);
     assertLocalFrontendOrigin(frontendOrigin);
   }
+  /*
+   * What the platform's registration is pinned to. Mutable, because a reload
+   * REGISTERS AGAIN rather than reconnecting: `registerDevelopmentGadget`
+   * revokes the previous binding and mints a fresh `dev:<uuid>` by design, so
+   * new source becomes the live one without dropping the socket, the
+   * conversation, or the granted doors.
+   */
+  let sourceHash = initialSourceHash;
+  let methods = initialMethods;
+  let requirements = initialRequirements;
   if (typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Invalid source digest.');
 
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
@@ -283,6 +293,33 @@ export async function createConnectedAgent({
     },
     doors,
     handle,
+    /**
+     * Point the live session at new source.
+     *
+     * `registerDevelopmentGadget` is already built to be called again: it
+     * revokes the previous binding, bumps a generation so a superseded
+     * registration throws rather than racing, and mints a fresh `dev:<uuid>`
+     * so action arguments captured against the old id can never resolve to
+     * the replacement. That is exactly the semantics a reload wants, so this
+     * re-registers instead of reconnecting — the socket, the conversation and
+     * the granted doors all survive.
+     */
+    async reload(next) {
+      if (typeof next?.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(next.sourceHash)) {
+        throw new Error('Invalid source digest.');
+      }
+      sourceHash = next.sourceHash;
+      if (Array.isArray(next.methods)) methods = next.methods;
+      if (Array.isArray(next.requirements)) requirements = next.requirements;
+      await ensureConnected(remote ? devToken : cookie);
+      const registration = await session.stub.registerDevelopmentGadget(
+        { title, sourceHash, methods, requirements },
+        new LocalHost()
+      );
+      session.gadgetId = registration.gadgetId;
+      session.expiresAt = registration.expiresAt;
+      return { gadgetId: registration.gadgetId, sourceHash };
+    },
     close() { disconnect(); }
   };
 }

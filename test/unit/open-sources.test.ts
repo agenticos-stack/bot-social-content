@@ -86,7 +86,7 @@ describe("reading a public account through the fetch door", () => {
   const source = { platform: "instagram", accountKey: "natgeo" };
 
   it("treats a door that was never granted as configuration, not failure", async () => {
-    // The fetch requirement is `min: 0`. A workspace whose sources are all
+    // The fetch requirement is optional. A workspace whose sources are all
     // authorised bindings never grants it, so its absence must not read as a
     // broken scan.
     const result = await listOpenAccountPosts({}, source);
@@ -102,13 +102,13 @@ describe("reading a public account through the fetch door", () => {
      * reports a clean run while fetching nothing.
      */
     const miss = await listOpenAccountPosts(
-      { fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [], miss: true, servedBy: "tikhub.instagram.user.posts", provider: "tikhub", nextCursor: null, credits: 30 }) } },
+      { metered_fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [], miss: true, servedBy: "tikhub.instagram.user.posts", provider: "tikhub", nextCursor: null, credits: 30 }) } },
       source
     );
     expect(miss.outcome).toBe("no_answer");
 
     const empty = await listOpenAccountPosts(
-      { fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [], miss: false, servedBy: "tikhub.instagram.user.posts", provider: "tikhub", nextCursor: null, credits: 30 }) } },
+      { metered_fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [], miss: false, servedBy: "tikhub.instagram.user.posts", provider: "tikhub", nextCursor: null, credits: 30 }) } },
       source
     );
     expect(empty.outcome).toBe("confirmed");
@@ -117,7 +117,7 @@ describe("reading a public account through the fetch door", () => {
   it("carries which provider served it, and what it cost", async () => {
     const result = await listOpenAccountPosts(
       {
-        fetch: {
+        metered_fetch: {
           socialPostsForAccount: async () => ({
             ok: true,
             posts: [{ id: "p1" }],
@@ -144,14 +144,14 @@ describe("reading a public account through the fetch door", () => {
 
   it("turns the door's refusal into a safe failure, never a throw", async () => {
     const refused = await listOpenAccountPosts(
-      { fetch: { socialPostsForAccount: async () => ({ ok: false, code: "no_credential", message: "none" }) } },
+      { metered_fetch: { socialPostsForAccount: async () => ({ ok: false, code: "no_credential", message: "none" }) } },
       source
     );
     expect(refused.outcome).toBe("failed_safe");
 
     const threw = await listOpenAccountPosts(
       {
-        fetch: {
+        metered_fetch: {
           socialPostsForAccount: async () => {
             throw new Error("rpc broke");
           }
@@ -167,7 +167,7 @@ describe("reading a public account through the fetch door", () => {
     let seen: unknown = null;
     await listOpenAccountPosts(
       {
-        fetch: {
+        metered_fetch: {
           socialPostsForAccount: async (input: unknown) => {
             seen = input;
             return { ok: true, posts: [], miss: true, servedBy: null, provider: null, nextCursor: null, credits: 0 };
