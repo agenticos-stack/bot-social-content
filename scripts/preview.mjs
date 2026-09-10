@@ -2,6 +2,7 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { readFile, mkdir } from "node:fs/promises";
+import { watch } from "node:fs";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { build } from 'esbuild';
 import { compile } from 'svelte/compiler';
@@ -23,15 +24,47 @@ const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
 const mode = process.env.SOCIAL_CONTENT_PREVIEW_MODE || 'fixture';
 const connectedModes = new Set(['connected', 'connected-prod']);
-let archive;
-if (connectedModes.has(mode)) {
+/**
+ * Read the gadget's source as the platform will see it.
+ *
+ * Extracted so a reload rebuilds by exactly the same rule as the first build.
+ * A watcher that assembles the archive a second, slightly different way is a
+ * watcher that serves code the first path would have rejected.
+ */
+/**
+ * Watch the files `readSourceFiles` reads, and nothing else.
+ *
+ * `recursive` is used for `src/` because a gadget's sources sit directly in
+ * it; a watcher that misses a rename would serve stale code and blame the
+ * developer's editor. Failures to watch are reported rather than thrown — a
+ * preview that runs without hot reload is far better than one that will not
+ * start because a directory is missing.
+ */
+function watchSource(onChange) {
+  const watchers = [];
+  for (const target of [new URL('../src/', import.meta.url), new URL('../definition.ts', import.meta.url)]) {
+    try {
+      watchers.push(watch(fileURLToPath(target), { recursive: target.href.endsWith('/') }, onChange));
+    } catch (error) {
+      console.warn(`not watching ${target.pathname}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  return watchers;
+}
+
+async function readSourceFiles() {
   const manifest=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8'));
   const files={};
   for(const name of manifest.files){
     if(!/^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$/.test(name) || Object.hasOwn(files,name))throw new Error('Invalid source file.');
     files[name]=name==='client.js'?await buildClient():await readFile(new URL('../src/'+name,import.meta.url),'utf8');
   }
-  archive={files};
+  return files;
+}
+
+let archive;
+if (connectedModes.has(mode)) {
+  archive={files:await readSourceFiles()};
 } else {
   const bytes = await readFile(new URL("../dist/social-content.gadget", import.meta.url));
   archive = await readBlueprintArchive(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
@@ -137,8 +170,11 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     // conversation was actually granted. `callLocal` therefore waits on the
     // isolate rather than capturing it: registration happens immediately, but
     // the platform cannot call the gadget until the runtime it calls exists.
+    // Both are reassigned by a reload: the gate is replaced before the old
+    // isolate is disposed, so a call that arrives mid-swap queues on the NEW
+    // promise instead of reaching a runtime that is going away.
     let readyLocal;
-    const localReady = new Promise((resolve) => { readyLocal = resolve; });
+    let localReady = new Promise((resolve) => { readyLocal = resolve; });
     try {
       const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
         await localReady;
@@ -155,10 +191,81 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       // null where it accepts an absence — so a workspace with no doors could not
       // start its runtime at all, and the preview reported that as a generic 409.
       // Absence is the documented, supported state; pass it as one.
-      local=await createSocialRuntime({files:archive.files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined});
+      const startRuntime=(files)=>createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined});
+      local=await startRuntime(archive.files);
       readyLocal();
+
+      /**
+       * Hot reload: new source becomes the live source without a restart.
+       *
+       * Three things make this cheap rather than delicate, and each is a
+       * property something else already guarantees:
+       *
+       *  - `registerDevelopmentGadget` is built to be called again. It revokes
+       *    the previous binding and mints a fresh `dev:<uuid>` so stale action
+       *    arguments cannot resolve to the replacement, which is exactly a
+       *    reload's semantics. `agent.reload` uses it, so the socket, the
+       *    conversation and the granted doors all survive.
+       *  - The isolate's state lives in `stateDirectory`, and the testkit's
+       *    `dispose()` releases its lock while leaving the `.bot-state` marker
+       *    and the SQLite file in place. So the runtime is swapped and the
+       *    gadget's data persists — a reload is not a reset.
+       *  - `doors` is resolved once and reused, because a grant is the owner's
+       *    and does not change when a file does. Re-asking would make every
+       *    save a round trip for an answer nobody changed.
+       *
+       * What it must NOT do is let a call reach a disposed runtime. `callLocal`
+       * awaits `localReady`, so each reload replaces that gate with a fresh
+       * unresolved promise BEFORE disposing, and resolves it after the new
+       * isolate exists. In-flight callers queue rather than fault.
+       */
+      let reloading=Promise.resolve();
+      let lastHash=connectedSourceHash;
+      const reload=async()=>{
+        let files;
+        try { files=await readSourceFiles(); }
+        catch (error) { console.error(`reload skipped, source did not build: ${error instanceof Error?error.message:error}`); return; }
+        const nextHash=sourceDigest(files);
+        // An editor that saves a file it did not change should cost nothing.
+        if(nextHash===lastHash) return;
+        const gate=new Promise((resolve)=>{ readyLocal=resolve; });
+        const previous=local;
+        const previousReady=localReady;
+        localReady=gate;
+        try {
+          await previousReady;            // let in-flight calls finish on the old isolate
+          await previous.dispose();       // releases the state lock; data stays
+          local=await startRuntime(files);
+          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements});
+          lastHash=nextHash;
+          archive={files};
+          console.log(`reloaded ${nextHash.slice(0,12)} — ${Object.keys(files).length} files`);
+        } catch (error) {
+          console.error(`reload failed: ${error instanceof Error?error.message:error}`);
+        } finally { readyLocal(); }
+      };
+      // Serialised and debounced: two saves in quick succession are one
+      // reload, and two reloads never overlap on one state directory.
+      let pending;
+      const scheduleReload=()=>{
+        clearTimeout(pending);
+        pending=setTimeout(()=>{ reloading=reloading.then(reload,reload); },150);
+      };
+      const watchers=watchSource(scheduleReload);
       if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
-      return {...local,agent,dispose:async()=>{agent.close();await local.dispose();}};
+      // `local` is read through a getter: a reload replaces the binding, and a
+      // holder of this object must reach the CURRENT isolate, not the one that
+      // existed when it was handed over.
+      return {
+        get token(){ return local.token; },
+        handle:(request)=>local.handle(request),
+        agent,
+        dispose:async()=>{
+          for (const watcher of watchers) watcher.close();
+          agent.close();
+          await local.dispose();
+        }
+      };
     }
     catch (error) { await local?.dispose().catch(() => undefined); throw error; }
     finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!prior.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
