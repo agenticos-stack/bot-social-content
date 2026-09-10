@@ -163,6 +163,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-selectbox { position: absolute; z-index: 2; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.9); display: grid; place-items: center; cursor: pointer; }
 .sl-post-open { display: block; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; }
 .sl-media { display: block; position: relative; aspect-ratio: 1.15/1; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); }
+.sl-media-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .sl-provider-glyph { position: absolute; left: 10px; bottom: 10px; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.92); font: 700 9px var(--sl-font); }
 .sl-media-kicker { position: absolute; left: 10px; top: 10px; font: 600 8px var(--sl-font); letter-spacing: .04em; color: var(--sl-muted); text-transform: uppercase; }
 .sl-post-body { display: block; padding: 16px; }
@@ -372,6 +373,25 @@ function providerFormatKey(item) {
 function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
+
+  /*
+   * A grid cover: cached bytes, as a `blob:` the canvas is allowed to show.
+   *
+   * Remote URLs are refused here — `img-src blob: data:` — so this is the only
+   * shape a picture can take. Blob URLs are kept per media id and reused
+   * across re-renders: the grid rebuilds on every selection change, and
+   * minting a fresh URL each time would leak one per card per keystroke.
+   */
+  const coverUrls = new Map();
+  async function loadCover(itemId, mediaId) {
+    const key = `${itemId}::${mediaId}`;
+    const existing = coverUrls.get(key);
+    if (existing) return existing;
+    const { url } = await loadMediaAsBlobUrl(rpc, itemId, mediaId, "thumb");
+    coverUrls.set(key, url);
+    return url;
+  }
+
   const locale = resolveLocale(document.documentElement.lang);
   const { viewHost } = buildShell();
   const previewDialog = buildPreviewDialog();
@@ -433,7 +453,7 @@ function App() {
     activePreviewItem = item;
     const body = el("div", { class: "sl-preview-scroll" });
 
-    const media = el("div", { class: "sl-preview-media" }, [el("span", null, t(locale, "mediaUnavailable"))]);
+  const media = el("div", { class: "sl-preview-media" }, [el("span", null, t(locale, "mediaUnavailable"))]);
     if (item.media && item.media.length && item.media[0].id) {
       loadMediaAsBlobUrl(rpc, item.id, item.media[0].id, "preview")
         .then(({ url }) => {
@@ -950,7 +970,7 @@ function App() {
           el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
         ])
       ]);
-      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers });
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover });
       else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
       replace(viewHost, [navigation, body]);
       return;

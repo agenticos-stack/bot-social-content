@@ -189,7 +189,8 @@ function metaLine(locale, item) {
   return wrap;
 }
 
-function renderCard(locale, item, handlers, sources) {
+function renderCard(locale, item, handlers, sources, covers) {
+  let coverSlot = null;
   const checkboxId = `sl-check-${item.id}`;
   const checkbox = el("input", {
     type: "checkbox",
@@ -201,14 +202,32 @@ function renderCard(locale, item, handlers, sources) {
   });
   const selectbox = el("label", { class: "sl-selectbox", for: checkboxId }, [checkbox]);
 
+/**
+ * Which media a card's cover comes from, or null when it has none.
+ *
+ * The canvas is served `img-src blob: data:` with `connect-src 'none'`, so a
+ * cover cannot be a remote URL however convenient that would be — it has to be
+ * bytes the gadget already holds, handed over as a `blob:`. That containment
+ * is deliberate: a gadget's UI must not be able to phone home, nor exfiltrate
+ * data by encoding it into an image URL.
+ *
+ * So the card only marks WHICH media it wants. `renderCollection` fills it
+ * afterwards, because the fetch is asynchronous and a grid must not wait on
+ * fifteen of them before it draws.
+ */
+function coverMediaId(item) {
+  const media = Array.isArray(item?.media) ? item.media[0] : null;
+  return media && media.id !== undefined && media.id !== null ? String(media.id) : null;
+}
+
   const openButton = el(
     "button",
     { type: "button", class: "sl-post-open", "aria-label": item.text ? item.text.slice(0, 80) : "Preview post", onclick: () => handlers.onOpen(item) },
     [
-      el("span", { class: "sl-media" }, [
+      (coverSlot = el("span", { class: "sl-media" }, [
         el("span", { class: "sl-provider-glyph", "data-glyph": glyphKeyFor(item, sources) || "" }, providerGlyph(item, sources)),
         el("span", { class: "sl-media-kicker" }, sourceLabel(locale, item))
-      ]),
+      ])),
       el("span", { class: "sl-post-body" }, [
         el("strong", null, item.text ? item.text.split("\n")[0].slice(0, 90) : item.sourceLabel || ""),
         el("p", null, item.text || ""),
@@ -216,6 +235,11 @@ function renderCard(locale, item, handlers, sources) {
       ])
     ]
   );
+
+  const mediaId = coverMediaId(item);
+  // Collected while building rather than queried for afterwards: the card
+  // holds its own slot, so nothing has to find it again by selector.
+  if (covers && coverSlot && mediaId) covers.push({ slot: coverSlot, itemId: item.id, mediaId });
 
   const card = el("article", { class: "sl-post" }, [
     selectbox,
@@ -279,7 +303,8 @@ function renderChip(locale, source, active, onToggle) {
  * this function only builds and updates markup from `state`.
  */
 export function renderCollection(root, state, ctx) {
-  const { locale, summary, handlers } = ctx;
+  const { locale, summary, handlers, loadCover } = ctx;
+  const covers = [];
   const items = visibleItems(state);
   const nSelected = selectedCount(state);
   const nNew = newCount(state);
@@ -342,7 +367,7 @@ export function renderCollection(root, state, ctx) {
     body = el(
       "div",
       { class: "sl-collection" },
-      items.map((item) => renderCard(locale, item, handlers, sources))
+      items.map((item) => renderCard(locale, item, handlers, sources, covers))
     );
   }
 
@@ -387,6 +412,31 @@ export function renderCollection(root, state, ctx) {
     notice,
     tray
   ]);
+
+  /*
+   * Fill the covers after the grid is on screen, never before it.
+   *
+   * Each is a separate round trip for cached bytes, so awaiting fifteen of
+   * them up front would trade a grid that draws immediately for one that
+   * appears all at once, later. A card that never gets its cover keeps the
+   * provider glyph it already had, which is what a source with no media —
+   * or no fetch door — looks like anyway.
+   */
+  if (typeof loadCover === "function") fillCovers(covers, loadCover);
+}
+
+function fillCovers(covers, loadCover) {
+  for (const { slot, itemId, mediaId } of covers) {
+    loadCover(itemId, mediaId)
+      .then((url) => {
+        if (!url) return;
+        slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
+      })
+      // A cover that cannot be fetched is not an error worth showing: the card
+      // keeps the provider glyph it already had. The REASON is carried by
+      // `getMedia`'s own refusal codes, where a reader can see it.
+      .catch(() => {});
+  }
 }
 
 function renderInboxInto(root, state, ctx) {

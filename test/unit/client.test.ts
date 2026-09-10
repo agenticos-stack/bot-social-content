@@ -22,6 +22,7 @@ it("sets a textarea's live value rather than an inert value attribute", () => {
 
 import {
   applySelection,
+  renderCollection,
   clearNotice,
   clearSelection,
   createCollectionState,
@@ -884,3 +885,55 @@ describe("settings: the setup form is no longer a one-way door", () => {
     }
   });
 });
+
+describe("a card's cover comes from cached bytes", () => {
+  /*
+   * The canvas is served `img-src blob: data:` with `connect-src 'none'`, so a
+   * cover cannot be a remote URL however convenient — it has to be bytes the
+   * gadget already holds, handed over as a `blob:`. A direct `<img src=https…>`
+   * was tried first and refused by policy, which is the containment working.
+   *
+   * The grid had no `<img>` at all before this, and the development canvas
+   * painted a stand-in over the gap, so a grid of identical grey boxes went
+   * unnoticed — while an owner's whole job here is choosing a post to derive
+   * from by looking at it.
+   */
+  function grid(item: Record<string, unknown>, loadCover?: (i: string, m: string) => Promise<string>) {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const state = setItems(createCollectionState(), { items: [item] as never, nextCursor: null });
+    renderCollection(root as never, state as never, {
+      locale: "en", sources: [], handlers: { onSelect() {}, onOpen() {}, onMore() {} }, loadCover
+    } as never);
+    return root;
+  }
+  const base = {
+    id: "i1", sourceBinding: "open:instagram:acct", sourceLabel: "@acct", provider: "instagram",
+    providerItemId: "p1", text: "a post", metrics: {}, publishedAt: "2026-09-01T00:00:00.000Z",
+    media: [{ id: "0", kind: "image", url: "https://cdn.test/a.jpg" }]
+  };
+  const images = (root: unknown) => findAll(root as never, (e: { tagName?: string }) => e.tagName === "IMG");
+
+  it("draws the blob it is given", async () => {
+    const root = grid(base, async () => "blob:fake-url");
+    await flushAsyncWork();
+    const img = images(root)[0] as { getAttribute(n: string): string | null };
+    expect(img).toBeDefined();
+    expect(img.getAttribute("src")).toBe("blob:fake-url");
+  });
+
+  it("keeps the glyph when the bytes cannot be fetched, rather than showing a broken image", async () => {
+    const root = grid(base, async () => { throw new Error("no cached bytes"); });
+    await flushAsyncWork();
+    expect(images(root)).toHaveLength(0);
+  });
+
+  it("asks for nothing when the item has no media", async () => {
+    let asked = 0;
+    grid({ ...base, media: [] }, async () => { asked += 1; return "blob:x"; });
+    await flushAsyncWork();
+    expect(asked).toBe(0);
+  });
+});
+
