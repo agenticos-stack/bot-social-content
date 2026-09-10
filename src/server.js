@@ -744,14 +744,98 @@ export class Gadget extends DurableObject {
     );
     await this.broadcast({ type: "scan", runId, new: newCount, changed: changedCount, perSource });
 
+    /**
+     * ASKING FOR THE WORK, SEPARATELY FROM ANNOUNCING IT (REQ-014, TASK-019).
+     *
+     * Deliberately not inside `notifyNewItems` and not gated by anything it
+     * reads. A notification must not be the mechanism by which work is
+     * requested, and the practical shape of that rule is this: `mode: "off"`,
+     * quiet hours and a spent `daily` digest all decide whether somebody is
+     * INTERRUPTED, and none of them may decide whether the work gets asked for.
+     * An owner who silenced notices did not thereby cancel the drafting they
+     * turned on.
+     *
+     * Returned rather than sent. There is nothing here for the gadget to call
+     * (SEC-003): the platform reads this off the hook's result and files an
+     * action its owner answers.
+     */
+    const workRequest = this.workRequestFor(perSource, config);
+
     return {
       new: newCount,
       changed: changedCount,
       unchanged: unchangedCount,
       failedSafe: failedSafeCount,
       unknown: unknownCount,
-      perSource
+      perSource,
+      ...(workRequest ? { workRequest } : {})
     };
+  }
+
+  /**
+   * What a scan asks for, or nothing at all (TASK-019).
+   *
+   * OFF BY DEFAULT and unrecognised reads as off (`normalizeDrafting`). A scan
+   * that started requesting agent turns because an owner upgraded would spend
+   * the organization's credits on a cadence nobody armed for that purpose.
+   *
+   * ONE REQUEST PER SCAN, batching every source's findings into one brief. The
+   * unit an owner answers is the scan, not the post: twelve found references are
+   * one decision about one afternoon's work, and one card per item would make
+   * approving the obvious case worse than doing it by hand. The platform holds
+   * its own ceiling as well, so this is the agreed shape rather than the only
+   * thing standing between an owner and a queue.
+   *
+   * THE BATCH IS OPENED HERE because a draft has nowhere to go without one:
+   * `saveRevision` takes a `batchItemId`. Every granted destination, which is
+   * exactly what the client's own picker sends today — a scan has no narrower
+   * intent to represent, and inventing one would be this method guessing at a
+   * choice the owner never made.
+   *
+   * Never throws: a scan's stored findings must survive a failure to ask about
+   * them, and the ask is the cheap half.
+   */
+  workRequestFor(perSource, config) {
+    if (config?.drafting !== "on_new") return null;
+
+    const itemIds = perSource.flatMap((result) => result.newIds ?? []);
+    if (!itemIds.length) return null;
+
+    try {
+      const destinationBindings = this.storage.listDestinations().map((row) => row.binding);
+      const opened = this.openBatch({ itemIds, destinationBindings });
+      // By value, never a throw (PAT-007). A refusal here — no destination
+      // granted, or these items already have an active localization — is not a
+      // scan failure and is not something to ask an owner about.
+      if (!opened || opened.ok === false || !opened.items?.length) return null;
+
+      return {
+        batchId: opened.id,
+        // The accounts the posts came from, in the owner's own words for them.
+        // The platform bounds this before it reaches an approval card.
+        sourceLabel: [
+          ...new Set(perSource.filter((result) => (result.newIds ?? []).length > 0).map((result) => result.label))
+        ]
+          .filter(Boolean)
+          .join(", "),
+        /**
+         * The SOURCE item ids, not the batch item ids, and taken from what was
+         * actually opened rather than from what was asked for.
+         *
+         * Source ids because they are the observation identity the ledger stands
+         * on (`source:<id>`), which is what an audit trail links by (REQ-008).
+         * The agent reaches the batch items it must write through by reading
+         * `getBatch(batchId)`, so nothing here needs to carry them.
+         */
+        itemIds: opened.items.map((item) => item.sourceItem?.id).filter(Boolean),
+        // The one method a finished draft is returned through. `agent.md`
+        // carries the contract; this names it so the brief does not have to
+        // repeat it.
+        intake: "saveRevision"
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** One source, cursor-paginated, at most `MAX_ITEMS_PER_SOURCE` items, isolated so one source's failure never stops another's. */
@@ -827,6 +911,7 @@ export class Gadget extends DurableObject {
     const askedWith = new Set([cursor]);
     let fetched = 0;
     let newCount = 0;
+    const newIds = [];
     let changedCount = 0;
     let unchangedCount = 0;
     let outcome = "confirmed";
@@ -868,8 +953,12 @@ export class Gadget extends DurableObject {
           if (fetched >= MAX_ITEMS_PER_SOURCE) break;
           const result = this.storage.upsertItem(item);
           fetched += 1;
-          if (result.isNew) newCount += 1;
-          else if (result.changed) changedCount += 1;
+          // The ids as well as the count, because a work request has to name
+          // what it found (TASK-019) and a number cannot be drafted from.
+          if (result.isNew) {
+            newCount += 1;
+            newIds.push(item.id);
+          } else if (result.changed) changedCount += 1;
           else unchangedCount += 1;
         }
 
@@ -892,8 +981,12 @@ export class Gadget extends DurableObject {
     this.storage.recordSourceOutcome(source.binding, { outcome, message, cursor });
     return {
       binding: source.binding,
+      // The owner's own words for the account, carried so a work request can name
+      // where the posts came from without re-reading the sources table.
+      label: source.label,
       outcome,
       new: newCount,
+      newIds,
       changed: changedCount,
       unchanged: unchangedCount,
       message
@@ -1074,7 +1167,30 @@ export class Gadget extends DurableObject {
    * to this gadget's own `?w=<gadgetId>` (TASK-104), the same reason
    * `notifyNewItems` above never builds one either.
    */
-  async createBatch({ itemIds, destinationBindings, createNewVersion = false }) {
+  async createBatch(input) {
+    const opened = this.openBatch(input);
+    if (opened.ok === false) return opened;
+
+    const postWord = opened.items.length === 1 ? "post" : "posts";
+    await notify(this.env, {
+      title: `${opened.items.length} ${postWord} ready to localize`,
+      body: `${opened.items.length} ${postWord} moved to Localize. Drafts start from here.`
+    });
+    return opened;
+  }
+
+  /**
+   * The batch rows, written without announcing them.
+   *
+   * SPLIT OUT FOR TASK-019, and the notice is the reason. `createBatch` above is
+   * the owner's own Continue and its `notify()` is that action made visible. A
+   * scan that opened a batch through it would send that notice on its own
+   * cadence, past `notifications.mode` and past quiet hours — the settings whose
+   * whole purpose is to decide when this gadget may interrupt somebody.
+   *
+   * Refuses by value, never by throw (PAT-007).
+   */
+  openBatch({ itemIds, destinationBindings, createNewVersion = false }) {
     const ids = Array.isArray(itemIds) ? [...new Set(itemIds.filter((id) => typeof id === "string"))] : [];
     const destinations = Array.isArray(destinationBindings)
       ? [...new Set(destinationBindings.filter((binding) => typeof binding === "string"))]
@@ -1128,12 +1244,6 @@ export class Gadget extends DurableObject {
     }
 
     const batch = this.storage.getBatch(batchId);
-    const postWord = items.length === 1 ? "post" : "posts";
-    await notify(this.env, {
-      title: `${items.length} ${postWord} ready to localize`,
-      body: `${items.length} ${postWord} moved to Localize. Drafts start from here.`
-    });
-
     return { id: batch.id, createdAt: batch.created_at, status: batch.status, items };
   }
 

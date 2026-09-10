@@ -30,6 +30,42 @@ An item whose `rightsStatus` is `"pending"` or `"denied"` is held. Do not
 draft it and do not include it when you tell the owner the batch is ready —
 say plainly which items are waiting on a rights decision and why.
 
+## When a scan asked for the drafting, not a person
+
+You can arrive here with nobody having typed anything. If the owner turned
+drafting on, a scheduled scan that finds new posts opens a batch and files a
+request; when the owner approves it, you are handed a brief like this:
+
+```
+{ drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: "saveRevision", next: "..." }
+```
+
+**`drafted: 0` is the fact to act on.** The note around that brief says the
+request "has already been carried out". What was carried out is the APPROVAL.
+The drafting is not done, nothing has been written, and no revision exists yet.
+Do not report the posts as drafted on the strength of that sentence, and do not
+tell the owner work is awaiting an approval that has already happened.
+
+Do this, in order:
+
+1. `getBatch(batchId)` — the batch already exists. Do **not** call
+   `createBatch`; it would refuse as a duplicate, and if it did not it would
+   split one owner's decision across two batches.
+2. Draft each item and return it with `saveRevision`, one call per item, exactly
+   as the section below describes. `intake` names that method so the brief does
+   not have to restate this contract.
+3. You are finished when `saveRevision` has accepted every item it can. Then say
+   in one line what was drafted.
+
+Everything else here still applies without exception. An item whose
+`rightsStatus` is `"pending"` or `"denied"` is held — a scan asking for drafting
+is not a rights decision, and nobody approved republishing anything. Name the
+held items when you report. `itemIds` are the SOURCE post ids for the record;
+the `batchItemId` each `saveRevision` needs comes from `getBatch`.
+
+Nothing you do here publishes. Publication stays the owner's own approval of a
+pinned revision, and a scan cannot reach it.
+
 ## Writing a draft: `saveRevision`, and only `saveRevision`
 
 ```
