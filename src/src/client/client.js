@@ -184,8 +184,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-notice-dismiss { padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--sl-muted); font: 700 12px var(--sl-font); }
 /* A dock rather than a bar: it pulls in from the canvas edges and floats over
    the list it acts on, so the action follows the reader without a full-bleed
-   band cutting the page in two. It is only as wide as its own buttons. */
-.sl-selection { position: sticky; bottom: clamp(10px, 2vh, 18px); z-index: 5; width: fit-content; max-width: 100%; margin: 28px auto 0; padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
+   band cutting the page in two. It is only as wide as its own buttons.
+
+   Fixed, not sticky. Sticky can only hold an element inside its own containing
+   block, and the view host is exactly as tall as its content — so on a list
+   shorter than the canvas the dock parked at the end of the content with dead
+   space beneath it, instead of above the bottom edge. The canvas is its own
+   iframe, so the viewport this pins to is the gadget's, not the page's. The
+   bottom padding on .sl-app is what lets the last row scroll clear of it. */
+.sl-selection { position: fixed; bottom: clamp(10px, 2vh, 18px); left: 50%; translate: -50% 0; z-index: 5; width: fit-content; max-width: calc(100% - 32px); padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
 .sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
