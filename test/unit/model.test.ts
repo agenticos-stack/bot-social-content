@@ -13,6 +13,7 @@ import {
   messages,
   normalizeFacebookPagePosts,
   normalizeInstagramMedia,
+  normalizeOpenInstagramPosts,
   posterLayoutSchema,
   posterPngConstraints,
   revisionCas,
@@ -822,3 +823,47 @@ describe("REQ-028: the JSON export is bounded by bytes, not only by count", () =
     expect(parsed.truncated.revisions).toBe(1);
   });
 });
+
+describe("a video keeps its poster frame", () => {
+  /*
+   * Instagram hands both over in the same payload — `video_versions` and an
+   * `image_versions2.candidates` still — and the normalizer took the video and
+   * dropped the poster. That left every reel with only a multi-megabyte MP4 as
+   * its visual: too large for the preview cache to hold, and nothing an owner
+   * can look at while choosing which post to derive from. Two of the first
+   * twelve posts from a real account are reels, and both carried a poster.
+   */
+  const reel = {
+    pk: "p1",
+    code: "AAA",
+    taken_at: 1788976822,
+    media_type: 2,
+    caption: { text: "a reel" },
+    video_versions: [{ url: "https://cdn.example.test/v/reel.mp4?oh=a" }],
+    image_versions2: { candidates: [{ width: 480, height: 852, url: "https://cdn.example.test/t/poster.jpg?oh=b" }] }
+  };
+
+  it("carries the poster alongside the file, not instead of it", async () => {
+    const result = await normalizeOpenInstagramPosts({ data: [reel] } as never, {
+      binding: "open:instagram:acct",
+      label: "@acct"
+    } as never);
+    const media = result.items[0]!.media[0]! as { kind: string; url: string; posterUrl?: string };
+    expect(media.kind).toBe("video");
+    expect(media.url).toContain("reel.mp4");
+    expect(media.posterUrl).toContain("poster.jpg");
+  });
+
+  it("leaves an image untouched — it is already its own poster", async () => {
+    const photo = { ...reel, media_type: 1, video_versions: undefined };
+    const result = await normalizeOpenInstagramPosts({ data: [photo] } as never, {
+      binding: "open:instagram:acct",
+      label: "@acct"
+    } as never);
+    const media = result.items[0]!.media[0]! as { kind: string; url: string; posterUrl?: string };
+    expect(media.kind).toBe("image");
+    expect(media.url).toContain("poster.jpg");
+    expect(media.posterUrl).toBeUndefined();
+  });
+});
+

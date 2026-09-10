@@ -1437,18 +1437,35 @@ function openInstagramMediaEntries(post, counter) {
 function openInstagramOneMedia(node, id, counter) {
   if (!node) return null;
   const kind = node.media_type === OPEN_IG_VIDEO ? "video" : "image";
+  const posterUrl = record(
+    Array.isArray(record(node.image_versions2)?.candidates) ? record(node.image_versions2).candidates[0] : null
+  )?.url;
   const url =
     kind === "video"
       ? record(Array.isArray(node.video_versions) ? node.video_versions[0] : null)?.url
-      : record(
-          Array.isArray(record(node.image_versions2)?.candidates) ? record(node.image_versions2).candidates[0] : null
-        )?.url;
+      : posterUrl;
   const bounded = boundOrNull(counter, "url_truncated", url, MAX_URL_CHARS);
   if (!bounded) {
     counter.add("media_missing_url");
     return null;
   }
-  return { id, kind, url: bounded };
+  /*
+   * A video keeps its POSTER as well as its file.
+   *
+   * Instagram hands both over in the same payload — `video_versions` and an
+   * `image_versions2.candidates` still frame — and this took the video and
+   * dropped the poster. That left every reel with only a multi-megabyte MP4 as
+   * its visual: too large for the preview cache to hold, and nothing an owner
+   * can look at while choosing which post to derive from.
+   *
+   * The poster is what "the image of this post" means for a video, in both
+   * places it is needed — the canvas showing a reference, and any later step
+   * that wants a still. Keeping the file too means nothing is lost; the frame
+   * is simply no longer thrown away for free.
+   */
+  if (kind !== "video" || !posterUrl) return { id, kind, url: bounded };
+  const boundedPoster = boundOrNull(counter, "url_truncated", posterUrl, MAX_URL_CHARS);
+  return boundedPoster ? { id, kind, url: bounded, posterUrl: boundedPoster } : { id, kind, url: bounded };
 }
 
 /**
