@@ -16,6 +16,7 @@ import {
   posterLayoutSchema,
   posterPngConstraints,
   revisionCas,
+  draftOrigin,
   ledgerFromProtectedOverrides,
   normalizeLedger,
   rightsObligation,
@@ -540,6 +541,67 @@ describe("rightsObligation", () => {
         sourceOrigin: "open"
       })
     ).toMatchObject({ required: true });
+  });
+});
+
+describe("draftOrigin", () => {
+  const observation = {
+    provider: "instagram",
+    sourceLabel: "Essential Foods",
+    providerItemId: "ig_1",
+    permalink: "https://www.instagram.com/p/abc/",
+    sourceContentHash: "hash_1",
+    sourcePublishedAt: "2026-09-01T00:00:00.000Z",
+    retrievedAt: "2026-09-02T00:00:00.000Z"
+  };
+
+  it("carries the observation record when the ledger stands on that same source", () => {
+    const result = draftOrigin({
+      originLink: observation,
+      ledger: { spans: [{ text: "HK$99", kind: "price", basis: "source:item-1" }], media: [] },
+      sourceId: "item-1"
+    });
+    expect(result.ok).toBe(true);
+    expect(result.origin).toEqual(observation);
+  });
+
+  it("still carries attribution when the ledger cites no source at all", () => {
+    const result = draftOrigin({
+      originLink: observation,
+      ledger: { spans: [{ text: "#new", kind: "hashtag", basis: "owner:ada" }], media: [{ ref: "gen-1", provenance: "original" }] },
+      sourceId: "item-1"
+    });
+    expect(result.ok).toBe(true);
+    expect(result.origin).toEqual(observation);
+  });
+
+  it("refuses when a ledger span stands on a different source than the one on record", () => {
+    const result = draftOrigin({
+      originLink: observation,
+      ledger: { spans: [{ text: "HK$99", kind: "price", basis: "source:item-9" }], media: [] },
+      sourceId: "item-1"
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("origin_contradicted");
+    expect(result.message).toContain("item-9");
+  });
+
+  it("refuses when a field the door requires is missing, naming the field", () => {
+    const result = draftOrigin({
+      originLink: { ...observation, permalink: null },
+      ledger: { spans: [], media: [] },
+      sourceId: "item-1"
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("origin_incomplete");
+    expect(result.message).toContain("permalink");
+  });
+
+  it("refuses when there is no observation record", () => {
+    expect(draftOrigin({ originLink: null, ledger: { spans: [], media: [] } })).toMatchObject({
+      ok: false,
+      code: "origin_incomplete"
+    });
   });
 });
 

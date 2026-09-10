@@ -862,6 +862,66 @@ export function observationOrigin(originLink) {
   };
 }
 
+/** Every field `createDraft` requires as a non-empty string, in the door's own order. */
+const DOOR_ORIGIN_FIELDS = Object.freeze([
+  "provider",
+  "sourceLabel",
+  "providerItemId",
+  "permalink",
+  "sourceContentHash",
+  "sourcePublishedAt",
+  "retrievedAt"
+]);
+
+/**
+ * The door's `origin` block, checked against the ledger before it is sent.
+ *
+ * TASK-015 / PAT-001: attribution and the observation record are one fact
+ * stated once. A `source:` basis names the item its span stands on, so a basis
+ * naming an item other than the one observed would attribute the post to
+ * something it does not stand on — refuse rather than send it. A ledger that
+ * cites no source is inspiration-only, which `rightsObligation` reports on its
+ * own; the observation record still travels, because it is what was observed.
+ *
+ * The completeness pass is here because `createDraft` requires all seven fields
+ * as non-empty strings and refuses one field at a time, while `origin_links`
+ * stores sourceLabel, permalink and sourcePublishedAt as nullable. Naming the
+ * missing field here beats an opaque refusal from the far side of the door.
+ */
+export function draftOrigin({ originLink, ledger, sourceId } = {}) {
+  const origin = observationOrigin(originLink);
+  if (!origin) {
+    return {
+      ok: false,
+      code: "origin_incomplete",
+      message: "This post has no observation record to attribute. Re-run the scan for its source item."
+    };
+  }
+  const item = typeof sourceId === "string" ? sourceId.trim() : "";
+  if (item) {
+    for (const span of normalizeLedger(ledger).spans) {
+      const parsed = parseGroundingBasis(span.basis);
+      if (parsed?.kind !== "source" || parsed.id === item) continue;
+      return {
+        ok: false,
+        code: "origin_contradicted",
+        message: `The grounding ledger stands on source item ${parsed.id}, but this post is attributed to ${item}. Re-save the revision against its own source.`
+      };
+    }
+  }
+  for (const field of DOOR_ORIGIN_FIELDS) {
+    const value = origin[field];
+    if (typeof value !== "string" || !value.trim()) {
+      return {
+        ok: false,
+        code: "origin_incomplete",
+        message: `The origin reference needs ${field}, and the observed source item did not record one.`
+      };
+    }
+  }
+  return { ok: true, origin };
+}
+
 function detectGroundedDraftSpans(text, policy = {}) {
   const input = typeof text === "string" ? text : "";
   const spans = [];

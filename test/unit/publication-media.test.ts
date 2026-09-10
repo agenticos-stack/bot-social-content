@@ -341,3 +341,49 @@ describe("submitForReview rights from the ledger", () => {
     expect(result).not.toMatchObject({ ok: false });
   });
 });
+
+describe("submitForReview attribution (TASK-015)", () => {
+  it("refuses when the stored ledger stands on a source other than the observed one", async () => {
+    const created: unknown[] = [];
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    seed(gadget);
+    // A localization brief never inspects the ledger's bases, and a grounded
+    // brief only checks spans it detects in the caption — so a contradicting
+    // basis does reach storage. Submit is where it must not reach the publisher.
+    await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "第一稿內容文字",
+      ledger: { spans: [{ text: "HK$99", kind: "price", basis: "source:instagram:IG_MAIN:other" }], media: [] }
+    });
+    const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
+    expect(result).toMatchObject({ ok: false, code: "origin_contradicted" });
+    expect(created).toEqual([]);
+  });
+
+  it("refuses before the door when the observation record is missing a field the door requires", async () => {
+    const created: unknown[] = [];
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    seed(gadget);
+    gadget.storage.setOriginLink("item-1", {
+      provider: "instagram",
+      sourceBinding: "IG_MAIN",
+      sourceLabel: "Main Instagram",
+      providerItemId: "p1",
+      permalink: null,
+      sourceContentHash: "source-hash",
+      sourcePublishedAt: "2026-09-06T00:00:00.000Z",
+      retrievedAt: "2026-09-06T00:00:00.000Z"
+    });
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+    const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
+    expect(result).toMatchObject({
+      ok: false,
+      code: "origin_incomplete",
+      message: expect.stringContaining("permalink")
+    });
+    expect(created).toEqual([]);
+  });
+});
