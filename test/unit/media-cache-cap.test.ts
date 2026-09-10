@@ -32,6 +32,18 @@ function context() {
   };
 }
 
+/** The metered_fetch door an OPEN source reaches, answering in the door's own shape. */
+function openDoorServing(byteLength: number, mime = "image/jpeg", seen?: { url?: string }) {
+  return {
+    metered_fetch: {
+      fetch_media: async (input: { url: string }) => {
+        if (seen) seen.url = input.url;
+        return { ok: true, mime, bytes: new Uint8Array(byteLength).fill(3), byteLength };
+      }
+    }
+  };
+}
+
 /** A connector door that answers `fetch_media` with however many bytes we ask for. */
 function doorServing(byteLength: number, mime = "video/mp4") {
   return {
@@ -97,3 +109,54 @@ describe("the media cache refuses what it cannot hold", () => {
     expect(gadget.storage.getMedia("item-1", "source-media", "preview")).toBeFalsy();
   });
 });
+
+/*
+ * Which door owns a source's bytes is decided by its ORIGIN, the same way
+ * `scanOneSource` picks its reader — not by the binding's shape, and not by
+ * trying one and falling back, which would reach for a grant that does not
+ * exist and report its absence as a provider failure.
+ */
+describe("bytes come from the door that owns the source", () => {
+  function withOpenItem(env: unknown, media: Record<string, unknown>) {
+    const gadget = new Gadget(context() as never, env as never);
+    gadget.storage.addOpenSource({
+      binding: "open:instagram:acct", platform: "instagram", accountKey: "acct", displayName: "@acct"
+    } as never);
+    gadget.storage.upsertItem({
+      id: "item-1", sourceBinding: "open:instagram:acct", sourceLabel: "@acct",
+      provider: "instagram", providerItemId: "p1", text: "a post",
+      media: [media], metrics: {}, contentHash: "h",
+      firstSeenAt: "2026-09-06T00:00:00.000Z", lastSeenAt: "2026-09-06T00:00:00.000Z"
+    } as never);
+    return gadget;
+  }
+
+  it("an open source reaches metered_fetch, not a connector it does not have", async () => {
+    const gadget = withOpenItem(
+      openDoorServing(2048),
+      { id: "source-media", kind: "image", url: "https://cdn.example.test/o1/a.jpg" }
+    );
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect((result as { ok?: boolean }).ok).not.toBe(false);
+    expect((result as { total: number }).total).toBe(2048);
+  });
+
+  it("a video fetches its poster, never its file", async () => {
+    const seen: { url?: string } = {};
+    const gadget = withOpenItem(openDoorServing(1024, "image/jpeg", seen), {
+      id: "source-media", kind: "video",
+      url: "https://cdn.example.test/v/reel.mp4",
+      posterUrl: "https://cdn.example.test/t/poster.jpg"
+    });
+    await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect(seen.url).toBe("https://cdn.example.test/t/poster.jpg");
+    expect(seen.url).not.toContain(".mp4");
+  });
+
+  it("says so plainly when the open source has no fetch door granted", async () => {
+    const gadget = withOpenItem({}, { id: "source-media", kind: "image", url: "https://cdn.example.test/a.jpg" });
+    const result = await gadget.getMedia("item-1", "source-media", { rendition: "thumb" });
+    expect(result).toMatchObject({ ok: false });
+  });
+});
+

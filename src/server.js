@@ -1132,7 +1132,11 @@ export class Gadget extends DurableObject {
     const media = item ? item.media.find((entry) => entry.id === mediaId) : null;
     if (!item || !media || !media.url) return null;
 
-    const response = await fetchMedia(this.env, item.sourceBinding, media, rendition);
+    // The source's own origin decides which door owns its bytes; a media id
+    // cannot be read for it, and guessing from the binding's shape is what
+    // `scanOneSource` already refuses to do.
+    const source = this.storage.getSource(item.sourceBinding);
+    const response = await fetchMedia(this.env, item.sourceBinding, media, rendition, source?.origin);
     if (response.outcome !== "confirmed" || !response.data) return null;
 
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
