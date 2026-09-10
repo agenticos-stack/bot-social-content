@@ -1,3 +1,17 @@
+/*
+ * The dev canvas shows the REAL media.
+ *
+ * This file used to draw a stand-in over every `.sl-media` — a rotated blob in
+ * `::before` and a "SAMPLE ARTWORK" label in `::after` — which is fine for a
+ * layout mock and wrong for the loop this preview exists to serve. Use case 2
+ * is "derive a post from the selected reference", and an owner selects a
+ * reference by LOOKING at it. Twelve identical grey blobs cannot be chosen
+ * between, so the one judgement the canvas is for could not be exercised here.
+ *
+ * The placeholder is preview-only — `canvas.css` is not in the gadget's
+ * manifest — so production was always showing real imagery. Only the
+ * development loop was blind, which is the worst place to be blind.
+ */
 html body{margin:0;background:var(--color-panel);color:var(--color-ink);font-family:var(--font-sans)}
 body #gadget-root .sl-app{max-width:none;padding:22px 28px 90px}
 body #gadget-root .sl-titleline h1{font-size:18px;letter-spacing:-.4px;margin-bottom:9px}
@@ -6,12 +20,6 @@ body #gadget-root .sl-search-input{border-radius:8px;background:var(--color-pape
 body #gadget-root .sl-toolbar{margin-top:22px;margin-bottom:14px}
 body #gadget-root .sl-post{border-radius:12px;overflow:hidden;border-color:var(--color-panel-subtle);box-shadow:0 3px 12px transparent}
 body #gadget-root .sl-media{background:var(--color-panel-subtle);position:relative;isolation:isolate}
-body #gadget-root .sl-media::before{content:"";position:absolute;width:45%;height:68%;left:28%;top:23%;border-radius:60px 60px 14px 14px;background:var(--color-ink-faint);transform:rotate(-12deg);z-index:-1;box-shadow:15px 15px 0 var(--color-line-strong)}
-body #gadget-root .sl-media::after{content:"SAMPLE ARTWORK";position:absolute;bottom:12px;right:12px;font-size:8px;letter-spacing:1px;color:var(--color-ink-soft)}
-body #gadget-root .sl-post:nth-child(2) .sl-media{background:var(--color-panel-subtle)}
-body #gadget-root .sl-post:nth-child(2) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(12deg);border-radius:50%}
-body #gadget-root .sl-post:nth-child(3) .sl-media{background:var(--color-panel-subtle)}
-body #gadget-root .sl-post:nth-child(3) .sl-media::before{background:var(--color-ink-faint);box-shadow:15px 15px 0 var(--color-line-strong);transform:rotate(-5deg)}
 body #gadget-root .sl-post-body{padding:16px}
 /* The dock floats over the list, so it takes the card surface at partial alpha
    rather than the page colour an opaque bar used to need. */

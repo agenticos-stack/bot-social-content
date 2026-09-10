@@ -1094,6 +1094,17 @@ export class Gadget extends DurableObject {
 
     let cached = this.storage.getMedia(itemId, mediaId, rendition);
     if (!cached) cached = await this.fetchAndCacheMedia(itemId, mediaId, rendition);
+    // Too large is not missing, and saying so is the point: an owner who is
+    // told "no media" goes looking for a broken source, while one told the
+    // size and the cap knows the media is fine and the cache is the limit.
+    if (cached?.tooLarge) {
+      const { byteLength, cap } = cached.tooLarge;
+      return {
+        ok: false,
+        code: "media_too_large",
+        message: `That ${rendition} is ${Math.ceil(byteLength / 1024)}KB, over the ${Math.floor(cap / 1024)}KB this cache holds.`
+      };
+    }
     // EXPECTED: a source URL expired, the door revoked mid-fetch, or the
     // media id was never valid — an owner opening a stale preview, not a
     // caller bug. `rpc.js`'s `loadMediaAsBlobUrl` turns this back into a
@@ -1127,11 +1138,26 @@ export class Gadget extends DurableObject {
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
     if (!raw) return null;
     const cap = rendition === "thumb" ? THUMB_MAX_BYTES : PREVIEW_MAX_BYTES;
-    const bytes = raw.slice(0, cap);
+    /*
+     * REFUSE what does not fit. Do not store a prefix of it.
+     *
+     * This used to be `raw.slice(0, cap)`, which turns a file too big for the
+     * cap into a corrupt one of exactly the cap's size — and then stores it as
+     * though it were the media. Every format here is length-sensitive: a
+     * truncated MP4 will not play and a truncated JPEG will not decode. The
+     * first item this gadget ever scanned is a 2.7 MB reel, so the very first
+     * real fetch would have cached 1 MB of unusable bytes and reported success.
+     *
+     * A cap is a statement about what this cache will hold, so exceeding it is
+     * an answer ("too large for a <rendition>"), not a licence to store part of
+     * it. The caller turns this into a refusal an owner can read, rather than a
+     * broken image with no explanation.
+     */
+    if (raw.byteLength > cap) return { tooLarge: { byteLength: raw.byteLength, cap } };
     const mime = typeof response.data.mime === "string" ? response.data.mime : "application/octet-stream";
 
-    this.storage.putMedia(itemId, mediaId, rendition, mime, bytes);
-    return { mime, bytes };
+    this.storage.putMedia(itemId, mediaId, rendition, mime, raw);
+    return { mime, bytes: raw };
   }
 
   // -----------------------------------------------------------------------
