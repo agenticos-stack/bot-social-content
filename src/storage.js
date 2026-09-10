@@ -17,7 +17,9 @@
 // base64 text, so a 1 MiB preview does not inflate to 1.33 MiB of TEXT and
 // press against that ceiling for no reason.
 
-const CURRENT_SCHEMA_VERSION = 6;
+import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
+
+const CURRENT_SCHEMA_VERSION = 7;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -278,6 +280,11 @@ const MIGRATIONS = {
     sql.exec("ALTER TABLE revisions ADD COLUMN original_media_refs_json TEXT");
     sql.exec("ALTER TABLE revisions ADD COLUMN derived_media_refs_json TEXT");
     sql.exec("ALTER TABLE revisions ADD COLUMN publication_intent_json TEXT");
+  },
+
+  /** TASK-009: grounding ledger per revision. NULL means the row predates the ledger. */
+  7(sql) {
+    sql.exec("ALTER TABLE revisions ADD COLUMN ledger_json TEXT");
   }
 };
 
@@ -994,8 +1001,8 @@ export class Storage {
         `INSERT INTO revisions (
           batch_item_id, revision, caption, poster_layout_json, confirmed_claims_json, issues_json,
           refinement_brief_json, protected_overrides_json, original_media_refs_json, derived_media_refs_json,
-          publication_intent_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          publication_intent_json, ledger_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         batchItemId,
         next,
         patch.caption ?? null,
@@ -1007,6 +1014,7 @@ export class Storage {
         patch.originalMediaRefs ? JSON.stringify(patch.originalMediaRefs) : null,
         patch.derivedMediaRefs ? JSON.stringify(patch.derivedMediaRefs) : null,
         patch.publicationIntent ? JSON.stringify(patch.publicationIntent) : null,
+        patch.ledger ? JSON.stringify(patch.ledger) : null,
         nowIso()
       );
       this.sql.exec(
@@ -1268,6 +1276,25 @@ function hydrateBatchItem(row) {
   };
 }
 
+function hydrateLedger(row) {
+  if (row.ledger_json) {
+    try {
+      return normalizeLedger(JSON.parse(row.ledger_json));
+    } catch {
+      return { spans: [], media: [] };
+    }
+  }
+  let overrides = [];
+  if (row.protected_overrides_json) {
+    try {
+      overrides = JSON.parse(row.protected_overrides_json);
+    } catch {
+      overrides = [];
+    }
+  }
+  return ledgerFromProtectedOverrides(overrides);
+}
+
 function hydrateRevision(row) {
   return {
     batchItemId: row.batch_item_id,
@@ -1283,6 +1310,7 @@ function hydrateRevision(row) {
     originalMediaRefs: row.original_media_refs_json ? JSON.parse(row.original_media_refs_json) : [],
     derivedMediaRefs: row.derived_media_refs_json ? JSON.parse(row.derived_media_refs_json) : [],
     publicationIntent: row.publication_intent_json ? JSON.parse(row.publication_intent_json) : null,
+    ledger: hydrateLedger(row),
     createdAt: row.created_at
   };
 }

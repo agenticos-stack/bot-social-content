@@ -16,8 +16,14 @@ import {
   posterLayoutSchema,
   posterPngConstraints,
   revisionCas,
+  ledgerFromProtectedOverrides,
+  normalizeLedger,
+  rightsObligation,
+  usesGroundedValidation,
+  validateGrounded,
   validateLocalization,
-  validatePosterLayout
+  validatePosterLayout,
+  validateRevisionDraft
 } from "../../src/model.js";
 
 const MODEL_PATH = fileURLToPath(new URL("../../src/model.js", import.meta.url));
@@ -331,6 +337,200 @@ describe("validateLocalization", () => {
       policy: {}
     });
     expect(result).toEqual({ ok: true, issues: [] });
+  });
+});
+
+describe("usesGroundedValidation", () => {
+  it("routes keep_original with no allowed changes to localization", () => {
+    expect(usesGroundedValidation({ visualTreatment: "keep_original", allowedChanges: [] })).toBe(false);
+    expect(usesGroundedValidation({ visualTreatment: "text_poster" })).toBe(false);
+  });
+
+  it("routes allowed changes or ai_refinement to grounded validation", () => {
+    expect(usesGroundedValidation({ visualTreatment: "keep_original", allowedChanges: ["price"] })).toBe(true);
+    expect(usesGroundedValidation({ visualTreatment: "ai_refinement", allowedChanges: [] })).toBe(true);
+  });
+});
+
+describe("validateGrounded", () => {
+  const source = { id: "instagram:IG_MAIN:p1", text: "Get the HK$1,299 bundle now." };
+  const derivedCaption = "宣傳優惠：套裝價錢HK$999，立即購買。";
+
+  it("passes a derived draft with a new price when the ledger names a basis", () => {
+    const result = validateGrounded({
+      source,
+      draft: derivedCaption,
+      brief: { allowedChanges: ["price"], visualTreatment: "ai_refinement" },
+      ledger: { spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }] }
+    });
+    expect(result.ok).toBe(true);
+    expect(result.issues.some((entry) => entry.severity === "block")).toBe(false);
+  });
+
+  it("blocks the same derived draft when the new price has no basis", () => {
+    const result = validateGrounded({
+      source,
+      draft: derivedCaption,
+      brief: { allowedChanges: ["price"], visualTreatment: "ai_refinement" },
+      ledger: { spans: [] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "ungrounded_span", severity: "block" }));
+  });
+
+  it("blocks a spoken-form token on the grounded path as house policy", () => {
+    const result = validateGrounded({
+      source,
+      draft: "呢個係新價錢HK$999，立即購買。",
+      brief: { allowedChanges: ["price"] },
+      ledger: { spans: [{ text: "HK$999", kind: "price", basis: "owner:confirm_1" }] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
+  });
+
+  it("blocks an unknown basis form rather than ignoring it", () => {
+    const result = validateGrounded({
+      source,
+      draft: derivedCaption,
+      brief: { allowedChanges: ["price"] },
+      ledger: { spans: [{ text: "HK$999", kind: "price", basis: "memory:fact_price" }] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "unknown_basis", severity: "block" }));
+  });
+
+  it("blocks a source: basis that contradicts the cited item", () => {
+    const result = validateGrounded({
+      source,
+      draft: derivedCaption,
+      brief: { allowedChanges: ["price"] },
+      ledger: { spans: [{ text: "HK$999", kind: "price", basis: "source:instagram:IG_MAIN:p1" }] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "source_basis_mismatch", severity: "block" }));
+  });
+});
+
+describe("normalizeLedger", () => {
+  it("keeps recognised spans and media provenance and drops the rest", () => {
+    expect(
+      normalizeLedger({
+        spans: [
+          { text: "HK$999", kind: "price", basis: "knowledge:fact_price" },
+          { text: "   ", kind: "price", basis: "knowledge:empty" },
+          { text: "#sale", kind: "hashtag", basis: "owner:confirm_1" },
+          { text: "emoji", kind: "emoji", basis: "knowledge:x" },
+          { text: "HK$1", kind: "price", basis: "memory:x" }
+        ],
+        media: [
+          { ref: "asset-1", provenance: "source" },
+          { ref: "asset-2", provenance: "derived-from:asset-1", derivedFrom: "asset-1" },
+          { ref: "asset-3", provenance: "original" },
+          { ref: "", provenance: "original" },
+          { ref: "asset-4", provenance: "generated" }
+        ]
+      })
+    ).toEqual({
+      spans: [
+        { text: "HK$999", kind: "price", basis: "knowledge:fact_price" },
+        { text: "#sale", kind: "hashtag", basis: "owner:confirm_1" },
+        { text: "HK$1", kind: "price", basis: "memory:x" }
+      ],
+      media: [
+        { ref: "asset-1", provenance: "source" },
+        { ref: "asset-2", provenance: "derived-from:asset-1", derivedFrom: "asset-1" },
+        { ref: "asset-3", provenance: "original" }
+      ]
+    });
+  });
+
+  it("turns protectedOverrides into owner: ledger spans", () => {
+    expect(
+      ledgerFromProtectedOverrides([
+        { literal: "HK$999", reason: "owner correction", approvedBy: "owner_1", approvedAt: "2026-09-09T00:00:00.000Z" }
+      ])
+    ).toEqual({
+      spans: [
+        {
+          text: "HK$999",
+          kind: "price",
+          basis: "owner:owner_1",
+          reason: "owner correction",
+          approvedBy: "owner_1",
+          approvedAt: "2026-09-09T00:00:00.000Z"
+        }
+      ],
+      media: []
+    });
+  });
+});
+
+describe("rightsObligation", () => {
+  it("does not require confirmation for an original-only ledger", () => {
+    expect(
+      rightsObligation({
+        ledger: { spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }], media: [{ ref: "gen-1", provenance: "original" }] },
+        sourceOrigin: "binding"
+      })
+    ).toMatchObject({ required: false, relationship: "inspiration" });
+  });
+
+  it("requires confirmation when the ledger reuses the source photo", () => {
+    expect(
+      rightsObligation({
+        ledger: { spans: [], media: [{ ref: "source-media", provenance: "source" }] },
+        sourceOrigin: "binding"
+      })
+    ).toMatchObject({ required: true, relationship: "reuse" });
+  });
+
+  it("treats an empty ledger as republication, so localization still requires confirmation", () => {
+    expect(rightsObligation({ ledger: { spans: [], media: [] }, sourceOrigin: "binding" })).toMatchObject({
+      required: true,
+      relationship: "reuse"
+    });
+  });
+
+  it("forces confirmation for an open source even when the ledger is original-only", () => {
+    expect(
+      rightsObligation({
+        ledger: { media: [{ ref: "gen-1", provenance: "original" }] },
+        sourceOrigin: "open"
+      })
+    ).toMatchObject({ required: true });
+  });
+});
+
+describe("validateRevisionDraft routing", () => {
+  it("still blocks an altered price on the localization path", () => {
+    const result = validateRevisionDraft({
+      source: { text: "Get the HK$1,299 bundle now." },
+      draft: "宣傳優惠：套裝價錢係HK$999，立即購買。",
+      brief: { visualTreatment: "keep_original", allowedChanges: [] },
+      policy: {}
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: "protected_literal_altered", severity: "block" })
+    );
+  });
+
+  it("applies the zh-HK register check on both paths", () => {
+    const spoken = "呢個係我哋嘅新產品，大家快啲嚟睇吓啦。";
+    const localized = validateRevisionDraft({
+      source: {},
+      draft: spoken,
+      brief: { visualTreatment: "keep_original" }
+    });
+    const grounded = validateRevisionDraft({
+      source: {},
+      draft: spoken,
+      brief: { allowedChanges: ["copy"] },
+      ledger: { spans: [] }
+    });
+    expect(localized.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
+    expect(grounded.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
   });
 });
 

@@ -211,3 +211,119 @@ describe("social archive revision metadata persistence", () => {
     });
   });
 });
+
+describe("saveRevision validation routing", () => {
+  it("still blocks an altered price when the brief allows no changes", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    gadget.storage.upsertItem({
+      id: "instagram:IG_MAIN:p1",
+      sourceBinding: "IG_MAIN",
+      sourceLabel: "Main Instagram",
+      provider: "instagram",
+      providerItemId: "p1",
+      text: "Get the HK$1,299 bundle now.",
+      media: [{ id: "source-media", kind: "image", url: "https://cdn.example.test/original.jpg" }],
+      metrics: {},
+      contentHash: "source-hash",
+      firstSeenAt: "2026-09-06T00:00:00.000Z",
+      lastSeenAt: "2026-09-06T00:00:00.000Z"
+    });
+    const result = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "宣傳優惠：套裝價錢HK$999，立即購買。",
+      refinementBrief: { visualTreatment: "keep_original", allowedChanges: [] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: "protected_literal_altered", severity: "block" })
+    );
+  });
+
+  it("accepts a derived price when the brief allows changes and the ledger names a basis", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const result = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "宣傳優惠：套裝價錢HK$999，立即購買。",
+      refinementBrief: { visualTreatment: "ai_refinement", allowedChanges: ["price"] },
+      ledger: { spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }] }
+    });
+    expect(result).toMatchObject({ ok: true, revision: 1 });
+  });
+
+  it("blocks a derived price with no basis", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const result = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "宣傳優惠：套裝價錢HK$999，立即購買。",
+      refinementBrief: { allowedChanges: ["price"] }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: "ungrounded_span", severity: "block" }));
+  });
+
+  it("persists the ledger on the revision row", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const result = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "宣傳優惠：套裝價錢HK$999，立即購買。",
+      refinementBrief: { visualTreatment: "ai_refinement", allowedChanges: ["price"] },
+      ledger: {
+        spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }],
+        media: [{ ref: "source-media", provenance: "source" }]
+      }
+    });
+    expect(result).toMatchObject({ ok: true, revision: 1 });
+    expect(gadget.storage.latestRevision("item-1")?.ledger).toEqual({
+      spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }],
+      media: [{ ref: "source-media", provenance: "source" }]
+    });
+  });
+
+  it("grounds a derived price from protectedOverrides as owner: entries", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const result = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "宣傳優惠：套裝價錢HK$999，立即購買。",
+      refinementBrief: { allowedChanges: ["price"] },
+      protectedOverrides: [{ literal: "HK$999", reason: "owner correction", approvedBy: "owner_1" }]
+    });
+    expect(result).toMatchObject({ ok: true, revision: 1 });
+    expect(gadget.storage.latestRevision("item-1")?.ledger?.spans).toContainEqual(
+      expect.objectContaining({
+        text: "HK$999",
+        kind: "price",
+        basis: "owner:owner_1",
+        reason: "owner correction",
+        approvedBy: "owner_1"
+      })
+    );
+  });
+
+  it("reconstructs owner: ledger entries from pre-ledger protectedOverrides", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    gadget.storage.appendRevision("item-1", 0, {
+      caption: "第一稿內容文字",
+      protectedOverrides: [{ literal: "HK$10", reason: "owner correction", approvedBy: "owner_1" }]
+    });
+    expect(gadget.storage.latestRevision("item-1")?.ledger?.spans).toContainEqual(
+      expect.objectContaining({ text: "HK$10", kind: "price", basis: "owner:owner_1" })
+    );
+  });
+});
