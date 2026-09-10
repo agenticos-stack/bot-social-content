@@ -49,14 +49,16 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
     allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });
 }
 
-export function browserBridge(token) {
+/** `decodeBytes` is the testkit's decoder source; see connectedCanvasBridge for why it is passed in. */
+export function browserBridge(token, decodeBytes) {
   return `
+  ${decodeBytes}
   globalThis.RpcTarget = class {};
   async function localCall(method, args) {
     const response = await fetch('/local-rpc', {method:'POST',credentials:'omit',headers:{'content-type':'application/json','x-bot-local-session':${JSON.stringify(token)}},body:JSON.stringify({method,args})});
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error('Local runtime: '+(result.error || 'call failed')+'. Agent, provider, setup and publishing actions are unavailable.');
-    return result.value;
+    return __botDecodeBytes(result.value);
   }
   globalThis.gadget = new Proxy({}, { get(_, method) {
     if (method === 'then') return undefined;

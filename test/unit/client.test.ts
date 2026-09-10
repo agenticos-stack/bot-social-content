@@ -1018,11 +1018,11 @@ describe("a card's cover comes from cached bytes", () => {
     return root;
   }
 
-  it("waits for each cover before asking for the next", async () => {
+  it("fetches a few covers at a time, and never the whole grid at once", async () => {
     let inFlight = 0;
     let mostAtOnce = 0;
     const order: string[] = [];
-    const root = gridOf(4, async (itemId) => {
+    const root = gridOf(12, async (itemId) => {
       inFlight += 1;
       mostAtOnce = Math.max(mostAtOnce, inFlight);
       order.push(itemId);
@@ -1030,10 +1030,33 @@ describe("a card's cover comes from cached bytes", () => {
       inFlight -= 1;
       return `blob:${itemId}`;
     });
-    await flushAsyncWork();
-    expect(mostAtOnce).toBe(1);
-    expect(order).toEqual(["i0", "i1", "i2", "i3"]);
-    expect(images(root)).toHaveLength(4);
+    await flushAsyncWork(12);
+    // Strictly sequential made the grid the sum of its parts; all-at-once
+    // rebuilds the queue on the host's side of the wire, which is what timed
+    // nine covers out in the first place. Four is the host's pool.
+    expect(mostAtOnce).toBe(4);
+    // Started in the order the cards are read, whatever order they finish in.
+    expect(order.slice(0, 4)).toEqual(["i0", "i1", "i2", "i3"]);
+    expect(images(root)).toHaveLength(12);
+  });
+
+  it("lets a stalled cover hold up only itself", async () => {
+    let release: (() => void) | null = null;
+    const stalled = new Promise<void>((resolve) => { release = resolve; });
+    const done: string[] = [];
+    const root = gridOf(8, async (itemId) => {
+      if (itemId === "i0") await stalled;
+      done.push(itemId);
+      return `blob:${itemId}`;
+    });
+    await flushAsyncWork(12);
+    // Seven of eight drew while the first was still waiting; a single line
+    // would have drawn none of them.
+    expect(images(root)).toHaveLength(7);
+    expect(done).not.toContain("i0");
+    release!();
+    await flushAsyncWork(12);
+    expect(images(root)).toHaveLength(8);
   });
 
   it("keeps going after one cover fails, instead of stopping the rest of the grid", async () => {

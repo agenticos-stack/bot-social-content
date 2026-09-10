@@ -6,7 +6,7 @@ import { watch } from "node:fs";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { build } from 'esbuild';
 import { compile } from 'svelte/compiler';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
@@ -286,6 +286,18 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
 }):null;
 const connected = connectedModes.has(mode) ? createConnectedApi({apiOrigin, frontendOrigin, development, platform: remote ? 'remote' : 'local'}) : null;
 const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
+/*
+ * The decoder for the host's binary envelope, from the SAME testkit that
+ * encodes it. A source encoder paired with an installed decoder is two wire
+ * formats that agree until one of them moves.
+ *
+ * Only the modes that actually run a local gadget have a host to decode from,
+ * and those are exactly the modes that require BOT_SDK_SOURCE — the fixture
+ * has no RPC at all, and this gadget does not depend on the testkit itself.
+ */
+const DECODE_BYTES_SOURCE = overlay
+  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).DECODE_BYTES_SOURCE
+  : '';
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
   ['geist', 'Geist Variable', '100 900'],
@@ -325,7 +337,7 @@ const server = createServer(async (request, response) => {
   if(connected && url.pathname==='/dev-canvas' && request.method==='GET'){
     response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src data:; img-src blob: data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`);
     response.setHeader('Content-Type','text/html; charset=utf-8');
-    const script=(connectedCanvasBridge(frontendOrigin)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
+    const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
     response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
   }
   if (connected && url.pathname.startsWith('/api/')) {
@@ -360,7 +372,7 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/workspace.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(bundle.outputFiles[0].contents); return; }
   if (url.pathname === "/client.js" || url.pathname === "/fixture.js") {
     response.setHeader("Content-Type", "text/javascript; charset=utf-8");
-    response.end(url.pathname === "/client.js" ? archive.files["client.js"] : runtime ? browserBridge(runtime.token) : fixture);
+    response.end(url.pathname === "/client.js" ? archive.files["client.js"] : runtime ? browserBridge(runtime.token, DECODE_BYTES_SOURCE) : fixture);
     return;
   }
   if (!["/", "/canvas"].includes(url.pathname)) { response.writeHead(404).end(); return; }
