@@ -60,7 +60,11 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    **No Localize step.** The wizard is review → publish only: editing is the
    drawer's composer or the agent (`saveRevisions`, `posterLayout` params —
    never bytes). With the editor gone, `savePoster` has no UI caller; an
-   item's `posterLayout` renders as the drawer's canvas preview.
+   item's `posterLayout` renders as the drawer's canvas preview plus a
+   **Download poster** PNG. Posters cannot ship — the Social Hub door
+   takes hosted URLs only — so `submitForReview` reports
+   `poster_not_shipped` and the post carries the source media
+   (platform gap filed as agenticos-stack/agenticos#1865).
    **Regenerate.** The drawer's leftmost footer button re-arms
    `generation: "requested"` (`requestGeneration`; refuses when nothing is
    left to draft). The card's chip reads `queued` for the whole marked
