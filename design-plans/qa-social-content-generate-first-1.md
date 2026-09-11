@@ -50,16 +50,15 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    queued / drafting / awaiting rights / submitted / scheduled /
    needs attention. The whole card opens the batch drawer; revision history,
    rights detail, publications and issues stay inside it.
-   **Ask banner.** A slim bar reads "Drafting N posts — the agent picks these
-   up on its next turn" with "N awaiting rights" when the batch carries held
-   items. The copyable message lives one tap deeper under **Ask now**
-   (collapsed `<details>`) with Copy + Dismiss — the owner is not the courier.
-3. **Durability.** Reload the page → ask card still shows (reads
-   `batches.generation`, not memory). Dismiss → card gone AND stays gone after
-   reload (`dismissGenerationAsk` persisted the clear).
+   **No ask card.** The copyable-message banner was removed — the owner is
+   not the courier. A `queued` chip per item carries the durable
+   `generation: "requested"` state; drafts appear as they are saved.
+3. **Durability.** Reload the page → queued chips still show (they read
+   `batches.generation`, not memory). `dismissGenerationAsk` remains as the
+   durable clear for an abandoned batch.
 4. **Auto-clear.** Draft every item in a requested batch (via `saveRevisions`
-   or Localize save) → `getBatch(batchId).generation` becomes `null`; ask card
-   disappears.
+   or Localize save) → `getBatch(batchId).generation` becomes `null`; queued
+   chips flip to drafting.
 5. **Protected spans.** `getBatch` → each item's `protectedSpans` lists
    `{kind:"product", value:"Nautical living", start, end}` (with the config
    above). `null`/absent config → `[]`.
