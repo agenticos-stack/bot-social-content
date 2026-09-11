@@ -909,8 +909,28 @@ function App() {
           type: "button", class: "sl-secondary",
           onclick: async () => {
             if (!(await saveDirty())) return;
+            // The poster's PNG exists only when the client renders it — and
+            // it must exist before submit, or the post ships source media.
+            for (const item of batch.items ?? []) {
+              if (!item.posterLayout || item.posterStored) continue;
+              try {
+                const png = await renderPosterPng(item.posterLayout.template, {
+                  headline: item.posterLayout.headline, subline: item.posterLayout.subline,
+                  background: { value: item.posterLayout.background?.value },
+                  textColor: item.posterLayout.textColor, align: item.posterLayout.align
+                });
+                const stored = await rpc.savePoster({
+                  batchItemId: item.id, expectedRevision: item.revision ?? 0,
+                  template: item.posterLayout.template, png
+                });
+                if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
+              } catch (error) {
+                announce(error instanceof Error ? error.message : String(error), "");
+                return;
+              }
+            }
             batchDialog.close();
-            wizard = resumeBatch(wizard, batch);
+            wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
             renderCurrentView();
           }
         }, t(locale, "continueToPublish")) : null,

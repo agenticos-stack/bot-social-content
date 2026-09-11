@@ -93,6 +93,7 @@ import {
   validateRevisionDraft,
   normalizeOpenInstagramPosts,
   publicationMedia,
+  isPublisherAddressableUrl,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -119,6 +120,7 @@ import {
   socialCreateDraft,
   socialReadStatus,
   socialSubmitForReview,
+  socialUploadMedia,
   listOpenAccountPosts,
   mediaUrlFor
 } from "./doors.js";
@@ -1562,6 +1564,9 @@ export class Gadget extends DurableObject {
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
+      // Whether rendered PNG bytes already exist at this revision — the
+      // client materializes once per revision, never on every view.
+      posterStored: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -2014,27 +2019,48 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     }).map((span) => span.value);
 
-    const packedMedia = publicationMedia({
+    /*
+     * The poster is generated media the owner can actually ship: its bytes
+     * live in `posters` (the client rendered them), so upload them through
+     * the door and the draft carries the returned publisher-addressable URL.
+     * No bytes at this revision — or a door that cannot take them — means
+     * the source media ships, disclosed rather than silent.
+     */
+    const warnings = [];
+    let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
       sourceMedia: sourceItem?.media
     });
-    if (!packedMedia.ok) {
-      return { ok: false, code: packedMedia.code, message: packedMedia.message };
-    }
-
-    /*
-     * A poster is deterministic text-on-colour rendered client-side — it has
-     * no publisher-addressable URL, and the Social Hub door has no upload
-     * path. So a draft carrying a posterLayout ships the source media. That
-     * is disclosed here rather than silent: the publish step surfaces the
-     * warning, and the owner can download the PNG from the batch drawer.
-     */
-    const warnings = [];
-    if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
+    const poster = this.storage.getPoster(batchItemId, revision.revision);
+    if (poster) {
+      try {
+        const uploaded = await socialUploadMedia(this.env, {
+          dataBase64: bytesToBase64(poster.bytes),
+          mimeType: "image/png",
+          filename: `poster-${batchItemId}-r${revision.revision}.png`
+        });
+        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
+          packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+        } else {
+          warnings.push({
+            code: "poster_not_shipped",
+            message: isDoorRefusal(uploaded) ? uploaded.message : "The poster upload did not return a publisher-addressable URL — the post carries the source media."
+          });
+        }
+      } catch (error) {
+        warnings.push({
+          code: "poster_not_shipped",
+          message: `The poster could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
+        });
+      }
+    } else if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
       warnings.push({
         code: "poster_not_shipped",
         message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
       });
+    }
+    if (!packedMedia.ok) {
+      return { ok: false, code: packedMedia.code, message: packedMedia.message };
     }
 
     // TASK-015: the attribution the door carries is the observation record the
@@ -2610,4 +2636,15 @@ function escapeHtml(value) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/* A poster PNG is a few hundred KB — chunked because fromCharCode spreads
+ * into the call frame, and a spread the size of a poster overflows it. */
+function bytesToBase64(bytes) {
+  let binary = "";
+  const CHUNK = 8192;
+  for (let offset = 0; offset < bytes.byteLength; offset += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK));
+  }
+  return btoa(binary);
 }

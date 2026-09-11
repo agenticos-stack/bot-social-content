@@ -135,12 +135,14 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
 
   The gadget renders it to a preview the owner sees in the batch drawer —
   a layout you save becomes visible without you ever holding bytes. Do not
-  call `savePoster`: it requires rendered PNG bytes you cannot produce, and
-  its only caller is the owner's own poster editor. Honour `posterPrompt`
-  from config when choosing headline and colours. A poster cannot reach
-  the publisher: the door takes hosted media URLs only, so a published
-  post carries the source media and the submit result says so
-  (`poster_not_shipped`). The owner can download the PNG from the drawer.
+  call `savePoster`: it requires rendered PNG bytes you cannot produce —
+  the owner-side client renders them when the batch heads to publish.
+  Honour `posterPrompt` from config when choosing headline and colours.
+  At submit the gadget uploads those bytes through `social.uploadMedia`
+  and the draft carries the returned URL — the poster IS the published
+  image when bytes exist. When they don't (layout only), the post ships
+  the source media and the result warns `poster_not_shipped`. The owner
+  can also download the PNG from the drawer.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own
