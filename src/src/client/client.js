@@ -814,6 +814,9 @@ function App() {
           ? captionEditor(item)
           : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
         posterPreview(item.posterLayout),
+        batch.generation === "requested"
+          ? el("p", { class: "sl-field-note" }, t(locale, "drawerQueuedNote"))
+          : null,
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
         // TASK-018: where this draft was sent — one line per publication,
         // including `bound` ones (recorded destinations, never sent).
@@ -875,6 +878,7 @@ function App() {
               return;
             }
             batchDialog.close();
+            announce(t(locale, "drawerRegenerateNote"), "");
             inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
             renderCurrentView();
           }

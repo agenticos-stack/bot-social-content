@@ -74,9 +74,15 @@ Do this, in order:
 1. `getBatch(batchId)` — the batch already exists. Do **not** call
    `createBatch`; it would refuse as a duplicate, and if it did not it would
    split one owner's decision across two batches.
-2. Draft every item the batch carries and return them with ONE
+2. Draft every item still editable — `state` `drafting` or `expired`. Items
+   already `submitted`/`awaiting_approval` are DONE: a revision you save to
+   one would flip it to `expired` and void its approval, which the owner
+   never asked for. Return the drafts with ONE
    `saveRevisions({ revisions: [...] })` call — one approval card covers the
-   batch, which is what the owner saw when they pressed "Draft N posts".
+   batch, which is what the owner saw when they pressed "Draft N posts" (or
+   "Regenerate" — the mark is identical). `expectedRevision` must be each
+   item's current revision from `getBatch` — on a re-armed batch that is
+   already 1 or higher, and a stale value refuses `revision_conflict`.
    Per-item results come back in `results`; a refused entry names its issue
    without costing the others. `saveRevision` (singular) stays for edits to
    one item after that.

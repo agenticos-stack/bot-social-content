@@ -109,7 +109,10 @@ function itemChip(locale, batch, item) {
   if (["submitted", "awaiting_approval"].includes(item.state)) return { label: t(locale, "stateSubmitted"), cls: "sl-chip-submitted" };
   if (item.state === "scheduled") return { label: t(locale, "stateScheduled"), cls: "sl-chip-scheduled" };
   if (["failed", "held", "unknown"].includes(item.state)) return { label: t(locale, "stateAttention"), cls: "sl-chip-attention" };
-  if (batch.generation === "requested" && (item.revision ?? 0) === 0 && !item.caption) return { label: t(locale, "stateQueued"), cls: "sl-chip-queued" };
+  // The mark is the state: a requested batch is queued for the agent's next
+  // turn whether its items carry an earlier draft (re-armed by Regenerate)
+  // or none yet (fresh from Continue).
+  if (batch.generation === "requested") return { label: t(locale, "stateQueued"), cls: "sl-chip-queued" };
   return { label: t(locale, "stateDrafting"), cls: "sl-chip-drafting" };
 }
 

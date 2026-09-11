@@ -61,6 +61,15 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    drawer's composer or the agent (`saveRevisions`, `posterLayout` params —
    never bytes). With the editor gone, `savePoster` has no UI caller; an
    item's `posterLayout` renders as the drawer's canvas preview.
+   **Regenerate.** The drawer's leftmost footer button re-arms
+   `generation: "requested"` (`requestGeneration`; refuses when nothing is
+   left to draft). The card's chip reads `queued` for the whole marked
+   batch — a re-armed batch's drafted items are queued for re-draft, not
+   done — and an announce card says when the agent picks it up. Inside the
+   drawer each item notes "Re-draft queued". The agent contract skips
+   `submitted`/`awaiting_approval` items on a re-armed batch — saving to one
+   would flip it to `expired` and void its approval — and uses each item's
+   current `expectedRevision`, not 0.
 3. **Durability.** Reload the page → queued chips still show (they read
    `batches.generation`, not memory). `dismissGenerationAsk` remains as the
    durable clear for an abandoned batch.
