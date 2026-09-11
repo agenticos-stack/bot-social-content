@@ -217,3 +217,20 @@ describe("wallClockHHMM", () => {
     expect(wallClockHHMM("Not/A_Zone", new Date("2026-08-20T09:15:00Z"))).toBe("09:15");
   });
 });
+
+describe("the imagePrompt → posterPrompt rename", () => {
+  it("a config saved before the rename still reads its imagePrompt", () => {
+    // Owners who set the prompt before the key was renamed carry the old key.
+    const config = normalizeConfig({ cadence: { kind: "interval", everyMinutes: 60 }, imagePrompt: "big serif headline on cream" });
+    expect(config.posterPrompt).toBe("big serif headline on cream");
+  });
+
+  it("the new key wins when both are stored", () => {
+    const config = normalizeConfig({
+      cadence: { kind: "interval", everyMinutes: 60 },
+      imagePrompt: "old",
+      posterPrompt: "new"
+    });
+    expect(config.posterPrompt).toBe("new");
+  });
+});
