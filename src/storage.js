@@ -981,6 +981,49 @@ export class Storage {
     ));
     const page = rowsFound.slice(0, bounded);
     const last = page[page.length - 1];
+    /*
+     * Per-item projection for the Content grid — the card there is a POST
+     * (cover + snapshot + state chip), not a batch header. One extra query
+     * over the page's batch ids, grouped in memory; a batch card keeps its
+     * `preview` for callers that only need the representative.
+     */
+    const itemsByBatch = new Map();
+    if (page.length) {
+      const batchIds = page.map((row) => row.id);
+      const itemRows = rows(this.sql.exec(
+        `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.rights_status, bi.current_revision,
+           COALESCE(origin.source_label, source.source_label, source.provider) AS source_label,
+           source.provider AS provider, source.source_binding AS source_binding,
+           SUBSTR(source.text, 1, 160) AS source_text,
+           json_extract(source.media_json, '$[0].id') AS cover_media_id,
+           SUBSTR(revision.caption, 1, 160) AS caption,
+           revision.revision AS caption_revision
+         FROM batch_items bi
+         LEFT JOIN items source ON source.id = bi.item_id
+         LEFT JOIN origin_links origin ON origin.batch_item_id = bi.id
+         LEFT JOIN revisions revision ON revision.batch_item_id = bi.id AND revision.revision = bi.current_revision
+         WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
+         ORDER BY bi.id`,
+        ...batchIds
+      ));
+      for (const row of itemRows) {
+        const list = itemsByBatch.get(row.batch_id) ?? [];
+        list.push({
+          batchItemId: row.batch_item_id,
+          itemId: row.item_id,
+          state: row.state,
+          rightsStatus: row.rights_status,
+          revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          sourceLabel: row.source_label ?? null,
+          provider: row.provider ?? null,
+          sourceBinding: row.source_binding ?? null,
+          sourceText: row.source_text ?? null,
+          coverMediaId: row.cover_media_id == null ? null : String(row.cover_media_id),
+          caption: row.caption ?? null
+        });
+        itemsByBatch.set(row.batch_id, list);
+      }
+    }
     return {
       batches: page.map((row) => ({
         id: row.id,
@@ -1003,7 +1046,8 @@ export class Storage {
           caption: row.preview_caption ?? null,
           revision: row.preview_revision == null ? null : Number(row.preview_revision),
           hasMediaReference: Boolean(row.preview_has_media)
-        } : null
+        } : null,
+        items: itemsByBatch.get(row.id) ?? []
       })),
       nextCursor: rowsFound.length > bounded && last ? `${last.created_at}|${last.id}` : null,
       totals: {

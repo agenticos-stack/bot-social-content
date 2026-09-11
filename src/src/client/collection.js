@@ -11,6 +11,7 @@
 
 import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";
 import { t } from "./i18n.js";
+import { fillCovers, glyphKeyFor, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
 
 // ---------------------------------------------------------------------------
 // Pure state — filters, selection, search; independent of each other by
@@ -178,95 +179,31 @@ function metaLine(locale, item) {
   return wrap;
 }
 
-function renderCard(locale, item, handlers, sources, covers) {
-  let coverSlot = null;
-  const checkboxId = `sl-check-${item.id}`;
-  const checkbox = el("input", {
-    type: "checkbox",
-    id: checkboxId,
-    class: "sl-post-check",
-    checked: !!item.selected,
-    "aria-label": item.text ? item.text.slice(0, 80) : item.sourceLabel || "source post",
-    onchange: (event) => handlers.onSelect(item.id, event.currentTarget.checked)
-  });
-  const selectbox = el("label", { class: "sl-selectbox", for: checkboxId }, [checkbox]);
-
 /**
  * Which media a card's cover comes from, or null when it has none.
- *
- * The canvas is served `img-src blob: data:` with `connect-src 'none'`, so a
- * cover cannot be a remote URL however convenient that would be — it has to be
- * bytes the gadget already holds, handed over as a `blob:`. That containment
- * is deliberate: a gadget's UI must not be able to phone home, nor exfiltrate
- * data by encoding it into an image URL.
- *
- * So the card only marks WHICH media it wants. `renderCollection` fills it
- * afterwards, because the fetch is asynchronous and a grid must not wait on
- * fifteen of them before it draws.
  */
 function coverMediaId(item) {
   const media = Array.isArray(item?.media) ? item.media[0] : null;
   return media && media.id !== undefined && media.id !== null ? String(media.id) : null;
 }
 
-  const openButton = el(
-    "button",
-    { type: "button", class: "sl-post-open", "aria-label": item.text ? item.text.slice(0, 80) : "Preview post", onclick: () => handlers.onOpen(item) },
-    [
-      (coverSlot = el("span", { class: "sl-media" }, [
-        el("span", { class: "sl-provider-glyph", "data-glyph": glyphKeyFor(item, sources) || "" }, providerGlyph(item, sources)),
-        el("span", { class: "sl-media-kicker" }, sourceLabel(locale, item))
-      ])),
-      el("span", { class: "sl-post-body" }, [
-        el("strong", null, item.text ? item.text.split("\n")[0].slice(0, 90) : item.sourceLabel || ""),
-        el("p", null, item.text || ""),
-        metaLine(locale, item)
-      ])
-    ]
-  );
-
-  const mediaId = coverMediaId(item);
-  // Collected while building rather than queried for afterwards: the card
-  // holds its own slot, so nothing has to find it again by selector.
-  if (covers && coverSlot && mediaId) covers.push({ slot: coverSlot, itemId: item.id, mediaId });
-
-  const card = el("article", { class: "sl-post" }, [
-    selectbox,
-    openButton,
-    item.duplicateOf ? el("span", { class: "sl-duplicate-badge" }, t(locale, "duplicateNote")) : null
-  ]);
-  card.classList.toggle("sl-post-selected", !!item.selected);
-  return card;
-}
-
-/** The `glyphKey` the door reported for the source binding this item came from, or null when it reported none. */
-function glyphKeyFor(item, sources) {
-  const source = Array.isArray(sources) ? sources.find((row) => row.binding === item.sourceBinding) : null;
-  return typeof source?.glyphKey === "string" && source.glyphKey.trim() ? source.glyphKey.trim() : null;
-}
-
-/**
- * REQ-016 — the mark comes from the glyph key the DOOR reports, never from a
- * table of providers kept here.
- *
- * A hardcoded `instagram -> "IG", facebook -> "FB"` is a second copy of the
- * provider registry living where it cannot see the registry change: the day
- * a third provider is pinned, this file silently renders a bullet for it and
- * nobody finds out until someone looks at the screen. The key is also set as
- * `data-glyph`, so a real brand mark can be styled per provider without this
- * function learning any provider's name.
- *
- * The provider fallback stays for the one case the requirement allows: a door
- * that reported nothing at all.
- */
-function providerGlyph(item, sources) {
-  const glyphKey = glyphKeyFor(item, sources);
-  if (glyphKey) return glyphKey.slice(0, 2).toUpperCase();
-  return item.provider === "instagram" ? "IG" : item.provider === "facebook" ? "FB" : "•";
-}
-
-function sourceLabel(locale, item) {
-  return item.sourceLabel || (item.provider === "instagram" ? t(locale, "providerInstagram") : t(locale, "providerFacebook"));
+function renderCard(locale, item, handlers, sources, covers) {
+  return renderPostCard(locale, {
+    key: item.id,
+    selectable: true,
+    selected: !!item.selected,
+    onSelect: (checked) => handlers.onSelect(item.id, checked),
+    onOpen: () => handlers.onOpen(item),
+    ariaLabel: item.text ? item.text.slice(0, 80) : "Preview post",
+    cover: coverMediaId(item) ? { itemId: item.id, mediaId: coverMediaId(item) } : null,
+    glyphKey: glyphKeyFor(item, sources),
+    glyph: providerGlyph(item, sources),
+    kicker: sourceLabel(locale, item),
+    title: item.text ? item.text.split("\n")[0].slice(0, 90) : item.sourceLabel || "",
+    body: item.text || "",
+    meta: metaLine(locale, item),
+    badge: item.duplicateOf ? t(locale, "duplicateNote") : null
+  }, covers);
 }
 
 function renderChip(locale, source, active, onToggle) {
@@ -438,54 +375,9 @@ export function renderCollection(root, state, ctx) {
   if (typeof loadCover === "function") fillCovers(covers, loadCover);
 }
 
-/*
- * A FEW AT A TIME, in the order the cards are on screen.
- *
- * This has been each of the two obvious answers, and both were wrong for the
- * same reason: the right number is neither one nor all of them.
- *
- * It started as all-at-once, which timed out. The development host ran every
- * browser call in a single line and armed each call's clock the moment it was
- * made, so nine of twelve covers spent their whole budget queued and died
- * looking exactly like a broken fetch door.
- *
- * The fix for that was strictly sequential, and it worked — every call's clock
- * then covered its own work. But it made the grid the sum of its parts: twelve
- * covers at roughly half a second each is ten seconds of watching pictures
- * arrive one by one, and the queue it was avoiding no longer exists. The host
- * runs a bounded pool now (testkit `local-session.js`), so the line that made
- * sequential necessary is gone and sequential is simply the slowest thing left.
- *
- * `COVER_FETCHES` matches that pool. Asking for more would only rebuild the
- * queue on the other side of the wire, which is where this started.
- */
-const COVER_FETCHES = 4;
-
-async function fillCovers(covers, loadCover) {
-  const queue = [...covers];
-  const draw = async () => {
-    for (let next = queue.shift(); next; next = queue.shift()) {
-      const { slot, itemId, mediaId } = next;
-      try {
-        const url = await loadCover(itemId, mediaId);
-        if (url) slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
-      } catch (error) {
-        // A cover that cannot be fetched is not an error to put on the card: it
-        // keeps the provider glyph it already had, which is what a post with no
-        // media looks like anyway. But a silent `catch {}` here is how nine
-        // timed-out covers looked identical to nine posts without pictures, so
-        // the reason goes to the console where whoever is developing the gadget
-        // can read it. `getMedia`'s refusal codes carry the same reason to the
-        // preview dialog, where an owner sees it.
-        console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
-      }
-    }
-  };
-  // Workers share one queue, so a slow cover holds up only itself: the next
-  // free worker takes the next card rather than the whole grid waiting on it.
-  await Promise.all(Array.from({ length: Math.min(COVER_FETCHES, queue.length) }, draw));
-}
-
+// Covers draw a few at a time via `fillCovers` (post-card.js) — bounded by
+// the host's call pool, shared with the Content grid so both tabs fill the
+// same way.
 
 function renderInboxInto(root, state, ctx) {
   // Kept as an injected renderer to avoid making collection state own saved

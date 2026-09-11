@@ -330,4 +330,55 @@ describe("saveRevision validation routing", () => {
       expect.objectContaining({ text: "HK$10", kind: "price", basis: "owner:owner_1" })
     );
   });
+
+  it("passes a permitted-brief draft that preserves a protected name verbatim", async () => {
+    // The positive case (QA gap): preservation running on both paths must not
+    // over-block a legitimate draft. Stored brief allows "tone"; the caller
+    // uses it; the zh caption keeps "Nautical living" verbatim with the text
+    // reordered around it — expect ok with an EMPTY issues array.
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    gadget.storage.setConfig({
+      rightsPolicy: "require_confirmation",
+      protectedTerms: ["Nautical living"],
+      protectedHashtags: [],
+      disclaimers: [],
+      claimsRequiringConfirmation: [],
+      refinementBrief: { allowedChanges: ["tone"] }
+    });
+    gadget.storage.upsertItem({
+      id: "instagram:IG_MAIN:p2",
+      sourceBinding: "IG_MAIN",
+      sourceLabel: "Main Instagram",
+      provider: "instagram",
+      providerItemId: "p2",
+      text: "Annonse — Nautical living er og blir en favoritt for Halia",
+      media: [],
+      metrics: {},
+      contentHash: "source-hash-2",
+      firstSeenAt: "2026-09-06T00:00:00.000Z",
+      lastSeenAt: "2026-09-06T00:00:00.000Z"
+    });
+    gadget.storage.createBatch("batch-2");
+    gadget.storage.createBatchItem({
+      id: "item-2",
+      batchId: "batch-2",
+      itemId: "instagram:IG_MAIN:p2",
+      destinationBindings: [],
+      state: "held_rights",
+      rightsStatus: "pending"
+    });
+    const result = await gadget.saveRevisions({
+      revisions: [{
+        batchItemId: "item-2",
+        expectedRevision: 0,
+        caption: "依然是小傢伙每日的最愛 — Nautical living 配方不變 🐟",
+        refinementBrief: { allowedChanges: ["tone"] }
+      }]
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(result.results).toEqual([expect.objectContaining({ ok: true, revision: 1, issues: [] })]);
+    // held_rights is draftable (decision 8) — the state does not move on save.
+    expect(gadget.storage.getBatchItem("item-2")?.state).toBe("held_rights");
+  });
 });

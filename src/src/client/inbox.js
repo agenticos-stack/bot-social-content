@@ -3,6 +3,7 @@
 // batches, and inspecting a batch must never create another one.
 import { el } from "./dom.js";
 import { t } from "./i18n.js";
+import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
 
 export const INBOX_FILTERS = Object.freeze(["all", "new", "drafts", "review", "scheduled", "attention"]);
 
@@ -100,45 +101,100 @@ export function drawerAction(item) {
   return { kind: "unavailable", label: "Unavailable" };
 }
 
+/**
+ * The state chip a Content card carries. Order is deliberate: outcome states
+ * first (they're past drafting), then queued (a generation-requested batch
+ * with nothing saved yet), then awaiting rights (drafted or not, it cannot
+ * be SENT until confirmed — decision 8 keeps the gate at submit), then
+ * drafting as the in-progress default.
+ */
+function itemChip(locale, batch, item) {
+  if (["submitted", "awaiting_approval"].includes(item.state)) return { label: t(locale, "stateSubmitted"), cls: "sl-chip-submitted" };
+  if (item.state === "scheduled") return { label: t(locale, "stateScheduled"), cls: "sl-chip-scheduled" };
+  if (["failed", "held", "unknown"].includes(item.state)) return { label: t(locale, "stateAttention"), cls: "sl-chip-attention" };
+  if (batch.generation === "requested" && (item.revision ?? 0) === 0 && !item.caption) return { label: t(locale, "stateQueued"), cls: "sl-chip-queued" };
+  if (item.rightsStatus === "pending" || item.rightsStatus === "denied") return { label: t(locale, "stateAwaitingRights"), cls: "sl-chip-rights" };
+  return { label: t(locale, "stateDrafting"), cls: "sl-chip-drafting" };
+}
+
+/**
+ * One Content card per batch ITEM — the same `sl-post` shape Sources uses
+ * (shared `renderPostCard`), carrying the drafted caption when one exists
+ * and the source caption marked as such otherwise. Everything beyond the
+ * scan — revision history, rights detail, publications, issues — stays in
+ * the drawer behind Inspect.
+ */
+function itemCard(locale, batch, item, ctx, covers) {
+  const snapshot = item.caption ?? item.sourceText ?? "";
+  return renderPostCard(locale, {
+    key: item.batchItemId,
+    onOpen: () => ctx.handlers.onInspectBatch(batch),
+    ariaLabel: snapshot.slice(0, 80) || t(locale, "inboxInspect"),
+    cover: item.coverMediaId ? { itemId: item.itemId, mediaId: item.coverMediaId } : null,
+    glyph: providerGlyph({ provider: item.provider, sourceBinding: item.sourceBinding }, ctx.sources),
+    glyphKey: null,
+    kicker: item.sourceLabel || t(locale, "drawerSavedWork"),
+    title: snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource"),
+    body: snapshot,
+    chip: itemChip(locale, batch, item),
+    meta: el("span", { class: "sl-meta" }, [
+      el("span", null, item.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
+      el("span", null, (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"))
+    ])
+  }, covers);
+}
+
 export function renderInbox(root, state, ctx) {
-  const { locale, handlers } = ctx;
+  const { locale, handlers, loadCover } = ctx;
+  const covers = [];
   const totals = state.totals ?? {};
   const filters = [
     ["all", t(locale, "inboxAll"), totals.batches], ["drafts", t(locale, "inboxDrafts"), totals.drafts],
     ["review", t(locale, "inboxReview"), totals.review], ["scheduled", t(locale, "inboxScheduled"), totals.scheduled], ["attention", t(locale, "inboxAttention"), totals.attention]
   ];
-  const cards = visibleBatchSummaries(state).map((batch) => {
-    // Saved work is independent of the currently filtered/paged source list.
-    const preview = batch.preview;
-    return el("article", { class: "sl-inbox-card", tabindex: "0" }, [
-    el("div", { class: "sl-inbox-card-meta" }, [el("span", null, preview?.sourceLabel || t(locale, "drawerSavedWork")), el("span", null, t(locale, "inboxItemCount", { n: batch.itemCount }))]),
-    el("div", { class: "sl-inbox-thumb" }, t(locale, preview?.hasMediaReference ? "inboxMediaSaved" : "inboxMediaUnavailable")),
-    el("strong", null, batch.draftCount ? t(locale, "inboxDrafts") : batch.reviewCount ? t(locale, "inboxReview") : batch.scheduledCount ? t(locale, "inboxScheduled") : batch.attentionCount ? t(locale, "inboxAttention") : t(locale, "inboxAll")),
-    el("p", null, preview?.caption ?? preview?.sourceText ?? t(locale, "inboxNoSource")),
-    el("span", { class: "sl-field-note" }, Number.isInteger(preview?.revision) ? t(locale, "drawerRevision", { n: preview.revision }) : t(locale, "inboxNoSavedRevision")),
-    batch.itemCount > 1 ? el("span", { class: "sl-field-note" }, t(locale, "inboxRepresentative")) : null,
-    // "12 drafts, 9 awaiting rights" (PM decision 8): a held-rights item is
-    // draftable, so the count says how much drafting is blocked at SUBMIT —
-    // not at generation — by confirmations nobody has given yet.
-    batch.awaitingRights ? el("span", { class: "sl-field-note" }, t(locale, "inboxAwaitingRights", { n: batch.awaitingRights })) : null,
-    el("p", { class: "sl-field-note" }, batch.lastUpdatedAt ? new Date(batch.lastUpdatedAt).toLocaleString(locale) : ""),
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onInspectBatch(batch) }, t(locale, "inboxInspect"))
-  ]); });
+  const cards = visibleBatchSummaries(state).flatMap((batch) => {
+    const items = Array.isArray(batch.items) ? batch.items : [];
+    // A summary built before the items projection (or an empty batch) still
+    // gets a card — the batch row itself, same post shape, no cover.
+    return items.length
+      ? items.map((item) => itemCard(locale, batch, item, ctx, covers))
+      : [renderPostCard(locale, {
+          key: batch.id,
+          onOpen: () => handlers.onInspectBatch(batch),
+          ariaLabel: t(locale, "inboxInspect"),
+          cover: null,
+          glyph: "•",
+          kicker: batch.preview?.sourceLabel || t(locale, "drawerSavedWork"),
+          title: (batch.preview?.caption ?? batch.preview?.sourceText ?? "").split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource"),
+          body: batch.preview?.caption ?? batch.preview?.sourceText ?? "",
+          chip: null,
+          meta: el("span", { class: "sl-meta" }, [
+            el("span", null, batch.preview?.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
+            el("span", null, Number.isInteger(batch.preview?.revision) ? t(locale, "drawerRevision", { n: batch.preview.revision }) : t(locale, "inboxNoSavedRevision"))
+          ])
+        }, covers)];
+  });
   /*
-   * The generation ask — the batch just created is pending drafts, and the
-   * one thing between it and finished drafts is a message to the agent. One
-   * turn covers the batch, so the card says what to send and offers to copy
-   * it rather than paraphrasing instructions an owner would have to retype.
+   * The generation ask — durable on `batches.generation`, so it survives a
+   * reload and clears when the batch is drafted or dismissed. The cards above
+   * already show the queued items; this bar states the batch is being picked
+   * up and demotes the copyable message to "Ask now" for the owner who wants
+   * to trigger the agent's next turn immediately.
    */
   const ask = ctx.ask;
+  const askSummary = ask ? state.summaries.find((entry) => entry.id === ask.batchId) : null;
   const askMessage = ask ? t(locale, ask.count === 1 ? "askAgentPromptOne" : "askAgentPrompt", { n: ask.count, id: ask.batchId }) : null;
   const askCard = ask ? el("article", { class: "sl-ask" }, [
-    el("strong", null, t(locale, ask.count === 1 ? "askAgentTitleOne" : "askAgentTitle", { n: ask.count })),
-    el("p", { class: "sl-field-note" }, t(locale, "askAgentBody")),
-    el("code", { class: "sl-ask-message" }, askMessage),
-    el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(ask.batchId, askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk(ask.batchId) }, t(locale, "askAgentDismiss"))
+    el("strong", null, t(locale, ask.count === 1 ? "askQueuedOne" : "askQueued", { n: ask.count })),
+    askSummary?.awaitingRights ? el("span", { class: "sl-field-note" }, t(locale, "inboxAwaitingRights", { n: askSummary.awaitingRights })) : null,
+    el("details", { class: "sl-ask-details" }, [
+      el("summary", { class: "sl-ask-now" }, t(locale, "askNow")),
+      el("p", { class: "sl-field-note" }, t(locale, "askAgentBody")),
+      el("code", { class: "sl-ask-message" }, askMessage),
+      el("div", { class: "sl-setup-actions" }, [
+        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(ask.batchId, askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
+        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk(ask.batchId) }, t(locale, "askAgentDismiss"))
+      ])
     ])
   ]) : null;
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
@@ -148,4 +204,5 @@ export function renderInbox(root, state, ctx) {
     state.nextCursor ? el("button", { type: "button", class: "sl-secondary", onclick: handlers.onLoadMoreBatches }, t(locale, "inboxLoadMore")) : null,
     state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null
   ]));
+  if (typeof loadCover === "function") fillCovers(covers, loadCover);
 }

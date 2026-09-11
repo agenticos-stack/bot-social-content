@@ -166,12 +166,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
 .sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
-.sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-inbox-card-meta { display: flex; justify-content: space-between; color: var(--sl-muted); font-size: 9px; }
 .sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
-.sl-ask { display: grid; gap: 8px; padding: 14px 16px; margin-bottom: 14px; border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); background: var(--sl-selected, var(--sl-surface)); }
+.sl-state-chip { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border-radius: 999px; font: 600 8.5px var(--sl-font); letter-spacing: .03em; text-transform: uppercase; background: var(--sl-surface-2); color: var(--sl-muted); }
+.sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
+.sl-chip-rights, .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
+.sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
+.sl-ask { display: grid; gap: 6px; padding: 12px 16px; margin-bottom: 14px; border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); background: var(--sl-selected, var(--sl-surface)); }
+.sl-ask-details summary { cursor: pointer; font: 600 10.5px var(--sl-font); color: var(--sl-muted); list-style: none; }
+.sl-ask-details summary::before { content: "▸ "; }
+.sl-ask-details[open] summary::before { content: "▾ "; }
+.sl-ask-details[open] { padding-bottom: 4px; }
 .sl-ask-message { display: block; padding: 10px 12px; border-radius: var(--sl-radius-control); background: var(--sl-surface); border: 1px solid var(--sl-line); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; user-select: text; }
 .sl-advanced { margin-top: 4px; }
 .sl-advanced summary { cursor: pointer; font-weight: 600; font-size: 12px; padding: 6px 0; }
@@ -1381,7 +1389,7 @@ function App() {
       const taken = takenSourceIds();
       const draftableCount = selectedIds(collectionState).filter((id) => !taken.has(id)).length;
       if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover, draftableCount });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask, loadCover, sources: summary?.sources });
       replace(viewHost, [navigation, body]);
       return;
     }

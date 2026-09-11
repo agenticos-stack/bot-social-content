@@ -446,7 +446,9 @@ describe("inbox.js projections", () => {
     });
     const buttons = findAll(root, (node) => node.tagName === "BUTTON");
     expect(buttons.some((button) => button.textContent?.includes("Draft items"))).toBe(true);
-    await buttons.find((button) => button.textContent?.includes("Inspect"))?.dispatchEvent({ type: "click" });
+    // The whole card is the open affordance — the Sources shape's
+    // `.sl-post-open` button — which opens the drawer for its batch.
+    await buttons.find((button) => button.classList?.contains("sl-post-open"))?.dispatchEvent({ type: "click" });
     expect(calls).toEqual(["inspect:b1"]);
   });
 });
@@ -806,7 +808,7 @@ describe("bundled client.js smoke test", () => {
     const ask = findAll(document.body, (element) => element.classList.contains("sl-ask"))[0];
     expect(ask).toBeTruthy();
     expect(ask.textContent).toContain("batch_test1");
-    expect(document.body.textContent).toContain("Ready to draft");
+    expect(document.body.textContent).toContain("Drafting 1 post");
     // The wizard's Localize step never opened.
     expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
 
