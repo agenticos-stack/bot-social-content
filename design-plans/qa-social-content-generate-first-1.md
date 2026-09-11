@@ -79,6 +79,10 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    `held_rights`), and `submitForReview` refuses `rights_unconfirmed` — the
    gate sits at submit only. Cards chip "awaiting rights"; the ask banner
    carries the "N awaiting rights" split.
+   **The owner can act on it:** the item's drawer shows "Confirm reuse rights"
+   / "Deny reuse" while `pending` (and Confirm while `denied`). Observed live:
+   confirm → drawer line flips to "Rights confirmed" and the card chip moves
+   `awaiting rights` → `drafting` without a reload.
 8. **Media without doors.** `getMedia(itemId, "0", {rendition:"thumb"})`
    returns bytes from the local cache with zero doors granted — observed
    `image/jpeg, 176,621 bytes` for `…3977958365829308919`. A cache MISS should

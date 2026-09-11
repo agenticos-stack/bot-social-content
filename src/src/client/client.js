@@ -813,13 +813,47 @@ function App() {
       (summary?.destinations || []).find((d) => d.destinationBinding === binding || d.binding === binding)?.label || binding;
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
-      ...batch.items.map((item) => el("section", { class: "sl-drawer-section" }, [
+      ...batch.items.map((item) => {
+        /*
+         * Decision 8: held_rights items are draftable and the gate sits at
+         * submit — but that only works if the owner can ACT on the gate.
+         * `confirmRights` was admitted for the browser yet nothing called it,
+         * so a "pending" line was a dead end. The controls live here, where
+         * the rights detail already is.
+         */
+        const setRights = async (button, status) => {
+          button.disabled = true;
+          try {
+            const result = await rpc.confirmRights({ batchItemId: item.id, status });
+            if (result?.ok === false) {
+              collectionState = setNotice(collectionState, { message: result.message || t(locale, "batchLoadFailed") });
+              renderCurrentView();
+              return;
+            }
+            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+            renderCurrentView();
+            if (batchDialog.open) openBatchDrawer({ id: batch.id });
+          } catch (error) {
+            console.error(error);
+            button.disabled = false;
+          }
+        };
+        const rightsActions = item.rightsStatus === "pending" || item.rightsStatus === "denied"
+          ? el("div", { class: "sl-setup-actions" }, [
+              el("button", { type: "button", class: "sl-secondary", onclick: (e) => setRights(e.currentTarget, "confirmed") }, t(locale, "drawerConfirmRights")),
+              item.rightsStatus === "pending"
+                ? el("button", { type: "button", class: "sl-secondary", onclick: (e) => setRights(e.currentTarget, "denied") }, t(locale, "drawerRightsDeny"))
+                : null
+            ])
+          : null;
+        return el("section", { class: "sl-drawer-section" }, [
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
         el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
         // The line used to head every row "Rights not yet confirmed" — even
         // confirmed ones. The status decides the title, not the paragraph.
-        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, `${t(locale, { confirmed: "drawerRightsConfirmedTitle", denied: "drawerRightsDeniedTitle" }[item.rightsStatus] ?? "drawerRightsPendingTitle")}: ${item.rightsStatus}`),
+        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, t(locale, { confirmed: "drawerRightsConfirmedTitle", denied: "drawerRightsDeniedTitle" }[item.rightsStatus] ?? "drawerRightsPendingTitle")),
+        rightsActions,
         // TASK-018: where this draft was sent — one line per publication,
         // including `bound` ones (recorded destinations, never sent).
         item.publications?.length
@@ -828,7 +862,7 @@ function App() {
           : null,
         el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
-      ]))
+      ]); })
     ]);
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
@@ -844,7 +878,9 @@ function App() {
         editable ? el("button", { type: "button", class: "sl-primary", onclick: () => { batchDialog.close(); wizard = { ...resumeBatch(wizard, batch), returnToDrawer: batch.id }; renderCurrentView(); } }, t(locale, "drawerContinue")) : null
       ])
     ])]);
-    batchDialog.showModal();
+    // showModal on an already-open dialog throws — a rights confirm redraws
+    // the drawer in place, so only open it when it isn't.
+    if (!batchDialog.open) batchDialog.showModal();
     batchDialog.addEventListener("close", () => { if (previous instanceof HTMLElement) previous.focus(); }, { once: true });
   }
 
