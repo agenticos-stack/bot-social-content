@@ -44,7 +44,7 @@
 //
 // A `throw` in a facet method is therefore never the right way to answer a
 // condition an owner can hit through ordinary use of this gadget — an
-// unconfirmed rights status, an unresolved destination, a stale revision, a
+// unresolved destination, a stale revision, a
 // missing batch item, a rejected poster upload, a provider outage. Those
 // answer with a VALUE instead, the same idiom the platform's own doors
 // already use for an expected refusal
@@ -59,14 +59,14 @@
 //
 // NOTHING IN A FACET METHOD THROWS ANYMORE, INCLUDING A GENUINE CALLER BUG.
 // The first pass here kept two throws for conditions no UI caller could
-// produce (`savePoster` with no bytes at all; `confirmRights` with a status
-// other than "confirmed"/"denied") on the reasoning that a real programming
+// produce (`savePoster` with no bytes at all; an unknown status literal on a
+// rights call) on the reasoning that a real programming
 // error is different from an owner-facing condition. It is not, at this
 // boundary: a workerd test exercising exactly those two throws through this
 // same facet harness — nothing else — reproduced the identical failure this
 // whole fix exists to remove, `Test Files 11 passed / Tests 117 passed`
 // alongside two `Unhandled Rejection`s reading "savePoster needs PNG
-// bytes..." / `confirmRights status must be...`, `exit 1`. Removing just
+// bytes..." and the rights-status variant, `exit 1`. Removing just
 // those two tests (`it.skip`) made the same suite exit 0. A throw is
 // dangerous here because of WHERE it is, not why it happened — so an
 // invariant violation now returns `{ ok: false, code: "invalid_argument",
@@ -87,7 +87,7 @@ import {
   normalizeLedger,
   applyProtectedOverridesToLedger,
   draftOrigin,
-  rightsObligation,
+
   posterPngConstraints,
   validatePosterLayout,
   validateRevisionDraft,
@@ -363,7 +363,7 @@ export class Gadget extends DurableObject {
   /**
    * `record.sources` / `.destinations` are OPTIONAL: the client's own
    * `toConfigPayload` (`src/client/steps.js`) sends only policy fields —
-   * cadence, timezone, rightsPolicy, locale, notifications, protected-term
+   * cadence, timezone, locale, notifications, protected-term
    * lists — never a binding list, because door grants (TASK-301's setup
    * screen) already establish which connectors this instance holds before
    * this gadget's own first-run screen runs. When the caller omits them, the
@@ -1419,8 +1419,6 @@ export class Gadget extends DurableObject {
       if (duplicates.length) return duplicateRefusal(duplicates);
     }
 
-    const config = this.storage.getConfig();
-    const rightsPolicy = config?.rightsPolicy ?? "require_confirmation";
     const batchId = generateId("batch");
     // Every opened batch is a drafting request — the owner's Draft action
     // here, a scan's workRequest below — so the mark is durable state the
@@ -1431,25 +1429,7 @@ export class Gadget extends DurableObject {
     for (const itemId of ids) {
       const item = this.storage.getItem(itemId);
       if (!item) continue;
-      /**
-       * THE RIGHTS RULE, PER SOURCE (REQ-106/107).
-       *
-       * `trust_connected` means "trust this content because the account is
-       * connected". For an account this organisation does NOT hold, that
-       * sentence is false, and acting on it republishes a stranger's post to
-       * the owner's own channel with nobody having agreed.
-       *
-       * So an OPEN source is always `require_confirmation`, whatever the
-       * workspace-wide setting says. Per source and not per workspace: one
-       * trusted account does not vouch for the others, and a workspace mixing
-       * both kinds is the ordinary case rather than the exception.
-       *
-       * Decided here, where the batch item is created, rather than in the UI —
-       * a rule that only exists on a screen is a rule an agent can skip.
-       */
-      const sourceRow = this.storage.getSource(item.sourceBinding);
-      const effectivePolicy = sourceRow?.origin === "open" ? "require_confirmation" : rightsPolicy;
-      const batchItem = this.createOneBatchItem(batchId, item, destinations, effectivePolicy);
+      const batchItem = this.createOneBatchItem(batchId, item, destinations);
       items.push(this.projectBatchItem(batchItem));
     }
 
@@ -1481,11 +1461,11 @@ export class Gadget extends DurableObject {
     return conflicts;
   }
 
-  createOneBatchItem(batchId, item, destinationBindings, rightsPolicy) {
+  createOneBatchItem(batchId, item, destinationBindings) {
     // Only reachable with the owner's `createNewVersion` opt-in (createBatch
     // refuses otherwise), so a conflicting row here is one the owner asked to
-    // replace. Retired rather than edited: the old revisions, rights record
-    // and approval stay exactly as they were published (REQ-011, PAT-004).
+    // replace. Retired rather than edited: the old revisions and approval
+    // stay exactly as they were published (REQ-011, PAT-004).
     // An item that HAS been sent somewhere stays active — its publications
     // are the record, and the pair rule at submit owns them from there.
     for (const existing of this.storage.activeBatchItemsFor(item.id)) {
@@ -1495,8 +1475,6 @@ export class Gadget extends DurableObject {
     }
 
     const batchItemId = generateId("bi");
-    const requiresConfirmation = rightsPolicy === "require_confirmation";
-    const state = requiresConfirmation ? "held_rights" : "drafting";
     this.storage.createBatchItem({
       id: batchItemId,
       batchId,
@@ -1505,8 +1483,7 @@ export class Gadget extends DurableObject {
       // only. What a caller still sends is recorded as `bound` publications
       // instead — a default the submit picker reads, not a send (TASK-005).
       destinationBindings: [],
-      state,
-      rightsStatus: requiresConfirmation ? "pending" : "confirmed"
+      state: "drafting"
     });
     for (const binding of destinationBindings) {
       this.storage.boundPublication(batchItemId, binding);
@@ -1526,12 +1503,10 @@ export class Gadget extends DurableObject {
 
   /**
    * `{ id, sourceItem, destinationBindings, revision, caption, posterLayout,
-   * confirmedClaims, rightsStatus, approval }` — the exact shape
+   * confirmedClaims, approval }` — the exact shape
    * `src/client/steps.js` (`draftFor`, `renderReview`) reads off
    * `getBatch()` / `createBatch()`'s items (`cc/social-localization-client`,
-   * PR #1483). `state` rides along as extra, harmless information the
-   * client does not read (it derives everything from `rightsStatus` and
-   * `approval` instead).
+   * PR #1483). `state` rides along as extra, harmless information.
    *
    * `approval` is non-null once a submission was actually made (`version` —
    * the Social Hub `versionId` — is set), NOT once the owner has approved
@@ -1560,11 +1535,6 @@ export class Gadget extends DurableObject {
   projectBatchItem(batchItem) {
     const latest = this.storage.latestRevision(batchItem.id);
     const sourceItem = this.storage.getItem(batchItem.itemId);
-    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
-    const obligation = rightsObligation({
-      ledger: latest?.ledger,
-      sourceOrigin: sourceRow?.origin
-    });
     const destinationBindings = this.bindingsForItem(batchItem);
     // The protected spans, detected — the agent is handed the values rather
     // than left to infer from prose what must survive verbatim (and, on the
@@ -1599,8 +1569,6 @@ export class Gadget extends DurableObject {
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
       ledger: latest?.ledger ?? { spans: [], media: [] },
-      rightsStatus: batchItem.rightsStatus,
-      rightsRequired: obligation.required,
       state: batchItem.state,
       approval: batchItem.version
         ? {
@@ -1896,7 +1864,7 @@ export class Gadget extends DurableObject {
    * ANY batch item that has ever been submitted expires on its next edit,
    * whether the owner already acted on it or it is still sitting in
    * Approvals; an item that was never submitted (`version` null) just goes
-   * back to drafting/held_rights as before.
+   * back to drafting as before.
    */
   nextStateAfterEdit(batchItem) {
     // "Was this ever submitted?" used to be `batchItem.version` alone; with
@@ -1905,31 +1873,7 @@ export class Gadget extends DurableObject {
     if (batchItem.version || this.storage.hasFiledPublication(batchItem.id)) {
       return { state: "expired", approval_id: null };
     }
-    return { state: batchItem.state === "held_rights" ? "held_rights" : "drafting" };
-  }
-
-  confirmRights(args) {
-    return this.enqueueMutation(() => this.confirmRightsLocked(args));
-  }
-
-  async confirmRightsLocked({ batchItemId, status, by }) {
-    // A caller bug, not an owner-facing condition — the only two callers of
-    // this method send a fixed "confirmed" or "denied" literal. Still a
-    // value, not a throw (see the file header note).
-    if (status !== "confirmed" && status !== "denied") {
-      return { ok: false, code: "invalid_argument", message: 'confirmRights status must be "confirmed" or "denied".' };
-    }
-    const batchItem = this.storage.getBatchItem(batchItemId);
-    if (!batchItem) return { ok: false, code: "batch_item_unknown", message: `No batch item ${batchItemId}.` };
-
-    this.storage.updateBatchItem(batchItemId, {
-      rights_status: status,
-      rights_confirmed_by: typeof by === "string" ? by.slice(0, 200) : null,
-      rights_confirmed_at: new Date().toISOString(),
-      state: status === "confirmed" ? "drafting" : "held_rights"
-    });
-    const updated = this.storage.getBatchItem(batchItemId);
-    return updated ? this.projectBatchItem(updated) : updated;
+    return { state: "drafting" };
   }
 
   // -----------------------------------------------------------------------
@@ -1972,8 +1916,8 @@ export class Gadget extends DurableObject {
    * and files nothing; the bindings that succeeded are still filed.
    *
    * EVERY early exit below is `{ ok: false, code, message }`, never a
-   * throw — the owner can hit each one through ordinary use (rights not yet
-   * confirmed, a stale revision, no destination chosen, a destination the
+   * throw — the owner can hit each one through ordinary use (a stale
+   * revision, no destination chosen, a destination the
    * door cannot resolve, the Social Hub itself unreachable) and this method
    * runs as a facet RPC target, where a throw is what breaks the output
    * gate (file header note).
@@ -1999,19 +1943,6 @@ export class Gadget extends DurableObject {
     }
 
     const sourceItem = this.storage.getItem(batchItem.itemId);
-    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
-    const obligation = rightsObligation({
-      ledger: revision.ledger,
-      sourceOrigin: sourceRow?.origin
-    });
-    // REQ-019: never submit while a computed rights obligation is unmet.
-    if (obligation.required && batchItem.rightsStatus !== "confirmed") {
-      return {
-        ok: false,
-        code: "rights_unconfirmed",
-        message: `Rights must be confirmed before submitting (currently ${batchItem.rightsStatus}).`
-      };
-    }
     /*
      * Where this submission goes. An explicit `destinationBindings` argument
      * wins — it is the picker's answer; absent, the recorded bindings are the

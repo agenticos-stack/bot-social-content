@@ -32,7 +32,6 @@ export function createRpc(gadget) {
     saveRevision: (input) => gadget.saveRevision(input),
     saveRevisions: (input) => gadget.saveRevisions(input),
     savePoster: (input) => gadget.savePoster(input),
-    confirmRights: (input) => gadget.confirmRights(input),
     submitForReview: (input) => gadget.submitForReview(input),
     readPublishState: (batchItemId) => gadget.readPublishState(batchItemId),
     subscribe: (target, client) => gadget.subscribe(target, client),

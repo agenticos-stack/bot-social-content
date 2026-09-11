@@ -822,31 +822,6 @@ export function applyProtectedOverridesToLedger(ledger, overrides) {
   return { spans: [...kept, ...ownerSpans].slice(0, 200), media: normalized.media };
 }
 
-function ledgerReusesSource(ledger) {
-  const normalized = normalizeLedger(ledger);
-  if (normalized.media.some((entry) => entry.provenance === "source" || entry.provenance.startsWith("derived-from:"))) {
-    return true;
-  }
-  return normalized.spans.some((span) => parseGroundingBasis(span.basis)?.kind === "source");
-}
-
-/**
- * Rights follow the ledger, not an assumption of republication.
- * Reused source material is gated; original-only is inspiration, recorded
- * and not gated; an `open` source is always gated (TASK-013 / TASK-014).
- * An empty ledger is localization: the source survives, so confirmation is
- * required (RISK-002).
- */
-export function rightsObligation({ ledger, sourceOrigin } = {}) {
-  const open = sourceOrigin === "open";
-  const reuse = ledgerReusesSource(ledger);
-  const originalOnly = !reuse && normalizeLedger(ledger).media.some((entry) => entry.provenance === "original");
-  return {
-    required: open || !originalOnly,
-    relationship: originalOnly ? "inspiration" : "reuse"
-  };
-}
-
 /** PAT-001: the door origin block IS the observation record. */
 export function observationOrigin(originLink) {
   const value = record(originLink);
@@ -880,8 +855,8 @@ const DOOR_ORIGIN_FIELDS = Object.freeze([
  * stated once. A `source:` basis names the item its span stands on, so a basis
  * naming an item other than the one observed would attribute the post to
  * something it does not stand on — refuse rather than send it. A ledger that
- * cites no source is inspiration-only, which `rightsObligation` reports on its
- * own; the observation record still travels, because it is what was observed.
+ * cites no source is inspiration-only; the observation record still travels,
+ * because it is what was observed.
  *
  * The completeness pass is here because `createDraft` requires all seven fields
  * as non-empty strings and refuses one field at a time, while `origin_links`

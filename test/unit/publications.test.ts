@@ -77,11 +77,10 @@ function mockSocial(created: unknown[]) {
   };
 }
 
-function gadgetWith(env: Record<string, unknown>, rightsPolicy = "trust_connected") {
+function gadgetWith(env: Record<string, unknown>) {
   const { ctx } = sqlite();
   const gadget = new Gadget(ctx as never, env as never);
   gadget.storage.setConfig({
-    rightsPolicy,
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
@@ -227,32 +226,6 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
         .map((row) => `${row.destinationBinding}:${row.state}`)
         .sort()
     ).toEqual(["FB_MAIN:review_requested", "IG_OUT:review_requested"]);
-  });
-});
-
-describe("TEST-006: rights are enforced before a publication exists", () => {
-  it("refuses unconfirmed rights at submit and writes nothing", async () => {
-    const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) }, "require_confirmation");
-    const { item } = await draft(gadget);
-    expect(item.state).toBe("held_rights");
-
-    const refused = await gadget.submitForReview({
-      batchItemId: item.id,
-      expectedRevision: 1,
-      destinationBindings: ["FB_MAIN"]
-    });
-    expect(refused).toMatchObject({ ok: false, code: "rights_unconfirmed" });
-    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
-    expect(created).toEqual([]);
-
-    await gadget.confirmRights({ batchItemId: item.id, status: "confirmed", by: "owner" });
-    const submitted = await gadget.submitForReview({
-      batchItemId: item.id,
-      expectedRevision: 1,
-      destinationBindings: ["FB_MAIN"]
-    });
-    expect(submitted.ok).not.toBe(false);
   });
 });
 

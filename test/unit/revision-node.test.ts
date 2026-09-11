@@ -64,7 +64,6 @@ function minimalPng(width: number, height: number) {
 
 function seed(gadget: Gadget) {
   gadget.storage.setConfig({
-    rightsPolicy: "require_confirmation",
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
@@ -93,8 +92,7 @@ function seed(gadget: Gadget) {
     batchId: "batch-1",
     itemId: "instagram:IG_MAIN:p1",
     destinationBindings: ["FB_MAIN"],
-    state: "drafting",
-    rightsStatus: "confirmed"
+    state: "drafting"
   });
 }
 
@@ -339,7 +337,6 @@ describe("saveRevision validation routing", () => {
     const { ctx } = sqliteContext();
     const gadget = new Gadget(ctx as never, {} as never);
     gadget.storage.setConfig({
-      rightsPolicy: "require_confirmation",
       protectedTerms: ["Nautical living"],
       protectedHashtags: [],
       disclaimers: [],
@@ -365,8 +362,7 @@ describe("saveRevision validation routing", () => {
       batchId: "batch-2",
       itemId: "instagram:IG_MAIN:p2",
       destinationBindings: [],
-      state: "held_rights",
-      rightsStatus: "pending"
+      state: "drafting"
     });
     const result = await gadget.saveRevisions({
       revisions: [{
@@ -378,7 +374,5 @@ describe("saveRevision validation routing", () => {
     });
     expect(result).toMatchObject({ ok: true });
     expect(result.results).toEqual([expect.objectContaining({ ok: true, revision: 1, issues: [] })]);
-    // held_rights is draftable (decision 8) — the state does not move on save.
-    expect(gadget.storage.getBatchItem("item-2")?.state).toBe("held_rights");
   });
 });

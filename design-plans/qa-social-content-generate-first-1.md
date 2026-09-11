@@ -74,13 +74,13 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    text reordered around it → `ok:true` with an EMPTY `issues` array.
    Observed on `bi_65b0c872…`: revision 2 saved, `issues: []`; the same shape
    dropping the name refused `protected_literal_missing` in the next call.
-7. **Rights vs drafting.** A `held_rights` item accepts a revision (state stays
-   `held_rights`), and `submitForReview` refuses `rights_unconfirmed` — the
-   gate sits at submit only. Cards chip "awaiting rights".
-   **The owner can act on it:** the item's drawer shows "Confirm reuse rights"
-   / "Deny reuse" while `pending` (and Confirm while `denied`). Observed live:
-   confirm → drawer line flips to "Rights confirmed" and the card chip moves
-   `awaiting rights` → `drafting` without a reload.
+7. **Rights concept removed.** A watched post is a reference the draft is
+   generated from, not a republication awaiting a decision — there is no
+   `rightsStatus`, no `held_rights` state, no `confirmRights`, and
+   `submitForReview` has no rights gate. Migration 10 drops the three
+   `rights_*` columns; migration 11 remaps `held_rights` rows to `drafting`.
+   Expected on the real state: every item `drafting`, chips read
+   queued/drafting, the drawer shows no rights line or Confirm/Deny buttons.
 8. **Media without doors.** `getMedia(itemId, "0", {rendition:"thumb"})`
    returns bytes from the local cache with zero doors granted — observed
    `image/jpeg, 176,621 bytes` for `…3977958365829308919`. A cache MISS should

@@ -377,7 +377,7 @@ export function socialMethodNames() {
   return [
     'summary', 'setConfig', 'saveSetup', 'setMonitoring', 'refreshGrants', 'addOpenSource', 'removeOpenSource', 'scanRuns', 'refresh', 'listItems',
     'getItem', 'getMedia', 'createBatch', 'getBatch', 'listBatches', 'listBatchSummaries', 'saveRevision',
-    'saveRevisions', 'savePoster', 'confirmRights', 'dismissGenerationAsk', 'submitForReview', 'readPublishState',
+    'saveRevisions', 'savePoster', 'dismissGenerationAsk', 'submitForReview', 'readPublishState',
     'exportAs', 'exportJson', 'exportHtml', 'markSeen', 'setSelection', 'clearSelection'
   ];
 }

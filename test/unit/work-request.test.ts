@@ -74,7 +74,6 @@ function gadgetWith(drafting: string | undefined, notifications?: unknown) {
   const gadget = new Gadget(ctx as never, env as never);
 
   gadget.storage.setConfig({
-    rightsPolicy: "require_confirmation",
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],

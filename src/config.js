@@ -13,11 +13,6 @@ const MAX_TERM_CHARS = 200;
 const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const NOTIFICATION_MODES = ["immediate", "daily", "off"];
-// The client's own setup screen vocabulary (`src/client/steps.js`
-// `createSetupDraft`/`toConfigPayload`, `cc/social-localization-client`,
-// PR #1483) — the canonical rightsPolicy values `server.js` gates on.
-const RIGHTS_POLICIES = ["require_confirmation", "trust_connected"];
-const DEFAULT_RIGHTS_POLICY = "require_confirmation";
 const DEFAULT_REFINEMENT_BRIEF = Object.freeze({
   version: 1,
   targetLanguage: "zh-HK",
@@ -175,11 +170,6 @@ function normalizeNotifications(config) {
   return { mode, quietHours: { start, end } };
 }
 
-/** `require_confirmation` (default) or `trust_connected` — anything else falls back to the safer default. */
-function normalizeRightsPolicy(value) {
-  return RIGHTS_POLICIES.includes(value) ? value : DEFAULT_RIGHTS_POLICY;
-}
-
 function normalizeRefinementBrief(value) {
   const brief = record(value);
   if (!brief) return DEFAULT_REFINEMENT_BRIEF;
@@ -223,7 +213,6 @@ export function normalizeConfig(input) {
   return {
     cadence: normalizeCadence(config.cadence, timeZone),
     timeZone,
-    rightsPolicy: normalizeRightsPolicy(config.rightsPolicy),
     fetchBudgetCredits: normalizeFetchBudget(config.fetchBudgetCredits),
     locale: {
       from: boundedString(locale.from, 20) || boundedString(config.sourceLocale, 20) || "en",

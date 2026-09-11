@@ -40,8 +40,8 @@ const fixture = {
 };
 const previewBatch = new URL(location.href).searchParams.get("draft") === "1" ? {
   id: "fixture-batch", items: [
-    { id: "fixture-submitted", state: "submitted", sourceItem: items[0], revision: 1, caption: "已送交審核的內容。", destinationBindings: ["IG_MAIN"], rightsStatus: "confirmed" },
-    { id: "fixture-draft", state: "drafting", sourceItem: items[1], revision: 1, caption: "每日精選內容，歡迎了解。", destinationBindings: ["IG_MAIN"], rightsStatus: "confirmed" }
+    { id: "fixture-submitted", state: "submitted", sourceItem: items[0], revision: 1, caption: "已送交審核的內容。", destinationBindings: ["IG_MAIN"] },
+    { id: "fixture-draft", state: "drafting", sourceItem: items[1], revision: 1, caption: "每日精選內容，歡迎了解。", destinationBindings: ["IG_MAIN"] }
   ]
 } : null;
 let conflictPending = new URL(location.href).searchParams.get("conflict") === "1";

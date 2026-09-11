@@ -75,7 +75,11 @@ request. Tracked as an api-repo issue (see Decisions 1).
    - `getBatch` returns each item's `detectProtectedLiterals` spans
      (`protectedSpans`) — the agent is handed the values, not left to infer.
    A "suggest from watched posts" affordance prefills candidate terms.
-4. **Rights: `require_confirmation` stays.** No trust option — legal gate.
+   **Later:** the Advanced disclosure and its tag fields were removed from
+   Settings — the lists still enforce at `saveRevision`; they are config
+   carried through `baseConfig`, not owner-editable form fields.
+4. ~~**Rights: `require_confirmation` stays.** No trust option — legal gate.~~
+   **Superseded by 9.**
 5. **One agent turn per batch — via `saveRevisions`, not N calls.** The
    original phrasing ("count on the button") missed the platform shape:
    `describeMethodCall` (v2/gadget-actions.ts) marks a non-read gadget method
@@ -92,7 +96,7 @@ request. Tracked as an api-repo issue (see Decisions 1).
 7. **Localize stays** as the edit path for a generated revision and as the
    manual path whenever generation is unavailable — which is every state
    today.
-8. **Rights vs drafting (new): SEC-002 wins.** `held_rights` items are
+8. **Rights vs drafting (new, SUPERSEDED): SEC-002 wins.** `held_rights` items are
    draftable — a draft with unconfirmed rights may exist; it may not be SENT.
    The gate stays at `submitForReview`, where it already refuses by value
    (`rights_unconfirmed`). Content surfaces the split: "12 drafts, 9 awaiting
@@ -100,6 +104,18 @@ request. Tracked as an api-repo issue (see Decisions 1).
    only what the owner selected, never unattended — because the blanket rule
    was what stopped scan-triggered drafting spending credits on posts the
    owner may never be allowed to use.
+
+   **Superseded by 9.**
+9. **Rights concept removed (PM).** A watched post is a *reference* the
+   localized draft is generated from, not a republication of it — there is
+   nothing to confirm. `rightsStatus`, `held_rights`, `confirmRights`,
+   `rightsPolicy`, `rightsObligation`, the submit gate, the drawer's
+   confirm/deny, the "awaiting rights" chip and split all go. New items start
+   `drafting`; migration 10 drops the three `rights_*` columns (guarded —
+   fresh schemas already lack them) and migration 11 remaps `held_rights`
+   rows to `drafting` on databases that already ran 10. The
+   unattended-drafting rule in `agent.md` survives unchanged — it was never
+   about rights.
 
 ## Durable generation ask (decision 1, refined)
 
@@ -131,8 +147,8 @@ This predates `saveRevisions` — a batch write makes it more pressing, not less
   protected literal or skips a required claim confirmation cannot submit —
   on **either** validation path, and no caller-supplied brief can widen what
   the org's stored brief permits.
-- A `held_rights` item accepts a draft and still refuses submit until the
-  owner confirms rights.
+- No rights surface exists anywhere: every new item starts `drafting`, and
+  `submitForReview` gates on revision/destination/pair only.
 - The ask survives a reload (`generation` is a batch column), clears itself
   once every item is drafted, and dismisses durably.
 - The manual path survives: with empty prompts or no agent, the owner drafts

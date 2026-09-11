@@ -28,7 +28,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * What the browser may call.
    *
    * The first list needs no door: browsing what has already been scanned,
-   * selecting, batching, revising, confirming rights — and the two calls that
+   * selecting, batching, revising — and the two calls that
    * must work BEFORE any door exists. `saveSetup` derives connector bindings
    * only when it has doors to derive them from, and `refreshGrants` is the
    * discovery mechanism itself: refusing it without doors would make the
@@ -53,7 +53,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * any door call proceeds, and `submitForReview` is gated there as it is for
    * an installed gadget.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','saveRevisions','confirmRights','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],

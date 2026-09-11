@@ -20,7 +20,6 @@ import {
   draftOrigin,
   ledgerFromProtectedOverrides,
   normalizeLedger,
-  rightsObligation,
   usesGroundedValidation,
   validateGrounded,
   validateLocalization,
@@ -520,42 +519,6 @@ describe("normalizeLedger", () => {
       ],
       media: []
     });
-  });
-});
-
-describe("rightsObligation", () => {
-  it("does not require confirmation for an original-only ledger", () => {
-    expect(
-      rightsObligation({
-        ledger: { spans: [{ text: "HK$999", kind: "price", basis: "knowledge:fact_price" }], media: [{ ref: "gen-1", provenance: "original" }] },
-        sourceOrigin: "binding"
-      })
-    ).toMatchObject({ required: false, relationship: "inspiration" });
-  });
-
-  it("requires confirmation when the ledger reuses the source photo", () => {
-    expect(
-      rightsObligation({
-        ledger: { spans: [], media: [{ ref: "source-media", provenance: "source" }] },
-        sourceOrigin: "binding"
-      })
-    ).toMatchObject({ required: true, relationship: "reuse" });
-  });
-
-  it("treats an empty ledger as republication, so localization still requires confirmation", () => {
-    expect(rightsObligation({ ledger: { spans: [], media: [] }, sourceOrigin: "binding" })).toMatchObject({
-      required: true,
-      relationship: "reuse"
-    });
-  });
-
-  it("forces confirmation for an open source even when the ledger is original-only", () => {
-    expect(
-      rightsObligation({
-        ledger: { media: [{ ref: "gen-1", provenance: "original" }] },
-        sourceOrigin: "open"
-      })
-    ).toMatchObject({ required: true });
   });
 });
 

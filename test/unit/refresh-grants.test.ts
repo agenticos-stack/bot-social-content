@@ -102,7 +102,7 @@ describe("refreshGrants", () => {
       FB_OUT: connectorDoor({ provider: "facebook", role: "destination", resourceLabel: "Main page" })
     };
     const gadget = gadgetWithEnv(env);
-    await gadget.saveSetup({ cadence: "daily", rightsPolicy: "trust_connected" });
+    await gadget.saveSetup({ cadence: "daily", notificationPolicy: "daily" });
     gadget.storage.recordSourceOutcome("IG_SRC", { outcome: "confirmed", message: null, cursor: "cur-1" });
 
     const again = await gadget.refreshGrants();
@@ -114,7 +114,7 @@ describe("refreshGrants", () => {
     // And the config the owner saved is not this method's to touch.
     const config = gadget.storage.getConfig();
     expect(config.cadence).toMatchObject({ kind: "daily" });
-    expect(config.rightsPolicy).toBe("trust_connected");
+    expect(config.notifications).toMatchObject({ mode: "daily" });
   });
 
   it("splits a role-less door into both lists and skips a door that states no provider", async () => {

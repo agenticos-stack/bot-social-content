@@ -18,7 +18,7 @@ export const SETUP_COPY = {
     setupVisualOriginal: "Keep original media",
     setupVisualPoster: "Text poster",
     setupVisualExisting: "Keep existing AI refinement choice",
-    setupVisualNote: "AI image refinement is unavailable here. Original media and text posters still require reuse rights and review.",
+    setupVisualNote: "AI image refinement is unavailable here. Original media and text posters still require review.",
     setupRulesNote: "These prompts drive generation when you select a source post. Review every saved result before it goes anywhere.",
     setupPublicationSection: "3. Review and publication",
     setupPublicationNote: "New work stays in draft. Choose draft, publish after approval, or a specific time per item. Late approvals are held. Source scans never publish posts.",

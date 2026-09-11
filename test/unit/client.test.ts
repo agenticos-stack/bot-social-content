@@ -368,22 +368,6 @@ describe("steps.js transitions", () => {
     expect(updateDraft(sending, "item1", { caption: "changed" })).toBe(sending);
   });
 
-  it("rights pending on any item blocks Submit even with a clean draft", () => {
-    let wizard = createWizardState();
-    wizard = setBatch(wizard, { id: "batch1", items: [{ ...baseBatch.items[0], rightsStatus: "pending" }] });
-    wizard = updateDraft(wizard, "item1", { caption: "今日優惠，建議零售價 HK$268，數量有限，售完即止。" });
-    expect(submitEnabled(wizard, {})).toBe(false);
-  });
-
-  it("does not block Submit when rights are pending but the ledger is original-only", () => {
-    let wizard = createWizardState();
-    wizard = setBatch(wizard, {
-      id: "batch1",
-      items: [{ ...baseBatch.items[0], rightsStatus: "pending", rightsRequired: false, caption: "今日優惠，建議零售價 HK$268，數量有限，售完即止。" }]
-    });
-    expect(submitEnabled(wizard, {})).toBe(true);
-  });
-
   it("Review flips to expired once the item's current revision has moved past the approved one", () => {
     expect(isApprovalExpired(null)).toBe(false);
     expect(isApprovalExpired({ approvedRevision: 3, currentRevision: 3 })).toBe(false);
@@ -766,7 +750,7 @@ describe("bundled client.js smoke test", () => {
         createdArgs = args;
         return {
           id: "batch_test1",
-          items: [{ id: "bi_1", sourceItem: item, state: "held_rights", revision: 0, destinationBindings: [], publications: [] }]
+          items: [{ id: "bi_1", sourceItem: item, state: "drafting", revision: 0, destinationBindings: [], publications: [] }]
         };
       },
       async listBatchSummaries() {
@@ -777,13 +761,13 @@ describe("bundled client.js smoke test", () => {
         if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
         return {
           batches: [{
-            id: "batch_test1", status: "open", generation: "requested", itemCount: 1, draftCount: 1, awaitingRights: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 1,
+            id: "batch_test1", status: "open", generation: "requested", itemCount: 1, draftCount: 1, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
             sourceItemIds: ["a"],
             preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false },
-            items: [{ batchItemId: "bi_1", itemId: "a", state: "held_rights", rightsStatus: "pending", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null }]
+            items: [{ batchItemId: "bi_1", itemId: "a", state: "drafting", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null }]
           }],
           nextCursor: null,
-          totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 1 }
+          totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 0 }
         };
       },
       async subscribe() {
@@ -995,7 +979,6 @@ describe("settings: the setup form is no longer a one-way door", () => {
       ...createSetupDraft(),
       cadence: "weekly",
       timezone: "Asia/Tokyo",
-      rightsPolicy: "trust_connected",
       notificationPolicy: "daily",
       quietHoursStart: "22:00",
       quietHoursEnd: "07:00",
@@ -1025,7 +1008,6 @@ describe("settings: the setup form is no longer a one-way door", () => {
     const back = draftFromConfig(partial);
     const fresh = createSetupDraft();
     expect(back.cadence).toBe("hourly");
-    expect(back.rightsPolicy).toBe(fresh.rightsPolicy);
     expect(back.notificationPolicy).toBe(fresh.notificationPolicy);
     expect(back.protectedTerms).toEqual(fresh.protectedTerms);
   });

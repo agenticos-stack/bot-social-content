@@ -19,7 +19,7 @@
 
 import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
 
-const CURRENT_SCHEMA_VERSION = 9;
+const CURRENT_SCHEMA_VERSION = 11;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -111,9 +111,6 @@ const MIGRATIONS = {
       item_id TEXT NOT NULL,
       destination_bindings_json TEXT NOT NULL,
       state TEXT NOT NULL,
-      rights_status TEXT NOT NULL DEFAULT 'pending',
-      rights_confirmed_by TEXT,
-      rights_confirmed_at TEXT,
       current_revision INTEGER NOT NULL DEFAULT 0,
       approved_revision INTEGER,
       active INTEGER NOT NULL DEFAULT 1,
@@ -365,6 +362,27 @@ const MIGRATIONS = {
    */
   9(sql) {
     sql.exec("ALTER TABLE batches ADD COLUMN generation TEXT");
+  },
+
+  /*
+   * The rights concept is gone — a watched post is a reference the draft is
+   * generated from, not a republication awaiting a rights decision. The three
+   * columns go with it rather than lingering as write-only defaults.
+   */
+  10(sql) {
+    // A fresh database's CREATE already lacks them; an upgraded one carries
+    // them. DROP COLUMN has no IF EXISTS — read the table first.
+    const columns = new Set(rows(sql.exec("PRAGMA table_info(batch_items)")).map((col) => col.name));
+    for (const column of ["rights_status", "rights_confirmed_by", "rights_confirmed_at"]) {
+      if (columns.has(column)) sql.exec(`ALTER TABLE batch_items DROP COLUMN ${column}`);
+    }
+  },
+
+  // Rows mid-flight at `held_rights` are drafts — nothing gates them now.
+  // Its own migration, not folded into 10: databases that already ran 10
+  // (this change shipped while it was open) still get the remap.
+  11(sql) {
+    sql.exec("UPDATE batch_items SET state = 'drafting' WHERE state = 'held_rights'");
   }
 };
 
@@ -936,7 +954,7 @@ export class Storage {
    * Bounded inbox projection. Counts are intentionally calculated over the
    * complete facet and only the batch rows are paged, so a limited page can
    * never masquerade as the workspace total. The state buckets are derived
-   * from the current batch-item domain state (and rights outcome), not from a
+   * from the current batch-item domain state, not from a
    * browser intent or the legacy batch label.
    */
   listBatchSummaries({ limit = 50, cursor = null } = {}) {
@@ -952,11 +970,10 @@ export class Storage {
     const rowsFound = rows(this.sql.exec(
       `SELECT b.id, b.created_at, b.status, b.generation,
          COUNT(bi.id) AS item_count,
-         SUM(CASE WHEN bi.state IN ('drafting','held_rights','expired') THEN 1 ELSE 0 END) AS draft_count,
-         SUM(CASE WHEN bi.rights_status = 'pending' THEN 1 ELSE 0 END) AS awaiting_rights_count,
+         SUM(CASE WHEN bi.state IN ('drafting','expired') THEN 1 ELSE 0 END) AS draft_count,
          SUM(CASE WHEN bi.state IN ('submitted','awaiting_approval') THEN 1 ELSE 0 END) AS review_count,
          SUM(CASE WHEN bi.state = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_count,
-         SUM(CASE WHEN bi.state IN ('failed','unknown','held') OR bi.rights_status IN ('pending','denied') THEN 1 ELSE 0 END) AS attention_count,
+         SUM(CASE WHEN bi.state IN ('failed','unknown','held') THEN 1 ELSE 0 END) AS attention_count,
          MIN(bi.updated_at) AS first_updated_at,
          MAX(bi.updated_at) AS last_updated_at,
          GROUP_CONCAT(DISTINCT bi.item_id) AS source_item_ids,
@@ -991,7 +1008,7 @@ export class Storage {
     if (page.length) {
       const batchIds = page.map((row) => row.id);
       const itemRows = rows(this.sql.exec(
-        `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.rights_status, bi.current_revision,
+        `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.current_revision,
            COALESCE(origin.source_label, source.source_label, source.provider) AS source_label,
            source.provider AS provider, source.source_binding AS source_binding,
            SUBSTR(source.text, 1, 160) AS source_text,
@@ -1012,7 +1029,6 @@ export class Storage {
           batchItemId: row.batch_item_id,
           itemId: row.item_id,
           state: row.state,
-          rightsStatus: row.rights_status,
           revision: row.current_revision == null ? 0 : Number(row.current_revision),
           sourceLabel: row.source_label ?? null,
           provider: row.provider ?? null,
@@ -1032,7 +1048,6 @@ export class Storage {
         generation: row.generation ?? null,
         itemCount: Number(row.item_count ?? 0),
         draftCount: Number(row.draft_count ?? 0),
-        awaitingRights: Number(row.awaiting_rights_count ?? 0),
         reviewCount: Number(row.review_count ?? 0),
         scheduledCount: Number(row.scheduled_count ?? 0),
         attentionCount: Number(row.attention_count ?? 0),
@@ -1054,10 +1069,10 @@ export class Storage {
         batches: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batches"))[0]?.n ?? 0),
         new: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM items LEFT JOIN seen ON seen.item_id = items.id WHERE seen.item_id IS NULL"))[0]?.n ?? 0),
         items: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1"))[0]?.n ?? 0),
-        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','held_rights','expired')"))[0]?.n ?? 0),
+        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','expired')"))[0]?.n ?? 0),
         review: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('submitted','awaiting_approval')"))[0]?.n ?? 0),
         scheduled: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state = 'scheduled'"))[0]?.n ?? 0),
-        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND (state IN ('failed','unknown','held') OR rights_status IN ('pending','denied'))"))[0]?.n ?? 0)
+        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('failed','unknown','held')"))[0]?.n ?? 0)
       }
     };
   }
@@ -1105,7 +1120,7 @@ export class Storage {
   /**
    * Retires a batch item: the owner explicitly created a new version, so this
    * row stops being the active localization of its pair (REQ-017). The row
-   * itself is kept — its revisions, rights record and approval history are
+   * itself is kept — its revisions and approval history are
    * the audit trail of what was published before.
    */
   supersedeBatchItem(id) {
@@ -1115,14 +1130,13 @@ export class Storage {
   createBatchItem(row) {
     this.sql.exec(
       `INSERT INTO batch_items (
-        id, batch_id, item_id, destination_bindings_json, state, rights_status, current_revision, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
       row.id,
       row.batchId,
       row.itemId,
       JSON.stringify(row.destinationBindings ?? []),
       row.state,
-      row.rightsStatus,
       nowIso(),
       nowIso()
     );
@@ -1551,8 +1565,9 @@ function hydrateSource(row) {
     lastOutcome: row.last_outcome ?? null,
     lastMessage: row.last_message ?? null,
     cursor: row.cursor ?? null,
-    // Schema 5. `origin` is the field the rights rule reads: `binding` means
-    // this organisation holds the account, `open` means it does not.
+    // Schema 5. `binding` means a connected account; `open` means a watched
+    // public account — the source posts it yields are references, not
+    // republications.
     origin: row.origin === "open" ? "open" : "binding",
     platform: row.platform ?? null,
     accountKey: row.account_key ?? null,
@@ -1630,9 +1645,6 @@ function hydrateBatchItem(row) {
     itemId: row.item_id,
     destinationBindings: row.destination_bindings_json ? JSON.parse(row.destination_bindings_json) : [],
     state: row.state,
-    rightsStatus: row.rights_status,
-    rightsConfirmedBy: row.rights_confirmed_by ?? null,
-    rightsConfirmedAt: row.rights_confirmed_at ?? null,
     currentRevision: Number(row.current_revision),
     approvedRevision:
       row.approved_revision === null || row.approved_revision === undefined ? null : Number(row.approved_revision),

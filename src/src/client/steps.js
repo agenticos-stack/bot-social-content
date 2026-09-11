@@ -264,7 +264,7 @@ export function submitItemEnabled(state, batchItemId, policy) {
   if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
   if (!publishBindings(state, batchItemId).length) return false;
   const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
-  return !hasBlockingIssues(issues) && !rightsBlockSubmit(item.rightsStatus, item.rightsRequired);
+  return !hasBlockingIssues(issues);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,19 +287,12 @@ export function hasBlockingIssues(issues) {
   return Array.isArray(issues) && issues.some((issue) => issue.severity === "block");
 }
 
-/** REQ-019: an item MUST NOT submit while a required rights obligation is unmet. */
-export function rightsBlockSubmit(rightsStatus, rightsRequired = true) {
-  if (rightsStatus === "denied") return true;
-  if (rightsRequired === false) return false;
-  return rightsStatus === "pending";
-}
-
 export function submitEnabled(state, policy) {
   if (!state.batch?.items.length || state.submitting || Object.keys(state.conflicts ?? {}).length || dirtyItemIds(state).length || Object.values(state.savingByItem).some(Boolean)) return false;
   return state.batch.items.every((item) => {
     const draft = state.drafts[item.id];
     const issues = computeIssues(item, draft, policy).issues;
-    return !hasBlockingIssues(issues) && !rightsBlockSubmit(item.rightsStatus, item.rightsRequired);
+    return !hasBlockingIssues(issues);
   });
 }
 
@@ -317,7 +310,6 @@ export function createSetupDraft() {
   return {
     cadence: "daily",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Hong_Kong",
-    rightsPolicy: "require_confirmation",
     notificationPolicy: "immediate",
     quietHoursStart: "",
     quietHoursEnd: "",
@@ -335,8 +327,8 @@ export function createSetupDraft() {
  * The stored config, back in the shape the setup form edits.
  *
  * The inverse of `toConfigPayload`, and it exists because setup was a ONE-WAY
- * DOOR: `runSetup` ran only while `!summary.configured`, so cadence, timezone,
- * rights policy and every protected term were set once at first run and could
+ * DOOR: `runSetup` ran only while `!summary.configured`, so cadence, timezone
+ * and every protected term were set once at first run and could
  * never be changed again from any surface. Door grants and schedules were
  * always editable from the workspace page; this was the half with no way back.
  *
@@ -354,7 +346,6 @@ export function draftFromConfig(config) {
     baseConfig: config,
     cadence: config.cadence ?? base.cadence,
     timezone: text(config.timeZone) ?? text(config.timezone) ?? base.timezone,
-    rightsPolicy: text(config.rightsPolicy) ?? base.rightsPolicy,
     notificationPolicy: text(config.notifications?.mode) ?? text(config.notificationPolicy) ?? base.notificationPolicy,
     // `quietHours` is one nullable object on the wire and two fields in the
     // form; a null there means "no quiet hours", which is two empty strings.
@@ -370,17 +361,6 @@ export function draftFromConfig(config) {
   };
 }
 
-export function addListEntry(draft, field, value) {
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  if (!trimmed || !Array.isArray(draft[field]) || draft[field].includes(trimmed)) return draft;
-  return { ...draft, [field]: draft[field].concat(trimmed) };
-}
-
-export function removeListEntry(draft, field, value) {
-  if (!Array.isArray(draft[field])) return draft;
-  return { ...draft, [field]: draft[field].filter((entry) => entry !== value) };
-}
-
 /** Shapes the setup draft into the setConfig() payload — locale is fixed en -> zh-HK per REQ-007. */
 export function toConfigPayload(draft) {
   return {
@@ -388,7 +368,6 @@ export function toConfigPayload(draft) {
     cadence: typeof draft.cadence === "object" && draft.cadence.kind !== "interval" ? { ...draft.cadence, timezone: draft.timezone } : draft.cadence,
     timeZone: draft.timezone,
     timezone: draft.timezone,
-    rightsPolicy: draft.rightsPolicy,
     sourceLocale: "en",
     targetLocale: "zh-HK",
     notificationPolicy: draft.notificationPolicy,
@@ -565,8 +544,7 @@ export function renderSetup(root, draft, ctx) {
       ctx.grantsNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.grantsNote) : null
     ]),
     field("openSourceLabel", renderOpenSources(locale, ctx, handlers)),
-    note("openSourceDesc"),
-    note("openSourceRightsNote")
+    note("openSourceDesc")
   ]);
   /*
    * The prompts are the whole form. The protection lists still enforce at
@@ -811,7 +789,7 @@ export function renderLocalize(root, state, ctx) {
 
   const savingThis = !!state.savingByItem[activeItem.id];
   // Localize asks only that the review the owner reads next is the draft that
-  // is stored — rights and destination are the Publish step's question now.
+  // is stored — destination and timing are the Publish step's question now.
   const reviewable = reviewEnabled(state);
 
   const footer = el("footer", { class: "sl-selection" }, [

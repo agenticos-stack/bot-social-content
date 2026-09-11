@@ -81,7 +81,6 @@ export function drawerProjection(batch, sourceItem) {
       // Where this draft was sent — one row per (destination, revision)
       // filing, `bound` included for destinations recorded but never sent.
       publications: Array.isArray(item.publications) ? item.publications.map((pub) => ({ ...pub })) : [],
-      rightsStatus: item.rightsStatus ?? "unknown",
       state: item.state ?? "unknown",
       approval: item.approval ?? null
     }))
@@ -89,7 +88,7 @@ export function drawerProjection(batch, sourceItem) {
 }
 
 export function isEditableItem(item) {
-  return ["drafting", "held_rights", "expired"].includes(item?.state);
+  return ["drafting", "expired"].includes(item?.state);
 }
 
 export function drawerAction(item) {
@@ -104,16 +103,13 @@ export function drawerAction(item) {
 /**
  * The state chip a Content card carries. Order is deliberate: outcome states
  * first (they're past drafting), then queued (a generation-requested batch
- * with nothing saved yet), then awaiting rights (drafted or not, it cannot
- * be SENT until confirmed — decision 8 keeps the gate at submit), then
- * drafting as the in-progress default.
+ * with nothing saved yet), then drafting as the in-progress default.
  */
 function itemChip(locale, batch, item) {
   if (["submitted", "awaiting_approval"].includes(item.state)) return { label: t(locale, "stateSubmitted"), cls: "sl-chip-submitted" };
   if (item.state === "scheduled") return { label: t(locale, "stateScheduled"), cls: "sl-chip-scheduled" };
   if (["failed", "held", "unknown"].includes(item.state)) return { label: t(locale, "stateAttention"), cls: "sl-chip-attention" };
   if (batch.generation === "requested" && (item.revision ?? 0) === 0 && !item.caption) return { label: t(locale, "stateQueued"), cls: "sl-chip-queued" };
-  if (item.rightsStatus === "pending" || item.rightsStatus === "denied") return { label: t(locale, "stateAwaitingRights"), cls: "sl-chip-rights" };
   return { label: t(locale, "stateDrafting"), cls: "sl-chip-drafting" };
 }
 
@@ -121,7 +117,7 @@ function itemChip(locale, batch, item) {
  * One Content card per batch ITEM — the same `sl-post` shape Sources uses
  * (shared `renderPostCard`), carrying the drafted caption when one exists
  * and the source caption marked as such otherwise. Everything beyond the
- * scan — revision history, rights detail, publications, issues — stays in
+ * scan — revision history, publications, issues — stays in
  * the drawer behind Inspect.
  */
 function itemCard(locale, batch, item, ctx, covers) {

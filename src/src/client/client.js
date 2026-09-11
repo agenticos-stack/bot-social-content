@@ -170,7 +170,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
 .sl-state-chip { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border-radius: 999px; font: 600 8.5px var(--sl-font); letter-spacing: .03em; text-transform: uppercase; background: var(--sl-surface-2); color: var(--sl-muted); }
 .sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
-.sl-chip-rights, .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
+.sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
 
 .sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
@@ -401,16 +401,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-head { padding: 12px 20px; }
 .sl-preview-head strong { font-size: 16px; }
 .sl-preview-kicker { font-size: 11px; }
-.sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
+.sl-preview-scroll .sl-field-note { font-size: 13px; line-height: 1.65; }
 .sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
-.sl-rights { margin-top: 14px; padding: 12px; border-radius: var(--sl-radius-control); }
-.sl-rights-confirmed { background: color-mix(in srgb, var(--sl-success) 14%, var(--sl-surface)); }
-.sl-rights-pending { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); }
-.sl-rights-denied { background: color-mix(in srgb, var(--sl-danger) 14%, var(--sl-surface)); }
-.sl-rights strong { display: block; font-size: 10.5px; }
-.sl-rights span { display: block; margin-top: 2px; font-size: 9.5px; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
@@ -653,31 +647,6 @@ function App() {
     if (activePreviewStage) activePreviewStage.dispose();
     activePreviewStage = createMediaStage(rpc, item, locale);
 
-    /*
-     * THE RULE, NOT AN INVENTED STATUS.
-     *
-     * This read `item.rightsStatus || "pending"`, and a source item has no
-     * `rightsStatus` — `hydrateItem` does not return one, because rights are
-     * recorded on the batch item that a draft creates, not on the post it was
-     * derived from. So every post in this drawer reported "Rights not yet
-     * confirmed / this item cannot be submitted for review", a per-item
-     * verdict about an item that has no such field.
-     *
-     * What is true is the rule `createBatch` will apply: a source whose origin
-     * is `open` always requires confirmation, whatever the org's policy says
-     * (server.js, `effectivePolicy`). State that, from the source row the
-     * summary already carries, and say it as something that happens next
-     * rather than something already wrong.
-     */
-    const sourceRow = Array.isArray(summary?.sources)
-      ? summary.sources.find((row) => row.binding === item.sourceBinding)
-      : null;
-    const willNeedRights = sourceRow?.origin === "open" || policy.rightsPolicy !== "owner_asserted";
-    const rightsBlock = el("div", { class: `sl-rights sl-rights-${willNeedRights ? "pending" : "confirmed"}` }, [
-      el("strong", null, t(locale, willNeedRights ? "drawerRightsAheadTitle" : "drawerRightsClearTitle")),
-      el("span", null, t(locale, willNeedRights ? "drawerRightsAheadBody" : "drawerRightsClearBody"))
-    ]);
-
     replace(body, [
       el("div", { class: "sl-preview-stage-wrap" }, [
         activePreviewStage.node,
@@ -688,7 +657,6 @@ function App() {
       item.permalink
         ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
         : null,
-      rightsBlock,
       item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
     ]);
 
@@ -748,7 +716,7 @@ function App() {
            * watched — so four of the twelve posts a real account produced were
            * headed @essentialfoodsofficial while belonging to @hilde.oest,
            * @junior_the_copenhagen_lab, @nordictail and @arcticspots. Those
-           * are precisely the posts whose rights are somebody else's, so the
+           * are precisely the posts whose authors are somebody else — the
            * one screen that has to get the author right had it wrong.
            */
           el("div", { class: "sl-preview-who" }, [
@@ -795,46 +763,10 @@ function App() {
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
       ...batch.items.map((item) => {
-        /*
-         * Decision 8: held_rights items are draftable and the gate sits at
-         * submit — but that only works if the owner can ACT on the gate.
-         * `confirmRights` was admitted for the browser yet nothing called it,
-         * so a "pending" line was a dead end. The controls live here, where
-         * the rights detail already is.
-         */
-        const setRights = async (button, status) => {
-          button.disabled = true;
-          try {
-            const result = await rpc.confirmRights({ batchItemId: item.id, status });
-            if (result?.ok === false) {
-              collectionState = setNotice(collectionState, { message: result.message || t(locale, "batchLoadFailed") });
-              renderCurrentView();
-              return;
-            }
-            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
-            renderCurrentView();
-            if (batchDialog.open) openBatchDrawer({ id: batch.id });
-          } catch (error) {
-            console.error(error);
-            button.disabled = false;
-          }
-        };
-        const rightsActions = item.rightsStatus === "pending" || item.rightsStatus === "denied"
-          ? el("div", { class: "sl-setup-actions" }, [
-              el("button", { type: "button", class: "sl-secondary", onclick: (e) => setRights(e.currentTarget, "confirmed") }, t(locale, "drawerConfirmRights")),
-              item.rightsStatus === "pending"
-                ? el("button", { type: "button", class: "sl-secondary", onclick: (e) => setRights(e.currentTarget, "denied") }, t(locale, "drawerRightsDeny"))
-                : null
-            ])
-          : null;
         return el("section", { class: "sl-drawer-section" }, [
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
         el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
-        // The line used to head every row "Rights not yet confirmed" — even
-        // confirmed ones. The status decides the title, not the paragraph.
-        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, t(locale, { confirmed: "drawerRightsConfirmedTitle", denied: "drawerRightsDeniedTitle" }[item.rightsStatus] ?? "drawerRightsPendingTitle")),
-        rightsActions,
         // TASK-018: where this draft was sent — one line per publication,
         // including `bound` ones (recorded destinations, never sent).
         item.publications?.length
@@ -859,8 +791,6 @@ function App() {
         editable ? el("button", { type: "button", class: "sl-primary", onclick: () => { batchDialog.close(); wizard = { ...resumeBatch(wizard, batch), returnToDrawer: batch.id }; renderCurrentView(); } }, t(locale, "drawerContinue")) : null
       ])
     ])]);
-    // showModal on an already-open dialog throws — a rights confirm redraws
-    // the drawer in place, so only open it when it isn't.
     if (!batchDialog.open) batchDialog.showModal();
     batchDialog.addEventListener("close", () => { if (previous instanceof HTMLElement) previous.focus(); }, { once: true });
   }
@@ -1182,7 +1112,7 @@ function App() {
      * TASK-016's submit: one item, the bindings the picker has chosen, the
      * timing it carries. `createNewVersion` arrives only from the refusal's
      * own button — REQ-017's opt-in, taken by the owner, never retried.
-     * Every expected refusal (rights unconfirmed, a stale revision, no
+     * Every expected refusal (a stale revision, no
      * destination chosen, an already-filed pair, a provider outage) is a
      * value — server.js's header note — shown on the item it belongs to.
      */
@@ -1399,7 +1329,7 @@ function App() {
   /**
    * `options.editing` re-enters the form for a gadget that is already
    * configured, prefilled from its stored config. Without it this was a
-   * one-way door — cadence, timezone, rights policy and the protected-term
+   * one-way door — cadence, timezone and the protected-term
    * lists were fixed at first run for the life of the gadget, on every
    * surface. Door grants and schedules were never the problem: the workspace
    * page has owned both, with revoke and stop, all along.
