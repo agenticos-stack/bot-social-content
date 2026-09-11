@@ -27,6 +27,7 @@ export function createRpc(gadget) {
     getMedia: (itemId, mediaId, options) => gadget.getMedia(itemId, mediaId, options),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
+    requestGeneration: (batchId) => gadget.requestGeneration(batchId),
     listBatches: () => gadget.listBatches(),
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),

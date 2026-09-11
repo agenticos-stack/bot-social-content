@@ -159,7 +159,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
 
-.sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
+.sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
@@ -399,6 +399,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-actions { justify-content: flex-end; }
 .sl-drawer-actions .sl-secondary.sl-secondary,
 .sl-drawer-actions .sl-primary.sl-primary { flex: 0 0 auto; min-height: 30px; padding: 0 12px; font-size: 10.5px; margin-left: 0; }
+.sl-drawer-actions .sl-drawer-regen { margin-right: auto; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
 .sl-drawer-section .sl-stage { min-height: 220px; }
@@ -863,6 +864,21 @@ function App() {
       ])]),
       body,
       el("footer", { class: "sl-preview-actions sl-drawer-actions" }, [
+        editable ? el("button", {
+          type: "button", class: "sl-secondary sl-drawer-regen",
+          onclick: async () => {
+            try {
+              const result = await rpc.requestGeneration(batch.id);
+              if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+            } catch (error) {
+              announce(error instanceof Error ? error.message : String(error), "");
+              return;
+            }
+            batchDialog.close();
+            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+            renderCurrentView();
+          }
+        }, t(locale, "drawerRegenerate")) : null,
         el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
         editable ? el("button", {
           type: "button", class: "sl-secondary",

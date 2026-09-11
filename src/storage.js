@@ -923,6 +923,15 @@ export class Storage {
   }
 
   /**
+   * The owner asked for this batch to be drafted again — the same durable
+   * mark createBatch writes, re-armed. Existing drafts stay; the agent's
+   * next turn sees `generation: "requested"` and saves a new revision.
+   */
+  setGeneration(batchId) {
+    this.sql.exec("UPDATE batches SET generation = 'requested' WHERE id = ?", batchId);
+  }
+
+  /**
    * Drafts arrived for everything the batch asked about — the ask has
    * answered itself, so it clears rather than waiting on a dismiss.
    */

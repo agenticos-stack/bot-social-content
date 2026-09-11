@@ -1598,6 +1598,25 @@ export class Gadget extends DurableObject {
     });
   }
 
+  /**
+   * The owner pressed Regenerate: re-arm the batch's durable generation
+   * mark so the agent's next turn re-drafts it. Refuses when the batch is
+   * unknown or has nothing left to draft (all items submitted).
+   */
+  requestGeneration(batchId) {
+    return this.enqueueMutation(() => {
+      const batch = this.storage.getBatch(String(batchId));
+      if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const draftable = this.storage.listBatchItems(batch.id).some((item) =>
+        ["drafting", "expired"].includes(item.state));
+      if (!draftable) {
+        return { ok: false, code: "nothing_to_draft", message: "Every item in this batch has already been submitted." };
+      }
+      this.storage.setGeneration(batch.id);
+      return { ok: true };
+    });
+  }
+
   async listBatches() {
     return this.storage
       .listBatches()
