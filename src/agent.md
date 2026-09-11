@@ -118,6 +118,20 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
 - `confirmedClaims` lists which flagged claims the owner (or you, on their
   clear instruction) has confirmed are accurate. Do not confirm a claim on
   your own authority when the source gave you no basis for it.
+- `posterLayout` is how you refine the image. The poster is deterministic
+  text-on-colour — you write its PARAMS, never pixels:
+
+  ```
+  posterLayout: { template: "1080x1350" | "1080x1080", headline, subline,
+                  background: { kind: "solid", value: "#1c1c1e" },
+                  textColor: "#ffffff", align: "left" | "center" | "right" }
+  ```
+
+  The gadget renders it to a PNG when the owner views or edits the item —
+  a layout you save becomes visible without you ever holding bytes. Do not
+  call `savePoster`: it requires rendered PNG bytes you cannot produce, and
+  its only caller is the owner's own poster editor. Honour `posterPrompt`
+  from config when choosing headline and colours.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own

@@ -32,6 +32,7 @@ import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
+import { computePosterLayout, drawPoster } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
@@ -175,6 +176,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-composer textarea { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.55; padding: 8px 10px; }
+.sl-drawer-composer .sl-setup-actions { margin-top: 6px; justify-content: flex-end; }
+.sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
@@ -760,6 +764,43 @@ function App() {
     const editable = batch.items?.some(isEditableItem);
     const destinationLabel = (binding) =>
       (summary?.destinations || []).find((d) => d.destinationBinding === binding || d.binding === binding)?.label || binding;
+    const posterPreview = (layout) => {
+      if (!layout?.template) return null;
+      const canvas = el("canvas", { class: "sl-drawer-poster", "aria-label": t(locale, "posterTitle") });
+      const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
+      canvas.width = computed.width;
+      canvas.height = computed.height;
+      const ctx2d = canvas.getContext("2d");
+      if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
+      return canvas;
+    };
+    const captionEditor = (item) => {
+      if (!isEditableItem(item)) return null;
+      const note = el("p", { class: "sl-field-note", role: "status" });
+      const textarea = el("textarea", {
+        class: "sl-field-input sl-drawer-caption",
+        rows: "4",
+        placeholder: t(locale, "drawerCaptionPlaceholder")
+      });
+      textarea.value = item.caption || "";
+      const save = el("button", { type: "button", class: "sl-secondary" }, t(locale, "saveChanges"));
+      save.onclick = async () => {
+        save.disabled = true;
+        note.textContent = t(locale, "saving");
+        const result = await rpc.saveRevision({ batchItemId: item.id, expectedRevision: item.revision, caption: textarea.value });
+        save.disabled = false;
+        if (result?.ok) {
+          item.revision = result.revision;
+          item.caption = textarea.value;
+          note.textContent = t(locale, "drawerRevision", { n: result.revision });
+          const summaries = await rpc.listBatchSummaries({ limit: 50 });
+          inboxState = setInboxSummaries(inboxState, summaries);
+          return;
+        }
+        note.textContent = (result?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
+      };
+      return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, el("div", { class: "sl-setup-actions" }, [save]), note]);
+    };
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
       ...batch.items.map((item) => {
@@ -773,7 +814,10 @@ function App() {
           ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
               el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
           : null,
-        el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        isEditableItem(item)
+          ? captionEditor(item)
+          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        posterPreview(item.posterLayout),
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]); })
     ]);
