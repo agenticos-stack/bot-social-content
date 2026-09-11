@@ -174,31 +174,7 @@ export function renderInbox(root, state, ctx) {
           ])
         }, covers)];
   });
-  /*
-   * The generation ask — durable on `batches.generation`, so it survives a
-   * reload and clears when the batch is drafted or dismissed. The cards above
-   * already show the queued items; this bar states the batch is being picked
-   * up and demotes the copyable message to "Ask now" for the owner who wants
-   * to trigger the agent's next turn immediately.
-   */
-  const ask = ctx.ask;
-  const askSummary = ask ? state.summaries.find((entry) => entry.id === ask.batchId) : null;
-  const askMessage = ask ? t(locale, ask.count === 1 ? "askAgentPromptOne" : "askAgentPrompt", { n: ask.count, id: ask.batchId }) : null;
-  const askCard = ask ? el("article", { class: "sl-ask" }, [
-    el("strong", null, t(locale, ask.count === 1 ? "askQueuedOne" : "askQueued", { n: ask.count })),
-    askSummary?.awaitingRights ? el("span", { class: "sl-field-note" }, t(locale, "inboxAwaitingRights", { n: askSummary.awaitingRights })) : null,
-    el("details", { class: "sl-ask-details" }, [
-      el("summary", { class: "sl-ask-now" }, t(locale, "askNow")),
-      el("p", { class: "sl-field-note" }, t(locale, "askAgentBody")),
-      el("code", { class: "sl-ask-message" }, askMessage),
-      el("div", { class: "sl-setup-actions" }, [
-        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCopyAsk(ask.batchId, askMessage) }, t(locale, ask.copied ? "askAgentCopied" : "askAgentCopy")),
-        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onDismissAsk(ask.batchId) }, t(locale, "askAgentDismiss"))
-      ])
-    ])
-  ]) : null;
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
-    askCard,
     el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),
     cards.length ? el("div", { class: "sl-inbox-grid" }, cards) : state.loading ? el("p", { class: "sl-field-note", role: "status" }, t(locale, "loading")) : null,
     state.nextCursor ? el("button", { type: "button", class: "sl-secondary", onclick: handlers.onLoadMoreBatches }, t(locale, "inboxLoadMore")) : null,

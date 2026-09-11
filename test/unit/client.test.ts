@@ -740,13 +740,12 @@ describe("bundled client.js smoke test", () => {
     expect(glyphs[0].textContent).toBe("IG");
   });
 
-  it("Draft N posts lands on Content with the ready-to-send agent ask, not the wizard", async () => {
+  it("Draft N posts lands on Content as a queued card, not the wizard", async () => {
     installMinimalDom();
     document.documentElement.lang = "en";
 
     const item = makeItem({ id: "a", seen: false, selected: true });
     let createdArgs: unknown = null;
-    let dismissedAsk = false;
     (globalThis as any).gadget = {
       async summary() {
         return {
@@ -773,18 +772,19 @@ describe("bundled client.js smoke test", () => {
       async listBatchSummaries() {
         // Empty until the batch exists — otherwise the view opens on Content
         // before the click this test is about. The batch row carries the
-        // durable `generation: "requested"` mark the server now sets, until
-        // the fake's dismissGenerationAsk clears it (as the real one does).
+        // durable `generation: "requested"` mark the server sets, and the
+        // per-item projection the Content grid reads its cards from.
         if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
         return {
-          batches: [{ id: "batch_test1", status: "open", generation: dismissedAsk ? null : "requested", itemCount: 1, draftCount: 1, awaitingRights: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 1, sourceItemIds: ["a"], preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false } }],
+          batches: [{
+            id: "batch_test1", status: "open", generation: "requested", itemCount: 1, draftCount: 1, awaitingRights: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 1,
+            sourceItemIds: ["a"],
+            preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false },
+            items: [{ batchItemId: "bi_1", itemId: "a", state: "held_rights", rightsStatus: "pending", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null }]
+          }],
           nextCursor: null,
           totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 1 }
         };
-      },
-      async dismissGenerationAsk() {
-        dismissedAsk = true;
-        return { ok: true };
       },
       async subscribe() {
         return {};
@@ -804,20 +804,16 @@ describe("bundled client.js smoke test", () => {
     expect(createdArgs).toBeTruthy();
     expect((createdArgs as { destinationBindings: string[] }).destinationBindings).toEqual([]);
 
-    // Content tab with the ask card — the message names the batch.
-    const ask = findAll(document.body, (element) => element.classList.contains("sl-ask"))[0];
-    expect(ask).toBeTruthy();
-    expect(ask.textContent).toContain("batch_test1");
-    expect(document.body.textContent).toContain("Drafting 1 post");
+    // Content tab shows the selected post as a queued card immediately — the
+    // Sources shape (article.sl-post) carrying the durable generation mark as
+    // its chip. There is no ask card: the owner is not the courier.
+    expect(findAll(document.body, (element) => element.classList.contains("sl-ask"))).toHaveLength(0);
+    const card = findAll(document.body, (element) => element.classList.contains("sl-post"))[0];
+    expect(card).toBeTruthy();
+    expect(card.textContent).toContain(item.text.split("\n")[0].slice(0, 90));
+    expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("queued");
     // The wizard's Localize step never opened.
     expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
-
-    // Dismiss clears the card; the batch stays in the drafts list.
-    const dismiss = findAll(document.body, (element) => element.tagName === "BUTTON" && element.textContent === "Dismiss")[0];
-    await dismiss.dispatchEvent({ type: "click" });
-    await flushAsyncWork();
-    expect(findAll(document.body, (element) => element.classList.contains("sl-ask"))).toHaveLength(0);
-    expect(document.body.textContent).toContain(item.text);
   });
 
   // -------------------------------------------------------------------------

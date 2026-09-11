@@ -77,8 +77,7 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    dropping the name refused `protected_literal_missing` in the next call.
 7. **Rights vs drafting.** A `held_rights` item accepts a revision (state stays
    `held_rights`), and `submitForReview` refuses `rights_unconfirmed` — the
-   gate sits at submit only. Cards chip "awaiting rights"; the ask banner
-   carries the "N awaiting rights" split.
+   gate sits at submit only. Cards chip "awaiting rights".
    **The owner can act on it:** the item's drawer shows "Confirm reuse rights"
    / "Deny reuse" while `pending` (and Confirm while `denied`). Observed live:
    confirm → drawer line flips to "Rights confirmed" and the card chip moves

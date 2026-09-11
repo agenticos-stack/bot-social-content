@@ -175,12 +175,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
 .sl-chip-rights, .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
-.sl-ask { display: grid; gap: 6px; padding: 12px 16px; margin-bottom: 14px; border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); background: var(--sl-selected, var(--sl-surface)); }
-.sl-ask-details summary { cursor: pointer; font: 600 10.5px var(--sl-font); color: var(--sl-muted); list-style: none; }
-.sl-ask-details summary::before { content: "▸ "; }
-.sl-ask-details[open] summary::before { content: "▾ "; }
-.sl-ask-details[open] { padding-bottom: 4px; }
-.sl-ask-message { display: block; padding: 10px 12px; border-radius: var(--sl-radius-control); background: var(--sl-surface); border: 1px solid var(--sl-line); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; user-select: text; }
+
 .sl-advanced { margin-top: 4px; }
 .sl-advanced summary { cursor: pointer; font-weight: 600; font-size: 12px; padding: 6px 0; }
 .sl-tag-suggest { border: 1px dashed var(--sl-line-strong, var(--sl-line)); background: transparent; cursor: pointer; }
@@ -582,9 +577,6 @@ function App() {
   let policy = {};
   let collectionState = createCollectionState();
   let inboxState = createInboxState();
-  // Cosmetic only — the ask itself is durable (batches.generation), so a
-  // reload still shows it. This just remembers "you copied it already".
-  let copiedAskId = null;
   let wizard = createWizardState();
   let activePreviewItem = null;
   let activePreviewStage = null;
@@ -964,26 +956,6 @@ function App() {
       collectionState = clearNotice(collectionState);
       renderCurrentView();
     },
-    onDismissAsk: async (batchId) => {
-      try {
-        await rpc.dismissGenerationAsk(batchId);
-        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
-      } catch (error) {
-        console.error(error);
-      }
-      renderCurrentView();
-    },
-    onCopyAsk: async (batchId, message) => {
-      try {
-        await navigator.clipboard?.writeText(message);
-        copiedAskId = batchId;
-      } catch (error) {
-        // A sandboxed frame can lack clipboard permission; the message stays
-        // on screen in a selectable block either way.
-        console.error(error);
-      }
-      renderCurrentView();
-    },
     onInspectBatch: openBatchDrawer,
     onInboxFilter: (filter) => { inboxState = setInboxFilter(inboxState, filter); if (filter === "new") { collectionState = setFilter(collectionState, "new"); void loadCollection("new"); } renderCurrentView(); },
     onLoadMoreBatches: async () => {
@@ -1082,12 +1054,12 @@ function App() {
       }
       collectionState = clearNotice(collectionState);
       /*
-       * The batch is pending drafts now — generation is a conversation ask,
-       * not a click path (PM decision 1: no platform work-request mechanism
-       * exists yet; agenticos-stack/agenticos#1861). Land on Content, where
-       * the ask card is read off the batch's durable `generation` mark and
-       * the pending drafts appear as they are saved. Editing still reaches
-       * the wizard through Inspect → Continue editing.
+       * The batch is pending drafts now — generation happens on the agent's
+       * next turn (no platform work-request mechanism exists yet;
+       * agenticos-stack/agenticos#1863). Land on Content, where the pending
+       * items read as queued cards off the batch's durable `generation`
+       * mark and drafts appear as they are saved. Editing still reaches the
+       * wizard through a card → Continue editing.
        */
       if (draftable.length && draftable.length < selected.length) {
         collectionState = setNotice(collectionState, {
@@ -1415,17 +1387,10 @@ function App() {
           el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
         ])
       ]);
-      /*
-       * The ask is durable — `generation: "requested"` on the batch, so it
-       * survives a reload (pendingAsk in memory did not). One card, for the
-       * newest batch still waiting on drafts.
-       */
-      const askSummary = inboxState.summaries.find((entry) => entry.generation === "requested");
-      const ask = askSummary ? { batchId: askSummary.id, count: askSummary.itemCount, copied: copiedAskId === askSummary.id } : null;
       const taken = takenSourceIds();
       const draftableCount = selectedIds(collectionState).filter((id) => !taken.has(id)).length;
       if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover, draftableCount });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, ask, loadCover, sources: summary?.sources });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, loadCover, sources: summary?.sources });
       replace(viewHost, [navigation, body]);
       return;
     }
