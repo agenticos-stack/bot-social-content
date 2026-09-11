@@ -394,10 +394,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
-/* The batch drawer's actions match the rest of the app: compact, right-aligned. */
+/* The batch drawer's actions match the rest of the app: compact, right-aligned.
+   The doubled class out-specifies bot-shell's .bot-button.bot-button pin. */
 .sl-drawer-actions { justify-content: flex-end; }
-.sl-drawer-actions button { flex: 0 0 auto; min-height: 0; padding: 7px 14px; font-size: 11px; }
-.sl-drawer-cover { display: block; width: 100%; max-height: 150px; object-fit: cover; border-radius: var(--sl-radius-control); margin-bottom: 8px; }
+.sl-drawer-actions .sl-secondary.sl-secondary,
+.sl-drawer-actions .sl-primary.sl-primary { flex: 0 0 auto; min-height: 30px; padding: 0 12px; font-size: 10.5px; margin-left: 0; }
+/* An item's stage sits inside a sheet that already scrolls — a little shorter
+   than the source drawer's, same media fidelity. */
+.sl-drawer-section .sl-stage { min-height: 220px; }
+.sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
+.sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
+.sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
 .sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
 .sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
 .sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
@@ -784,22 +791,28 @@ function App() {
       composers.set(item.id, { textarea, note, item });
       return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, note]);
     };
-    const cover = (item) => {
-      const mediaId = item.sourceItem?.media?.[0]?.id;
-      if (!mediaId) return null;
-      const img = el("img", { class: "sl-drawer-cover", alt: "" });
-      loadCover(item.sourceItem.id, mediaId)
-        .then((url) => { img.src = url; })
-        .catch(() => { img.remove(); });
-      return img;
+    /*
+     * The source post's own media, at the Sources drawer's fidelity — a full
+     * media stage per item (carousel strip included), not a cover strip. The
+     * source CAPTION does not render here: the drawer is about the draft.
+     */
+    const stages = [];
+    const stage = (item) => {
+      if (!item.sourceItem) return null;
+      const mediaStage = createMediaStage(rpc, item.sourceItem, locale);
+      stages.push(mediaStage);
+      return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
     };
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
-        cover(item),
+        stage(item),
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
-        el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
+        isEditableItem(item)
+          ? captionEditor(item)
+          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        posterPreview(item.posterLayout),
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
         // TASK-018: where this draft was sent — one line per publication,
         // including `bound` ones (recorded destinations, never sent).
@@ -807,10 +820,6 @@ function App() {
           ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
               el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
           : null,
-        isEditableItem(item)
-          ? captionEditor(item)
-          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
-        posterPreview(item.posterLayout),
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]); })
     ]);
@@ -871,7 +880,11 @@ function App() {
       ])
     ])]);
     if (!batchDialog.open) batchDialog.showModal();
-    batchDialog.addEventListener("close", () => { if (previous instanceof HTMLElement) previous.focus(); }, { once: true });
+    batchDialog.addEventListener("close", () => {
+      // Every item's stage minted blob URLs; close returns them.
+      for (const mediaStage of stages) mediaStage.dispose();
+      if (previous instanceof HTMLElement) previous.focus();
+    }, { once: true });
   }
 
   function closePreview() {
