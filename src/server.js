@@ -2025,12 +2025,22 @@ export class Gadget extends DurableObject {
      * the door and the draft carries the returned publisher-addressable URL.
      * No bytes at this revision — or a door that cannot take them — means
      * the source media ships, disclosed rather than silent.
+     *
+     * EXCEPT for an OPEN source: the provenance the scan recorded on the
+     * source row (`sources.origin`, "binding" vs "open" — how this workspace
+     * fetched the account, not a name) decides whether the fallback is a
+     * warning or a refusal. An owned account's own photo with a missing
+     * poster is a warning; an open account's photo is another company's
+     * image republication, and a label on the caption is not permission.
      */
+    const sourceOrigin = sourceItem ? this.storage.getSource(sourceItem.sourceBinding)?.origin ?? null : null;
+    const isOpenSource = sourceOrigin === "open";
     const warnings = [];
     let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
       sourceMedia: sourceItem?.media
     });
+    let posterShipped = false;
     const poster = this.storage.getPoster(batchItemId, revision.revision);
     if (poster) {
       try {
@@ -2041,6 +2051,7 @@ export class Gadget extends DurableObject {
         });
         if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
           packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+          posterShipped = true;
         } else {
           warnings.push({
             code: "poster_not_shipped",
@@ -2058,6 +2069,13 @@ export class Gadget extends DurableObject {
         code: "poster_not_shipped",
         message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
       });
+    }
+    if (isOpenSource && !posterShipped) {
+      return {
+        ok: false,
+        code: "poster_required",
+        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs the generated poster. Render the poster for this post, or publish from an account you own."
+      };
     }
     if (!packedMedia.ok) {
       return { ok: false, code: packedMedia.code, message: packedMedia.message };
