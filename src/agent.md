@@ -133,11 +133,14 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
                   textColor: "#ffffff", align: "left" | "center" | "right" }
   ```
 
-  The gadget renders it to a PNG when the owner views or edits the item —
+  The gadget renders it to a preview the owner sees in the batch drawer —
   a layout you save becomes visible without you ever holding bytes. Do not
   call `savePoster`: it requires rendered PNG bytes you cannot produce, and
   its only caller is the owner's own poster editor. Honour `posterPrompt`
-  from config when choosing headline and colours.
+  from config when choosing headline and colours. A poster cannot reach
+  the publisher: the door takes hosted media URLs only, so a published
+  post carries the source media and the submit result says so
+  (`poster_not_shipped`). The owner can download the PNG from the drawer.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own

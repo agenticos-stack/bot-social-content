@@ -212,6 +212,27 @@ describe("social archive revision metadata persistence", () => {
       publicationIntent: expect.objectContaining({ publishMode: "publish_now" })
     });
   });
+
+  it("a caption-only save carries posterLayout and confirmedClaims forward", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    // The agent writes a draft + poster params; the owner then edits the
+    // caption in the drawer composer — a save that names no layout.
+    await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "第一稿內容文字",
+      posterLayout: { template: "1080x1080", headline: "Hello", background: { kind: "solid", value: "#000000" }, textColor: "#ffffff", align: "left" },
+      confirmedClaims: ["award"]
+    });
+    const saved = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 1, caption: "第二稿內容文字" });
+    expect(saved).toMatchObject({ ok: true, revision: 2 });
+    expect(gadget.storage.latestRevision("item-1")).toMatchObject({
+      posterLayout: expect.objectContaining({ template: "1080x1080", headline: "Hello" }),
+      confirmedClaims: ["award"]
+    });
+  });
 });
 
 describe("saveRevision validation routing", () => {

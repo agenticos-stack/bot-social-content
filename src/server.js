@@ -1725,6 +1725,14 @@ export class Gadget extends DurableObject {
       overrides
     );
 
+    /*
+     * Omitted means carried — a caption-only save must not erase the stored
+     * poster layout or un-confirm claims the previous revision confirmed.
+     * An explicit null/[] still clears.
+     */
+    const layout = posterLayout === undefined ? (previous?.posterLayout ?? null) : posterLayout;
+    const claims = confirmedClaims === undefined ? (previous?.confirmedClaims ?? []) : confirmedClaims;
+
     const validation = validateRevisionDraft({
       source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
       draft: caption,
@@ -1735,7 +1743,7 @@ export class Gadget extends DurableObject {
         protectedHashtags: config?.protectedHashtags,
         disclaimers: config?.disclaimers,
         claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
-        confirmedClaims
+        confirmedClaims: claims
       },
       // The union includes `bound` publications, so a destination recorded
       // for this item still applies its own caption limit while drafting
@@ -1744,8 +1752,8 @@ export class Gadget extends DurableObject {
     });
     if (!validation.ok) return { ok: false, issues: validation.issues };
 
-    if (posterLayout) {
-      const posterValidation = validatePosterLayout(posterLayout);
+    if (layout) {
+      const posterValidation = validatePosterLayout(layout);
       if (!posterValidation.ok) {
         return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
       }
@@ -1772,8 +1780,8 @@ export class Gadget extends DurableObject {
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption,
-      posterLayout,
-      confirmedClaims,
+      posterLayout: layout,
+      confirmedClaims: claims,
       issues: validation.issues,
       refinementBrief: brief,
       protectedOverrides: overrides,
@@ -2014,6 +2022,21 @@ export class Gadget extends DurableObject {
       return { ok: false, code: packedMedia.code, message: packedMedia.message };
     }
 
+    /*
+     * A poster is deterministic text-on-colour rendered client-side — it has
+     * no publisher-addressable URL, and the Social Hub door has no upload
+     * path. So a draft carrying a posterLayout ships the source media. That
+     * is disclosed here rather than silent: the publish step surfaces the
+     * warning, and the owner can download the PNG from the batch drawer.
+     */
+    const warnings = [];
+    if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
+      warnings.push({
+        code: "poster_not_shipped",
+        message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
+      });
+    }
+
     // TASK-015: the attribution the door carries is the observation record the
     // ledger stands on, checked against it here rather than assumed.
     const attribution = draftOrigin({
@@ -2159,7 +2182,8 @@ export class Gadget extends DurableObject {
       ...this.projectBatchItem(this.storage.getBatchItem(batchItemId)),
       submitted: filed,
       ...(skipped.length ? { skipped } : {}),
-      ...(failures.length ? { failures } : {})
+      ...(failures.length ? { failures } : {}),
+      ...(warnings.length ? { warnings } : {})
     };
   }
 

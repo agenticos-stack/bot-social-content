@@ -32,7 +32,7 @@ import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
-import { computePosterLayout, drawPoster } from "./poster.js";
+import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
@@ -162,6 +162,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
+.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: 26px; padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
@@ -762,7 +763,8 @@ function App() {
     const editable = batch.items?.some(isEditableItem);
     const destinationLabel = (binding) =>
       (summary?.destinations || []).find((d) => d.destinationBinding === binding || d.binding === binding)?.label || binding;
-    const posterPreview = (layout) => {
+    const posterPreview = (item) => {
+      const layout = item.posterLayout;
       if (!layout?.template) return null;
       const canvas = el("canvas", { class: "sl-drawer-poster", "aria-label": t(locale, "posterTitle") });
       const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
@@ -770,7 +772,26 @@ function App() {
       canvas.height = computed.height;
       const ctx2d = canvas.getContext("2d");
       if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
-      return canvas;
+      /*
+       * The poster is the only "generated image" this gadget can make, and it
+       * cannot travel through the publisher door (hosted URLs only). What the
+       * owner CAN do with it is download the PNG — deterministic render, same
+       * pixels as the preview.
+       */
+      const download = el("button", {
+        type: "button", class: "sl-secondary sl-drawer-poster-dl",
+        onclick: async () => {
+          const bytes = await renderPosterPng(layout.template, {
+            headline: layout.headline, subline: layout.subline,
+            background: { value: layout.background?.value }, textColor: layout.textColor, align: layout.align
+          });
+          const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+          const link = el("a", { href: url, download: `poster-${layout.template}-${item.id}.png` });
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }
+      }, t(locale, "posterDownload"));
+      return el("div", null, [canvas, download]);
     };
     /*
      * The drawer IS the editor: one plain-text composer per draftable item,
@@ -813,7 +834,7 @@ function App() {
         isEditableItem(item)
           ? captionEditor(item)
           : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
-        posterPreview(item.posterLayout),
+        posterPreview(item),
         batch.generation === "requested"
           ? el("p", { class: "sl-field-note" }, t(locale, "drawerQueuedNote"))
           : null,
@@ -1154,6 +1175,7 @@ function App() {
           if (fresh) {
             wizard = { ...wizard, batch: { ...wizard.batch, items: wizard.batch.items.map((entry) => (entry.id === id ? fresh : entry)) } };
           }
+          if (result.warnings?.length) announce(result.warnings[0].message, "");
           const publishState = await rpc.readPublishState(id);
           wizard = applyPublishState(wizard, id, publishState);
         }
