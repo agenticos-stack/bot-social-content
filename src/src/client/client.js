@@ -35,7 +35,6 @@ import { createMediaStage } from "./preview-media.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
-  addListEntry,
   applyPublishState,
   applySavedRevision,
   applySavedPoster,
@@ -47,7 +46,6 @@ import {
   goToStep as goToWizardStep,
   isRefusal,
   refusalMessage,
-  removeListEntry,
   renderLocalize,
   renderPosterPng,
   renderPublish,
@@ -66,7 +64,6 @@ import {
   setSaving,
   setSubmitting,
   setWizardError,
-  suggestProtectedTerms,
   toConfigPayload,
   toggleConfirmedClaim,
   togglePublishBinding,
@@ -176,9 +173,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-rights, .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
 
-.sl-advanced { margin-top: 4px; }
-.sl-advanced summary { cursor: pointer; font-weight: 600; font-size: 12px; padding: 6px 0; }
-.sl-tag-suggest { border: 1px dashed var(--sl-line-strong, var(--sl-line)); background: transparent; cursor: pointer; }
 .sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
@@ -310,11 +304,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-section input, .sl-setup-section select { min-height: 42px; }
 .sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
-.sl-tag-field { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px; }
-.sl-tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
-.sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
-.sl-tag-field input { width: 100%; border: 0; height: 30px; }
 /*
  * SLIM, because the media is tall.
  *
@@ -1438,9 +1427,6 @@ function App() {
     // asks for it (TASK-021), namespaced like the open-source fields.
     let grantsBusy = false;
     let grantsNote = null;
-    let suggestBusy = false;
-    let suggestions = null;
-    let suggestNote = null;
 
     const draw = () =>
       renderSetup(viewHost, draft, {
@@ -1459,9 +1445,6 @@ function App() {
         openError,
         grantsBusy,
         grantsNote,
-        suggestBusy,
-        suggestions,
-        suggestNote,
         handlers: setupHandlers
       });
     const setupHandlers = {
@@ -1558,42 +1541,6 @@ function App() {
           }
         }
         if (summary?.configured) await loadCollection("new");
-      },
-      onAdd: (field, value) => {
-        draft = addListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
-      },
-      onRemove: (field, value) => {
-        draft = removeListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
-      },
-      /**
-       * "Suggest from watched posts" — candidate protected terms and hashtags
-       * read off the owner's own already-scanned items (suggestProtectedTerms
-       * is the pure heuristic in steps.js). Suggestions render as chips; each
-       * is one click from the list, nothing is added silently.
-       */
-      onSuggestTerms: async () => {
-        if (suggestBusy) return;
-        suggestBusy = true;
-        suggestNote = null;
-        draw();
-        try {
-          const page = await rpc.listItems({ limit: 50 });
-          suggestions = suggestProtectedTerms(page?.items ?? []);
-          if (!suggestions.terms.length && !suggestions.hashtags.length) {
-            suggestNote = t(locale, "setupSuggestNone");
-          }
-        } catch (thrown) {
-          console.error(thrown);
-          suggestNote = thrown instanceof Error ? thrown.message : String(thrown);
-        }
-        suggestBusy = false;
-        draw();
       },
       onChange: (patch) => {
         if (saving) return;

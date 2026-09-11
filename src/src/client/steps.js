@@ -413,27 +413,6 @@ function renderWizardError(state) {
   return state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null;
 }
 
-function renderTagList(locale, field, values, onAdd, onRemove) {
-  const input = el("input", {
-    type: "text",
-    class: "sl-field-input",
-    placeholder: t(locale, "setupAddPlaceholder"),
-    onkeydown: (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      onAdd(event.currentTarget.value);
-      event.currentTarget.value = "";
-    }
-  });
-  const chips = values.map((value) =>
-    el("span", { class: "sl-tag" }, [
-      typeof value === "string" ? value : value.value,
-      el("button", { type: "button", "aria-label": t(locale, "setupRemove", { value: typeof value === "string" ? value : value.value }), onclick: () => onRemove(value) }, "×")
-    ])
-  );
-  return el("div", { class: "sl-tag-field" }, [el("div", { class: "sl-tag-list" }, chips), input]);
-}
-
 /**
  * Candidate protected terms/hashtags read off the owner's own watched posts.
  *
@@ -568,15 +547,6 @@ export function renderSetup(root, draft, ctx) {
     rows?.length ? el("ul", null, rows.map(row => el("li", null, row.label || row.displayName || row.provider)))
       : note("setupNoConnections")
   ]);
-  const tags = (key, fieldName) => field(key, renderTagList(locale, fieldName, draft[fieldName],
-    value => handlers.onAdd(fieldName, value), value => handlers.onRemove(fieldName, value)));
-  const suggestions = (fieldName, values) => {
-    const remaining = (values || []).filter((value) => !draft[fieldName].includes(value));
-    return remaining.length
-      ? el("div", { class: "sl-tag-list" }, remaining.map((value) =>
-          el("button", { type: "button", class: "sl-tag sl-tag-suggest", onclick: () => handlers.onAdd(fieldName, value) }, `+ ${value}`)))
-      : null;
-  };
   const customCadence = typeof draft.cadence === "object";
   const monitoring = summary.config?.monitoringEnabled;
   const sourceSection = section("setupSourcesSection", [
@@ -598,30 +568,15 @@ export function renderSetup(root, draft, ctx) {
     note("openSourceDesc"),
     note("openSourceRightsNote")
   ]);
+  /*
+   * The prompts are the whole form. The protection lists still enforce at
+   * saveRevision — they are config carried through `baseConfig`, not fields
+   * the owner edits here.
+   */
   const rulesSection = section("setupRulesSection", [
     note("setupRulesNote"),
     field("setupContentPrompt", el("textarea", { rows: 4, value: draft.contentPrompt, placeholder: t(locale, "setupContentPromptHint"), onchange: e => handlers.onChange({ contentPrompt: e.currentTarget.value }) })),
-    field("setupPosterPrompt", el("textarea", { rows: 4, value: draft.posterPrompt, placeholder: t(locale, "setupPosterPromptHint"), onchange: e => handlers.onChange({ posterPrompt: e.currentTarget.value }) })),
-    /*
-     * The prompts are instructions; these are the checks. detectProtectedLiterals
-     * still refuses a saveRevision that drops one, so the lists live under a
-     * disclosure rather than nowhere — a gate that exists but cannot be seen
-     * refuses things nobody configured.
-     */
-    el("details", { class: "sl-advanced" }, [
-      el("summary", null, t(locale, "setupAdvanced")),
-      note("setupAdvancedNote"),
-      tags("setupProtectedTerms", "protectedTerms"),
-      suggestions("protectedTerms", ctx.suggestions?.terms),
-      tags("setupHashtags", "protectedHashtags"),
-      suggestions("protectedHashtags", ctx.suggestions?.hashtags),
-      tags("setupDisclaimers", "disclaimers"),
-      tags("setupClaims", "claimsRequiringConfirmation"),
-      el("div", { class: "sl-setup-actions" }, [
-        el("button", { type: "button", class: "sl-secondary", disabled: ctx.suggestBusy, onclick: () => handlers.onSuggestTerms() }, t(locale, ctx.suggestBusy ? "setupSuggesting" : "setupSuggestTerms")),
-        ctx.suggestNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.suggestNote) : null
-      ])
-    ])
+    field("setupPosterPrompt", el("textarea", { rows: 4, value: draft.posterPrompt, placeholder: t(locale, "setupPosterPromptHint"), onchange: e => handlers.onChange({ posterPrompt: e.currentTarget.value }) }))
   ]);
   const monitoringSection = section("setupMonitoringSection", [
     note("setupMonitoringNote"),
