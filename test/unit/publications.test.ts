@@ -313,3 +313,72 @@ describe("TEST-008: a legacy caller's destinationBindings still land", () => {
     ).toEqual(["FB_MAIN", "IG_OUT"]);
   });
 });
+
+describe("poster_required: an open source never ships someone else's photo", () => {
+  it("refuses an open source with no shipped poster, before any door call", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    // The provenance the scan recorded: metered fetch, not a connector binding.
+    gadget.storage.addOpenSource({
+      binding: "open:IG_WATCH",
+      displayName: "Watched Brand",
+      platform: "instagram",
+      accountKey: "watched.brand"
+    });
+    gadget.storage.upsertItem({
+      id: "instagram:open:IG_WATCH:p9",
+      sourceBinding: "open:IG_WATCH",
+      sourceLabel: "Watched Brand",
+      provider: "instagram",
+      providerItemId: "p9",
+      permalink: "https://www.instagram.com/p/p9/",
+      publishedAt: "2026-09-06T00:00:00.000Z",
+      text: "Another company's photo",
+      media: [{ url: "https://cdn.example.com/theirs.jpg", kind: "image" }],
+      metrics: {},
+      contentHash: "their-hash",
+      firstSeenAt: "2026-09-06T00:00:00.000Z",
+      lastSeenAt: "2026-09-06T00:00:00.000Z"
+    });
+    const batch = await gadget.createBatch({ itemIds: ["instagram:open:IG_WATCH:p9"] });
+    const item = batch.items[0];
+    // A layout was drafted but no poster bytes were ever saved for it.
+    await gadget.saveRevision({
+      batchItemId: item.id,
+      expectedRevision: 0,
+      caption: "第一稿內容文字",
+      posterLayout: { template: "1080x1080", headline: "大標題", background: { kind: "solid", value: "#000000" }, textColor: "#ffffff", align: "left" }
+    });
+    const refused = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: 1,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(refused).toMatchObject({ ok: false, code: "poster_required" });
+    // The refusal landed before createDraft — nothing was filed or asked.
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("an owned source with no poster still ships source media with the warning", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    // IG_MAIN was recorded through a connector binding — the org owns it.
+    gadget.storage.addSourceBinding({ binding: "IG_MAIN", label: "Main Instagram", provider: "instagram" });
+    const { item } = await draft(gadget);
+    await gadget.saveRevision({
+      batchItemId: item.id,
+      expectedRevision: 1,
+      caption: "第一稿內容文字",
+      posterLayout: { template: "1080x1080", headline: "大標題", background: { kind: "solid", value: "#000000" }, textColor: "#ffffff", align: "left" }
+    });
+    const submitted = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: 2,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(submitted.ok).not.toBe(false);
+    expect(created).toHaveLength(1);
+    expect(submitted.warnings?.map((w: { code: string }) => w.code)).toContain("poster_not_shipped");
+  });
+});
