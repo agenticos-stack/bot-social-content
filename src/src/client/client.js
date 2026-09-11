@@ -37,41 +37,26 @@ import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
   applyPublishState,
-  applySavedRevision,
-  applySavedPoster,
   createSetupDraft,
   draftFromConfig,
   createWizardState,
-  draftIsDirty,
-  discardDraft,
   goToStep as goToWizardStep,
   isRefusal,
   refusalMessage,
-  renderLocalize,
-  renderPosterPng,
   renderPublish,
   renderResult,
   renderReview,
   renderSetup,
-  setActiveItem,
-  setBatch,
   resumeBatch,
-  reviewEnabled,
-  recordDraftConflict,
-  resolveDraftConflict,
-  setMobilePane,
   setPublishError,
   setPublishIntent,
-  setSaving,
   setSubmitting,
   setWizardError,
   toConfigPayload,
-  toggleConfirmedClaim,
-  togglePublishBinding,
-  updateDraft
+  togglePublishBinding
 } from "./steps.js";
 
-const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
+const WIZARD_BACK_TARGET = { review: "select", publish: "review", result: "publish" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
@@ -176,8 +161,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
-.sl-drawer-composer textarea { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.55; padding: 8px 10px; }
-.sl-drawer-composer .sl-setup-actions { margin-top: 6px; justify-content: flex-end; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
@@ -411,6 +394,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
+/* The batch drawer's actions match the rest of the app: compact, right-aligned. */
+.sl-drawer-actions { justify-content: flex-end; }
+.sl-drawer-actions button { flex: 0 0 auto; min-height: 0; padding: 7px 14px; font-size: 11px; }
+.sl-drawer-cover { display: block; width: 100%; max-height: 150px; object-fit: cover; border-radius: var(--sl-radius-control); margin-bottom: 8px; }
+.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
+.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
+.sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
+.sl-drawer-caption::placeholder { color: var(--sl-muted); }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -569,7 +560,6 @@ function App() {
   let activePreviewStage = null;
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
-  let leavingEditor = false;
 
   /**
    * PUT IT ON THE SCREEN.
@@ -774,37 +764,40 @@ function App() {
       if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
       return canvas;
     };
+    /*
+     * The drawer IS the editor: one plain-text composer per draftable item,
+     * and the footer's Save commits every dirty one in a single
+     * `saveRevisions` call — the same shape the agent uses, so the platform
+     * shows one approval for the batch either way.
+     */
+    const composers = new Map(); // batchItemId -> { textarea, note, item }
     const captionEditor = (item) => {
       if (!isEditableItem(item)) return null;
       const note = el("p", { class: "sl-field-note", role: "status" });
       const textarea = el("textarea", {
-        class: "sl-field-input sl-drawer-caption",
+        class: "sl-drawer-caption",
         rows: "4",
-        placeholder: t(locale, "drawerCaptionPlaceholder")
+        placeholder: t(locale, "drawerCaptionPlaceholder"),
+        oninput: () => textarea.classList.toggle("sl-dirty", textarea.value !== (item.caption || ""))
       });
       textarea.value = item.caption || "";
-      const save = el("button", { type: "button", class: "sl-secondary" }, t(locale, "saveChanges"));
-      save.onclick = async () => {
-        save.disabled = true;
-        note.textContent = t(locale, "saving");
-        const result = await rpc.saveRevision({ batchItemId: item.id, expectedRevision: item.revision, caption: textarea.value });
-        save.disabled = false;
-        if (result?.ok) {
-          item.revision = result.revision;
-          item.caption = textarea.value;
-          note.textContent = t(locale, "drawerRevision", { n: result.revision });
-          const summaries = await rpc.listBatchSummaries({ limit: 50 });
-          inboxState = setInboxSummaries(inboxState, summaries);
-          return;
-        }
-        note.textContent = (result?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
-      };
-      return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, el("div", { class: "sl-setup-actions" }, [save]), note]);
+      composers.set(item.id, { textarea, note, item });
+      return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, note]);
+    };
+    const cover = (item) => {
+      const mediaId = item.sourceItem?.media?.[0]?.id;
+      if (!mediaId) return null;
+      const img = el("img", { class: "sl-drawer-cover", alt: "" });
+      loadCover(item.sourceItem.id, mediaId)
+        .then((url) => { img.src = url; })
+        .catch(() => { img.remove(); });
+      return img;
     };
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
+        cover(item),
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
         el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
@@ -821,6 +814,36 @@ function App() {
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]); })
     ]);
+    /** One saveRevisions for every dirty composer; per-item issues land under their own field. */
+    const saveDirty = async () => {
+      const dirty = [...composers.values()].filter((entry) => entry.textarea.value !== (entry.item.caption || ""));
+      if (!dirty.length) return true;
+      for (const entry of dirty) entry.note.textContent = t(locale, "saving");
+      const result = await rpc.saveRevisions({
+        revisions: dirty.map((entry) => ({
+          batchItemId: entry.item.id,
+          expectedRevision: entry.item.revision,
+          caption: entry.textarea.value
+        }))
+      });
+      let allOk = true;
+      for (const [index, entry] of dirty.entries()) {
+        const one = result?.results?.[index];
+        if (one?.ok) {
+          entry.item.revision = one.revision;
+          entry.item.caption = entry.textarea.value;
+          entry.textarea.classList.remove("sl-dirty");
+          entry.note.textContent = t(locale, "drawerRevision", { n: one.revision });
+        } else {
+          allOk = false;
+          entry.note.textContent = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
+        }
+      }
+      if (allOk || !result?.ok) {
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      }
+      return allOk;
+    };
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
         el("button", {
@@ -830,9 +853,21 @@ function App() {
         }, icon("close"))
       ])]),
       body,
-      el("footer", { class: "sl-preview-actions" }, [
+      el("footer", { class: "sl-preview-actions sl-drawer-actions" }, [
         el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
-        editable ? el("button", { type: "button", class: "sl-primary", onclick: () => { batchDialog.close(); wizard = { ...resumeBatch(wizard, batch), returnToDrawer: batch.id }; renderCurrentView(); } }, t(locale, "drawerContinue")) : null
+        editable ? el("button", {
+          type: "button", class: "sl-secondary",
+          onclick: async () => {
+            if (!(await saveDirty())) return;
+            batchDialog.close();
+            wizard = resumeBatch(wizard, batch);
+            renderCurrentView();
+          }
+        }, t(locale, "continueToPublish")) : null,
+        editable ? el("button", {
+          type: "button", class: "sl-primary",
+          onclick: async () => { await saveDirty(); }
+        }, t(locale, "saveChanges")) : null
       ])
     ])]);
     if (!batchDialog.open) batchDialog.showModal();
@@ -849,9 +884,6 @@ function App() {
     if (lastFocusedBeforePreview instanceof HTMLElement) lastFocusedBeforePreview.focus();
   }
 
-  function askLeaveEditor() {
-    return confirmUnsavedNavigation(leaveDialog, locale);
-  }
   previewDialog.addEventListener("close", closePreview);
   previewDialog.addEventListener("click", (event) => {
     const rect = previewDialog.getBoundingClientRect();
@@ -1043,104 +1075,8 @@ function App() {
     }
   }
 
-  // --- Wizard (localize / review / publish / result) handlers --------------
+  // --- Wizard (review / publish / result) handlers ---------------------------
   const wizardHandlers = {
-    onSelectItem: (id) => {
-      wizard = setActiveItem(wizard, id);
-      renderCurrentView();
-    },
-    onMobilePane: (pane) => { wizard = setMobilePane(wizard, pane); renderCurrentView(); },
-    onDraftChange: (id, patch, redraw = true) => {
-      const field = document.activeElement;
-      const selection = field?.classList?.contains("sl-zh-edit") ? [field.selectionStart, field.selectionEnd] : null;
-      wizard = updateDraft(wizard, id, patch);
-      if (!redraw) {
-        viewHost.querySelector?.(".sl-selection .sl-primary")?.setAttribute("disabled", "");
-        return;
-      }
-      renderCurrentView();
-      if (selection) {
-        const replacement = document.querySelector(".sl-zh-edit");
-        replacement?.focus();
-        replacement?.setSelectionRange(...selection);
-      }
-    },
-    onToggleClaim: (id, value) => {
-      wizard = toggleConfirmedClaim(wizard, id, value);
-      renderCurrentView();
-    },
-    onPosterChange: (patch) => {
-      wizard = updateDraft(wizard, wizard.activeItemId, patch);
-      renderCurrentView();
-    },
-    onSave: async (id) => {
-      if (wizard.submitting || wizard.savingByItem[id] || Object.hasOwn(wizard.conflicts ?? {}, id)) return;
-      const item = wizard.batch.items.find((entry) => entry.id === id);
-      const draft = wizard.drafts[id];
-      const submittedDraft = { ...draft, confirmedClaims: [...(draft.confirmedClaims || [])] };
-      wizard = setSaving(wizard, id, true);
-      wizard = setWizardError(wizard, null);
-      renderCurrentView();
-      try {
-        const result = await rpc.saveRevision({
-          batchItemId: id,
-          expectedRevision: item.revision ?? 0,
-          caption: submittedDraft.caption,
-          posterLayout: { template: submittedDraft.template, headline: submittedDraft.headline, subline: submittedDraft.subline, background: { kind: "solid", value: submittedDraft.background }, textColor: submittedDraft.textColor, align: submittedDraft.align },
-          confirmedClaims: submittedDraft.confirmedClaims,
-          publicationIntent: submittedDraft.publicationIntent,
-          refinementBrief: submittedDraft.refinementBrief,
-          acceptedVisualMode: submittedDraft.acceptedVisualMode,
-          ledger: submittedDraft.ledger
-        });
-        if (result?.ok) wizard = applySavedRevision(wizard, id, result, submittedDraft);
-        // A `{ ok: false }` refusal (a validation `block` issue, or a
-        // now-unknown batch item) is a value, never a caught exception —
-        // server.js's header note — so it is surfaced the same way a
-        // genuine throw is, via the inline banner below.
-        else {
-          wizard = setWizardError(wizard, refusalMessage(result));
-          if (result?.issues?.some((issue) => issue.code === "revision_conflict")) {
-            const batch = await rpc.getBatch(wizard.batch.id);
-            wizard = recordDraftConflict(wizard, id, batch?.items?.find((entry) => entry.id === id));
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      }
-      wizard = setSaving(wizard, id, false);
-      renderCurrentView();
-    },
-    onSavePoster: async (id) => {
-      if (wizard.submitting || wizard.savingByItem[id] || Object.hasOwn(wizard.conflicts ?? {}, id)) return;
-      const item = wizard.batch.items.find((entry) => entry.id === id);
-      const draft = wizard.drafts[id];
-      const submittedDraft = { ...draft };
-      wizard = setSaving(wizard, id, true);
-      wizard = setWizardError(wizard, null);
-      try {
-        const png = await renderPosterPng(draft.template, { headline: draft.headline, subline: draft.subline, background: { value: draft.background }, textColor: draft.textColor });
-        const result = await rpc.savePoster({ batchItemId: id, expectedRevision: item.revision ?? 0, template: draft.template, png });
-        if (result?.ok) wizard = applySavedPoster(wizard, id, result, submittedDraft);
-        else if (isRefusal(result)) {
-          wizard = setWizardError(wizard, refusalMessage(result));
-          if (result?.issues?.some((issue) => issue.code === "revision_conflict")) {
-            const batch = await rpc.getBatch(wizard.batch.id);
-            wizard = recordDraftConflict(wizard, id, batch?.items?.find((entry) => entry.id === id));
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      }
-      wizard = setSaving(wizard, id, false);
-      renderCurrentView();
-    },
-    onResolveConflict: (id, keepEdits) => {
-      wizard = resolveDraftConflict(wizard, id, keepEdits);
-      renderCurrentView();
-    },
     // --- Publish step: the send decision is per item, made at submit -------
     onToggleBinding: (id, binding) => {
       wizard = togglePublishBinding(wizard, id, binding);
@@ -1216,50 +1152,17 @@ function App() {
     },
     onOpenSettings: () => collectionHandlers.onOpenSettings(),
     onBack: async () => {
-      if (wizard.submitting || leavingEditor) return;
-      leavingEditor = true;
-      try {
-      const dirtyIds = wizard.batch ? wizard.batch.items.map((item) => item.id).filter((id) => draftIsDirty(wizard, id)) : [];
-      if (dirtyIds.length) {
-        const decision = await askLeaveEditor();
-        if (decision === "keep") return;
-        if (decision === "discard") {
-          for (const id of dirtyIds) wizard = discardDraft(wizard, id);
-        } else {
-          for (const id of dirtyIds) await wizardHandlers.onSave(id);
-          if (wizard.batch && dirtyIds.some((id) => draftIsDirty(wizard, id))) return;
-        }
-      }
       const target = WIZARD_BACK_TARGET[wizard.step];
-      if (wizard.step === "localize" && wizard.returnToDrawer) {
-        const row = inboxState.summaries.find((entry) => entry.id === wizard.returnToDrawer);
-        wizard = createWizardState();
-        renderCurrentView();
-        if (row) await openBatchDrawer(row);
-        return;
-      }
-      // "select" has no wizard view of its own — going back from Localize
-      // means dropping the batch and returning to the collection.
+      // "select" has no wizard view of its own — going back from Review
+      // means leaving the batch and returning to the collection.
       wizard = target === "select" ? createWizardState() : target ? goToWizardStep(wizard, target) : wizard;
       // A refusal banner from the step being left does not belong on the
       // step navigated to.
       wizard = setWizardError(wizard, null);
       renderCurrentView();
-      } finally {
-        leavingEditor = false;
-      }
     },
     onContinue: async () => {
-      // Localize -> Review asks only that the stored draft is current; the
-      // destination is the Publish step's question, not this transition's.
-      if (wizard.step === "localize") {
-        if (!reviewEnabled(wizard)) {
-          wizard = setWizardError(wizard, t(locale, "reviewBlocked"));
-        } else {
-          wizard = setWizardError(wizard, null);
-          wizard = goToWizardStep(wizard, "review");
-        }
-      } else if (wizard.step === "review") {
+      if (wizard.step === "review") {
         wizard = goToWizardStep(wizard, "publish");
         await refreshPublishState();
       }
@@ -1357,17 +1260,12 @@ function App() {
       replace(viewHost, [navigation, body]);
       return;
     }
-    if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });
-    else if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
+    if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
     else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
     else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
   }
 
-  globalThis.addEventListener?.("beforeunload", (event) => {
-    if (!wizard.batch || !wizard.batch.items.some((item) => draftIsDirty(wizard, item.id))) return;
-    event.preventDefault();
-    event.returnValue = "";
-  });
+
 
   // --- First run, and every visit after it (TASK-302) ------------------------
   /**

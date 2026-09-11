@@ -295,11 +295,11 @@ describe("steps.js transitions", () => {
     items: [{ id: "item1", sourceItem, destinationBindings: ["IG_MAIN"], revision: 0, caption: "", confirmedClaims: [] }]
   };
 
-  it("Continue creates a batch and moves the wizard from select to localize", () => {
+  it("Continue creates a batch and moves the wizard from select to review", () => {
     let wizard = createWizardState();
     expect(wizard.step).toBe("select");
     wizard = setBatch(wizard, baseBatch);
-    expect(wizard.step).toBe("localize");
+    expect(wizard.step).toBe("review");
     expect(wizard.activeItemId).toBe("item1");
     expect(wizard.drafts.item1.caption).toBe(""); // draft seeded from the (empty) saved caption
   });

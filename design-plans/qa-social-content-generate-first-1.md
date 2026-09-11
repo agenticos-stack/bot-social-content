@@ -47,12 +47,20 @@ config stands — an empty `protectedTerms` correctly yields `spans: []`.
    immediately as an `article.sl-post` — cover from the source post's media
    (same `loadCover`/`fillCovers` path), caption snapshot (draft when saved,
    source marked "source" otherwise), and a state chip:
-   queued / drafting / awaiting rights / submitted / scheduled /
-   needs attention. The whole card opens the batch drawer; revision history,
-   rights detail, publications and issues stay inside it.
+   queued / drafting / submitted / scheduled / needs attention.
+   The whole card opens the batch drawer, which IS the editor: cover image,
+   source caption, an inline caption textarea per draftable item, a poster
+   preview when the item carries `posterLayout`, and compact footer actions —
+   Close · Continue to publish (saves first) · Save changes (one
+   `saveRevisions` for every dirty field; per-item refusals render under
+   their own field).
    **No ask card.** The copyable-message banner was removed — the owner is
    not the courier. A `queued` chip per item carries the durable
    `generation: "requested"` state; drafts appear as they are saved.
+   **No Localize step.** The wizard is review → publish only: editing is the
+   drawer's composer or the agent (`saveRevisions`, `posterLayout` params —
+   never bytes). With the editor gone, `savePoster` has no UI caller; an
+   item's `posterLayout` renders as the drawer's canvas preview.
 3. **Durability.** Reload the page → queued chips still show (they read
    `batches.generation`, not memory). `dismissGenerationAsk` remains as the
    durable clear for an abandoned batch.

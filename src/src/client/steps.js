@@ -4,13 +4,12 @@
 // functions so tests/social-localization-client.test.ts can assert step
 // transitions and validation gating without a DOM.
 
-import { detectProtectedLiterals, posterPngConstraints, validatePosterLayout, validateRevisionDraft } from "../../model.js";
-import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
+import { detectProtectedLiterals, validateRevisionDraft } from "../../model.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { isEditableItem } from "./inbox.js";
 
-export const STEPS = Object.freeze(["select", "localize", "review", "publish", "result"]);
+export const STEPS = Object.freeze(["select", "review", "publish", "result"]);
 
 const POSTER_TEMPLATES = Object.freeze(["1080x1350", "1080x1080"]);
 const DEFAULT_BACKGROUND = "#1c1c1e";
@@ -99,7 +98,7 @@ export function setBatch(state, batch) {
       intent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" }
     };
   }
-  return { ...state, step: "localize", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
+  return { ...state, step: "review", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
 }
 
 export function recordDraftConflict(state, id, savedItem) {
@@ -595,121 +594,6 @@ export function renderSetup(root, draft, ctx) {
   ]), form]);
 }
 
-function renderHighlightedSource(text, policy) {
-  const spans = detectProtectedLiterals(text, policy);
-  const fragment = document.createDocumentFragment();
-  let cursor = 0;
-  for (const span of spans) {
-    if (span.start > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, span.start)));
-    fragment.appendChild(el("mark", { class: "sl-lit" }, text.slice(span.start, span.end)));
-    cursor = span.end;
-  }
-  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
-  return fragment;
-}
-
-function renderIssueList(locale, issues, onMark) {
-  if (!issues.length) return null;
-  return el(
-    "ul",
-    { class: "sl-issue-list" },
-    issues.map((issue) =>
-      el("li", { class: `sl-issue sl-issue-${issue.severity}` }, [
-        el("span", { class: "sl-issue-badge" }, t(locale, `issueSeverity${issue.severity[0].toUpperCase()}${issue.severity.slice(1)}`)),
-        el("p", null, issue.message),
-        issue.severity === "confirm" && issue.span
-          ? el("button", { type: "button", class: "sl-mark-btn", onclick: () => onMark(issue.span.value) }, t(locale, "markReviewed"))
-          : null
-      ])
-    )
-  );
-}
-
-function renderPosterEditor(root, item, draft, ctx) {
-  const { locale, handlers } = ctx;
-  const canvas = el("canvas", { class: "sl-poster-canvas", "aria-label": "Poster preview" });
-  const templateButtons = posterTemplatesList().map((template) =>
-    el(
-      "button",
-      {
-        type: "button",
-        class: "sl-tpl-btn",
-        "aria-pressed": String(draft.template === template),
-        onclick: () => handlers.onPosterChange({ template })
-      },
-      t(locale, template === "1080x1350" ? "tplPortrait" : "tplSquare")
-    )
-  );
-
-  function redraw() {
-    const { width, height } = posterPngConstraints(draft.template);
-    canvas.width = width;
-    canvas.height = height;
-    const layout = computePosterLayout({ template: draft.template, headline: draft.headline, subline: draft.subline, align: draft.align });
-    const ctx2d = canvas.getContext("2d");
-    if (ctx2d) drawPoster(ctx2d, layout, { headline: draft.headline, subline: draft.subline, background: { value: draft.background }, textColor: draft.textColor });
-  }
-  redraw();
-
-  const layoutCheck = validatePosterLayout({
-    template: draft.template,
-    headline: draft.headline,
-    subline: draft.subline,
-    background: { kind: "solid", value: draft.background },
-    textColor: draft.textColor,
-    align: draft.align
-  });
-
-  const editor = el("div", { class: "sl-poster-editor" }, [
-    el("h3", null, t(locale, "posterTitle")),
-    el("p", { class: "sl-field-note" }, t(locale, "posterHint")),
-    el("div", { class: "sl-poster-grid" }, [
-      el("div", { class: "sl-template-pick" }, templateButtons),
-      el("div", { class: "sl-field-group" }, [
-        el("div", { class: "sl-field" }, [
-          el("label", null, t(locale, "posterHeadline")),
-          el("input", {
-            type: "text",
-            value: draft.headline,
-            onchange: (event) => {
-              handlers.onPosterChange({ headline: event.currentTarget.value });
-            }
-          })
-        ]),
-        el("div", { class: "sl-field" }, [
-          el("label", null, t(locale, "posterSubline")),
-          el("input", { type: "text", value: draft.subline, onchange: (event) => handlers.onPosterChange({ subline: event.currentTarget.value }) })
-        ]),
-        el("div", { class: "sl-field" }, [
-          el("label", null, t(locale, "posterBackground")),
-          el("input", { type: "color", value: draft.background, onchange: (event) => handlers.onPosterChange({ background: event.currentTarget.value }) })
-        ]),
-        el("p", { class: "sl-field-note" }, t(locale, "posterNote")),
-        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onSavePoster(item.id) }, t(locale, "posterSave"))
-      ]),
-      el("div", { class: "sl-poster-preview" }, [canvas])
-    ]),
-    layoutCheck.ok ? null : el("p", { class: "sl-field-note sl-issue-block" }, layoutCheck.issues.map((issue) => issue.message).join(" "))
-  ]);
-
-  root.appendChild(editor);
-  handlers.onPosterRedrawReady?.(redraw);
-}
-
-function posterTemplatesList() {
-  return POSTER_TEMPLATES;
-}
-
-function renderVisualControls(item, draft, locale, handlers) {
-  const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
-  return el("fieldset", { class: "sl-setup-section" }, [
-    el("legend", null, t(locale, "setupVisual")),
-    field("setupVisual", el("select", { onchange: e => handlers.onDraftChange(item.id, { acceptedVisualMode: e.currentTarget.value }) },
-      [["keep_original", "setupVisualOriginal"], ["text_poster", "setupVisualPoster"], ...(draft.acceptedVisualMode === "ai_refinement" ? [["ai_refinement", "setupVisualExisting"]] : [])].map(([value, key]) => el("option", { value, selected: draft.acceptedVisualMode === value }, t(locale, key))))),
-    el("p", { class: "sl-field-note" }, t(locale, "setupVisualNote"))
-  ]);
-}
-
 /**
  * The timing half of the send decision, per item on the Publish step
  * (TASK-016). Writes `publishChoices[itemId].intent` — the submission's own
@@ -732,114 +616,6 @@ function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
   ]);
 }
 
-export function renderLocalize(root, state, ctx) {
-  const { locale, policy, handlers } = ctx;
-  const batch = state.batch;
-  if (!batch) return replace(root, []);
-
-  const tabs = el(
-    "div",
-    { class: "sl-item-tabs", role: "tablist" },
-    batch.items.map((item) =>
-      el(
-        "button",
-        {
-          type: "button",
-          role: "tab",
-          "aria-selected": String(item.id === state.activeItemId),
-          onclick: () => handlers.onSelectItem(item.id)
-        },
-        item.sourceItem?.text ? item.sourceItem.text.split("\n")[0].slice(0, 40) : item.id
-      )
-    )
-  );
-
-  const activeItem = batch.items.find((item) => item.id === state.activeItemId) || batch.items[0];
-  const draft = state.drafts[activeItem.id];
-  const issueResult = computeIssues(activeItem, draft, policy);
-
-  const paneTabs = el("div", { class: "sl-mobile-panes", role: "tablist" }, [
-    ["source", t(locale, "paneSource")], ["draft", t(locale, "paneDraft")], ["preview", t(locale, "panePreview")]
-  ].map(([pane, label]) => el("button", { type: "button", role: "tab", "aria-selected": String(state.mobilePane === pane), onclick: () => handlers.onMobilePane?.(pane) }, label)));
-  const dual = el("div", { class: `sl-dual sl-mobile-pane-${state.mobilePane}` }, [
-    el("div", { class: "sl-dual-pane" }, [
-      el("header", null, [el("strong", null, t(locale, "sourceHeader"))]),
-      el("div", { class: "sl-dual-body" }, [
-        el("p", { class: "sl-src-text" }, [renderHighlightedSource(activeItem.sourceItem?.text || "", policy)]),
-        el("p", { class: "sl-legend" }, t(locale, "legend"))
-      ])
-    ]),
-    el("div", { class: "sl-dual-pane" }, [
-      el("header", null, [el("strong", null, t(locale, "zhHeader")), el("span", { class: "sl-revision-badge" }, t(locale, "revisionBadge", { n: activeItem.revision ?? 0 }))]),
-      el("div", { class: "sl-dual-body" }, [
-        el("textarea", {
-          class: "sl-zh-edit",
-          "aria-label": t(locale, "zhEditLabel", { title: activeItem.sourceItem?.text?.slice(0, 30) || activeItem.id }),
-          value: draft.caption,
-          oninput: (event) => handlers.onDraftChange(activeItem.id, { caption: event.currentTarget.value })
-        })
-      ])
-    ])
-  ]);
-
-  const issueList = renderIssueList(locale, issueResult.issues, (claimValue) => handlers.onToggleClaim(activeItem.id, claimValue));
-
-  const posterHost = el("div", { class: `sl-mobile-poster-host${state.mobilePane === "preview" ? " sl-mobile-pane-visible" : ""}` }, []);
-  renderPosterEditor(posterHost, activeItem, draft, ctx);
-
-  const savingThis = !!state.savingByItem[activeItem.id];
-  // Localize asks only that the review the owner reads next is the draft that
-  // is stored — destination and timing are the Publish step's question now.
-  const reviewable = reviewEnabled(state);
-
-  const footer = el("footer", { class: "sl-selection" }, [
-    el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-secondary",
-          disabled: savingThis || Object.hasOwn(state.conflicts ?? {}, activeItem.id),
-          onclick: () => handlers.onSave(activeItem.id)
-        },
-        savingThis ? t(locale, "saving") : t(locale, "saveChanges")
-      ),
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-primary",
-          style: "margin-left:auto",
-          disabled: !reviewable,
-          title: reviewable ? "" : t(locale, "reviewBlocked"),
-          onclick: () => handlers.onContinue()
-        },
-        t(locale, "continueToReview")
-      )
-    ])
-  ]);
-
-  replace(root, [el("fieldset", { disabled: !!state.submitting, style: "border:0;padding:0;margin:0;min-width:0" }, [
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "localizeTitle")), el("p", null, t(locale, "localizeDesc"))]),
-    renderWizardError(state),
-    Object.hasOwn(state.conflicts ?? {}, activeItem.id) ? el("section", { class: "sl-wizard-error", "aria-label": t(locale, "conflictTitle") }, [
-      el("p", { role: "alert" }, t(locale, "conflictTitle")),
-      el("p", null, state.conflicts[activeItem.id]?.caption || t(locale, "conflictUnavailable")),
-      isEditableItem(state.conflicts[activeItem.id]) ? el("div", null, [
-        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onResolveConflict(activeItem.id, false) }, t(locale, "conflictReload")),
-        el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onResolveConflict(activeItem.id, true) }, t(locale, "conflictKeep"))
-      ]) : el("p", null, t(locale, "conflictUnavailable"))
-    ]) : null,
-    tabs,
-    paneTabs,
-    dual,
-    issueList,
-    posterHost,
-    renderVisualControls(activeItem, draft, locale, handlers),
-    footer
-  ])]);
-}
 
 export function renderReview(root, state, ctx) {
   const { locale, handlers } = ctx;
@@ -867,7 +643,7 @@ export function renderReview(root, state, ctx) {
 
   const footer = el("footer", { class: "sl-selection" }, [
     el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "backToLocalize")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
       el("button", { type: "button", class: "sl-secondary", style: "margin-left:auto", onclick: () => handlers.onContinue() }, t(locale, "continueToPublish"))
     ])
   ]);
@@ -1078,4 +854,4 @@ export function renderResult(root, state, ctx) {
   ]);
 }
 
-export { renderPosterPng };
+
