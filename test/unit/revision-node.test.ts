@@ -64,11 +64,14 @@ function minimalPng(width: number, height: number) {
 
 function seed(gadget: Gadget) {
   gadget.storage.setConfig({
-    rightsPolicy: "require_confirmation",
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
-    claimsRequiringConfirmation: []
+    claimsRequiringConfirmation: [],
+    // The org's stored brief is what permits "price" as an allowed change —
+    // a caller-supplied allowedChanges is honoured only where setup already
+    // did, so these tests' briefs need it here, not only on the call.
+    refinementBrief: { allowedChanges: ["price"] }
   });
   gadget.storage.upsertItem({
     id: "instagram:IG_MAIN:p1",
@@ -89,8 +92,7 @@ function seed(gadget: Gadget) {
     batchId: "batch-1",
     itemId: "instagram:IG_MAIN:p1",
     destinationBindings: ["FB_MAIN"],
-    state: "drafting",
-    rightsStatus: "confirmed"
+    state: "drafting"
   });
 }
 
@@ -210,6 +212,27 @@ describe("social archive revision metadata persistence", () => {
       publicationIntent: expect.objectContaining({ publishMode: "publish_now" })
     });
   });
+
+  it("a caption-only save carries posterLayout and confirmedClaims forward", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    // The agent writes a draft + poster params; the owner then edits the
+    // caption in the drawer composer — a save that names no layout.
+    await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 0,
+      caption: "第一稿內容文字",
+      posterLayout: { template: "1080x1080", headline: "Hello", background: { kind: "solid", value: "#000000" }, textColor: "#ffffff", align: "left" },
+      confirmedClaims: ["award"]
+    });
+    const saved = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 1, caption: "第二稿內容文字" });
+    expect(saved).toMatchObject({ ok: true, revision: 2 });
+    expect(gadget.storage.latestRevision("item-1")).toMatchObject({
+      posterLayout: expect.objectContaining({ template: "1080x1080", headline: "Hello" }),
+      confirmedClaims: ["award"]
+    });
+  });
 });
 
 describe("saveRevision validation routing", () => {
@@ -325,5 +348,52 @@ describe("saveRevision validation routing", () => {
     expect(gadget.storage.latestRevision("item-1")?.ledger?.spans).toContainEqual(
       expect.objectContaining({ text: "HK$10", kind: "price", basis: "owner:owner_1" })
     );
+  });
+
+  it("passes a permitted-brief draft that preserves a protected name verbatim", async () => {
+    // The positive case (QA gap): preservation running on both paths must not
+    // over-block a legitimate draft. Stored brief allows "tone"; the caller
+    // uses it; the zh caption keeps "Nautical living" verbatim with the text
+    // reordered around it — expect ok with an EMPTY issues array.
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    gadget.storage.setConfig({
+      protectedTerms: ["Nautical living"],
+      protectedHashtags: [],
+      disclaimers: [],
+      claimsRequiringConfirmation: [],
+      refinementBrief: { allowedChanges: ["tone"] }
+    });
+    gadget.storage.upsertItem({
+      id: "instagram:IG_MAIN:p2",
+      sourceBinding: "IG_MAIN",
+      sourceLabel: "Main Instagram",
+      provider: "instagram",
+      providerItemId: "p2",
+      text: "Annonse — Nautical living er og blir en favoritt for Halia",
+      media: [],
+      metrics: {},
+      contentHash: "source-hash-2",
+      firstSeenAt: "2026-09-06T00:00:00.000Z",
+      lastSeenAt: "2026-09-06T00:00:00.000Z"
+    });
+    gadget.storage.createBatch("batch-2");
+    gadget.storage.createBatchItem({
+      id: "item-2",
+      batchId: "batch-2",
+      itemId: "instagram:IG_MAIN:p2",
+      destinationBindings: [],
+      state: "drafting"
+    });
+    const result = await gadget.saveRevisions({
+      revisions: [{
+        batchItemId: "item-2",
+        expectedRevision: 0,
+        caption: "依然是小傢伙每日的最愛 — Nautical living 配方不變 🐟",
+        refinementBrief: { allowedChanges: ["tone"] }
+      }]
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(result.results).toEqual([expect.objectContaining({ ok: true, revision: 1, issues: [] })]);
   });
 });

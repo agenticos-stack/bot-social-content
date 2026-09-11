@@ -44,7 +44,7 @@
 //
 // A `throw` in a facet method is therefore never the right way to answer a
 // condition an owner can hit through ordinary use of this gadget — an
-// unconfirmed rights status, an unresolved destination, a stale revision, a
+// unresolved destination, a stale revision, a
 // missing batch item, a rejected poster upload, a provider outage. Those
 // answer with a VALUE instead, the same idiom the platform's own doors
 // already use for an expected refusal
@@ -59,14 +59,14 @@
 //
 // NOTHING IN A FACET METHOD THROWS ANYMORE, INCLUDING A GENUINE CALLER BUG.
 // The first pass here kept two throws for conditions no UI caller could
-// produce (`savePoster` with no bytes at all; `confirmRights` with a status
-// other than "confirmed"/"denied") on the reasoning that a real programming
+// produce (`savePoster` with no bytes at all; an unknown status literal on a
+// rights call) on the reasoning that a real programming
 // error is different from an owner-facing condition. It is not, at this
 // boundary: a workerd test exercising exactly those two throws through this
 // same facet harness — nothing else — reproduced the identical failure this
 // whole fix exists to remove, `Test Files 11 passed / Tests 117 passed`
 // alongside two `Unhandled Rejection`s reading "savePoster needs PNG
-// bytes..." / `confirmRights status must be...`, `exit 1`. Removing just
+// bytes..." and the rights-status variant, `exit 1`. Removing just
 // those two tests (`it.skip`) made the same suite exit 0. A throw is
 // dangerous here because of WHERE it is, not why it happened — so an
 // invariant violation now returns `{ ok: false, code: "invalid_argument",
@@ -87,12 +87,13 @@ import {
   normalizeLedger,
   applyProtectedOverridesToLedger,
   draftOrigin,
-  rightsObligation,
+
   posterPngConstraints,
   validatePosterLayout,
   validateRevisionDraft,
   normalizeOpenInstagramPosts,
   publicationMedia,
+  isPublisherAddressableUrl,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -119,6 +120,7 @@ import {
   socialCreateDraft,
   socialReadStatus,
   socialSubmitForReview,
+  socialUploadMedia,
   listOpenAccountPosts,
   mediaUrlFor
 } from "./doors.js";
@@ -257,6 +259,22 @@ export class Gadget extends DurableObject {
     this.storage = new Storage(ctx);
     this.storage.migrate();
     this.subscribers = new Map();
+    /*
+     * RPC calls may overlap at await points. Chain mutations so each
+     * operation observes and commits one authoritative state in strict
+     * order — the same serial lane the workspace-docs blueprint carries.
+     * A read-then-write split across an `await` (`saveConfiguration`
+     * derives bindings behind door calls before writing; `submitForReview`
+     * files publications after them) is exactly the shape that corrupts
+     * under a 4-way pool, and no `transactionSync` reaches across an await.
+     */
+    this.mutationQueue = Promise.resolve();
+  }
+
+  enqueueMutation(fn) {
+    const result = this.mutationQueue.then(fn);
+    this.mutationQueue = result.catch(() => {});
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -347,7 +365,7 @@ export class Gadget extends DurableObject {
   /**
    * `record.sources` / `.destinations` are OPTIONAL: the client's own
    * `toConfigPayload` (`src/client/steps.js`) sends only policy fields —
-   * cadence, timezone, rightsPolicy, locale, notifications, protected-term
+   * cadence, timezone, locale, notifications, protected-term
    * lists — never a binding list, because door grants (TASK-301's setup
    * screen) already establish which connectors this instance holds before
    * this gadget's own first-run screen runs. When the caller omits them, the
@@ -356,16 +374,21 @@ export class Gadget extends DurableObject {
    * `destinations` array — a future richer setup screen, or a test — is still
    * validated strictly (REQ-002: 1 to 20, unique bindings).
    */
-  async setConfig(input) {
+  setConfig(input) {
     // Compatibility: old installed clients coupled Save to starting monitoring.
-    try { return await this.saveConfiguration(input, true); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
+    return this.enqueueMutation(async () => {
+      try { return await this.saveConfiguration(input, true); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
-  async saveSetup(input) {
-    if (this.monitoringChanging) return { ok: false, message: "Wait for the monitoring change to finish before saving." };
-    try { return await this.saveConfiguration(input, false); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
+  saveSetup(input) {
+    // The mutation lane serialises this against any monitoring change still
+    // in flight — the old `monitoringChanging` flag's job, done by ordering.
+    return this.enqueueMutation(async () => {
+      try { return await this.saveConfiguration(input, false); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
   async saveConfiguration(input, legacyActivation) {
@@ -395,12 +418,11 @@ export class Gadget extends DurableObject {
     return this.summary();
   }
 
-  async setMonitoring(enabled) {
-    if (this.monitoringChanging) return { ok: false, message: "A monitoring change is already in progress." };
-    this.monitoringChanging = true;
-    try { return await this.changeMonitoring(enabled); }
-    catch (error) { return { ok: false, message: errorMessage(error) }; }
-    finally { this.monitoringChanging = false; }
+  setMonitoring(enabled) {
+    return this.enqueueMutation(async () => {
+      try { return await this.changeMonitoring(enabled); }
+      catch (error) { return { ok: false, message: errorMessage(error) }; }
+    });
   }
 
   async changeMonitoring(enabled) {
@@ -507,6 +529,47 @@ export class Gadget extends DurableObject {
     return described;
   }
 
+  /**
+   * A connector granted AFTER first setup (TASK-020).
+   *
+   * `deriveBindingsFromGrants` ran only inside `saveConfiguration`, and there
+   * only on the legacy `setConfig` path or while no config existed — and the
+   * settings form's payload (`toConfigPayload`) has never carried `sources`
+   * or `destinations`. So a door granted later never appeared: the lists
+   * `summary()` reports are read from storage, and nothing after first setup
+   * ever wrote to them.
+   *
+   * ADDITIVE, and only additive. A granted-but-unstored binding is inserted;
+   * every row already stored keeps its cursor, scan history and describe
+   * exactly as they are. It does not touch the config, does not arm or alter
+   * a schedule, and does not remove a revoked grant either — a revoked door's
+   * row stays so the items it produced still name their source, and
+   * `summary().doors` is what reports it gone.
+   */
+  refreshGrants() {
+    return this.enqueueMutation(() => this.refreshGrantsLocked());
+  }
+
+  async refreshGrantsLocked() {
+    const derived = await this.deriveBindingsFromGrants();
+    const knownSources = new Set(this.storage.listSources().map((row) => row.binding));
+    const knownDestinations = new Set(this.storage.listDestinations().map((row) => row.binding));
+    const addedSources = derived.sources.filter((row) => !knownSources.has(row.binding));
+    const addedDestinations = derived.destinations.filter((row) => !knownDestinations.has(row.binding));
+    this.ctx.storage.transactionSync(() => {
+      for (const source of addedSources) this.storage.addSourceBinding(source);
+      for (const destination of addedDestinations) this.storage.addDestinationBinding(destination);
+    });
+    return {
+      ok: true,
+      added: {
+        sources: addedSources.map((row) => ({ binding: row.binding, label: row.label, provider: row.provider })),
+        destinations: addedDestinations.map((row) => ({ binding: row.binding, label: row.label, provider: row.provider }))
+      },
+      summary: await this.summary()
+    };
+  }
+
   async armSchedule(cadence, timeZone) {
     const withZone = cadence.kind === "interval" ? cadence : { ...cadence, timezone: cadence.timezone || timeZone };
     try {
@@ -536,7 +599,11 @@ export class Gadget extends DurableObject {
    * Refuses by value like everything else in this facet: a throw over RPC
    * breaks the Durable Object output gate and poisons the actor.
    */
-  async addOpenSource(link) {
+  addOpenSource(link) {
+    return this.enqueueMutation(() => this.addOpenSourceLocked(link));
+  }
+
+  async addOpenSourceLocked(link) {
     const resolved = resolveOpenSource(link);
     if (!resolved.ok) return resolved;
 
@@ -563,7 +630,11 @@ export class Gadget extends DurableObject {
   }
 
   /** Stop watching a public account. Its stored items are left alone. */
-  async removeOpenSource(binding) {
+  removeOpenSource(binding) {
+    return this.enqueueMutation(() => this.removeOpenSourceLocked(binding));
+  }
+
+  async removeOpenSourceLocked(binding) {
     const source = this.storage.getSource(binding);
     if (!source || source.origin !== "open") {
       return { ok: false, code: "not_open_source", message: "That is not a public account this workspace watches." };
@@ -672,8 +743,8 @@ export class Gadget extends DurableObject {
    * `runId` each time so a manual refresh is never mistaken for a retry of
    * the last one.
    */
-  async refresh() {
-    return this.runScan(`manual:${crypto.randomUUID()}`);
+  refresh() {
+    return this.enqueueMutation(() => this.runScan(`manual:${crypto.randomUUID()}`));
   }
 
   /**
@@ -696,12 +767,14 @@ export class Gadget extends DurableObject {
    * running it — the item-level idempotency underneath (REQ-013's
    * `UNIQUE(source_binding, provider_item_id)` upsert) still holds either way.
    */
-  async scan(firing) {
-    if (this.storage.getConfig()?.monitoringEnabled === false) {
-      return { skipped: true, reason: "Monitoring is paused." };
-    }
-    const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
-    return this.runScan(runId, firingInstant(firing));
+  scan(firing) {
+    return this.enqueueMutation(() => {
+      if (this.storage.getConfig()?.monitoringEnabled === false) {
+        return { skipped: true, reason: "Monitoring is paused." };
+      }
+      const runId = typeof firing?.runId === "string" && firing.runId ? firing.runId : `hook:${crypto.randomUUID()}`;
+      return this.runScan(runId, firingInstant(firing));
+    });
   }
 
   async runScan(runId, at = new Date()) {
@@ -770,8 +843,14 @@ export class Gadget extends DurableObject {
      * turned on.
      *
      * Returned rather than sent. There is nothing here for the gadget to call
-     * (SEC-003): the platform reads this off the hook's result and files an
-     * action its owner answers.
+     * (SEC-003) — and, verified 2026-09-10, nothing on the platform that reads
+     * it either: `schedule-room-invoker.ts` keeps only `error`/`detail` from
+     * the hook's response and `schedule-delivery.ts` reduces the outcome to
+     * `{ok}`/`{ok:false}`. The request is still emitted — the shape is the
+     * contract agenticos-stack/agenticos#1861 is asked to honor — but until
+     * that lands, `drafting: "on_new"` has never produced a revision through
+     * this path. Generation today is the Content-tab ask (see the client's
+     * ask card) or the owner speaking to the agent directly.
      */
     const workRequest = this.workRequestFor(perSource, config);
 
@@ -801,10 +880,10 @@ export class Gadget extends DurableObject {
    * thing standing between an owner and a queue.
    *
    * THE BATCH IS OPENED HERE because a draft has nowhere to go without one:
-   * `saveRevision` takes a `batchItemId`. Every granted destination, which is
-   * exactly what the client's own picker sends today — a scan has no narrower
-   * intent to represent, and inventing one would be this method guessing at a
-   * choice the owner never made.
+   * `saveRevision` takes a `batchItemId`. A destination is deliberately NOT
+   * passed (TASK-004): drafting is `generate` and needs no `send` target —
+   * where a scan-drafted post goes is the owner's decision at submit, and a
+   * workspace with no destination granted still gets its drafts.
    *
    * Never throws: a scan's stored findings must survive a failure to ask about
    * them, and the ask is the cheap half.
@@ -816,11 +895,10 @@ export class Gadget extends DurableObject {
     if (!itemIds.length) return null;
 
     try {
-      const destinationBindings = this.storage.listDestinations().map((row) => row.binding);
-      const opened = this.openBatch({ itemIds, destinationBindings });
-      // By value, never a throw (PAT-007). A refusal here — no destination
-      // granted, or these items already have an active localization — is not a
-      // scan failure and is not something to ask an owner about.
+      const opened = this.openBatch({ itemIds });
+      // By value, never a throw (PAT-007). A refusal here — these items
+      // already have an active localization — is not a scan failure and is
+      // not something to ask an owner about.
       if (!opened || opened.ok === false || !opened.items?.length) return null;
 
       return {
@@ -1085,20 +1163,26 @@ export class Gadget extends DurableObject {
     return { ...item, seen: this.storage.isSeen(item.id) };
   }
 
-  async markSeen(ids) {
-    const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
-    this.storage.markSeen(list);
-    return { marked: list.length };
+  markSeen(ids) {
+    return this.enqueueMutation(() => {
+      const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+      this.storage.markSeen(list);
+      return { marked: list.length };
+    });
   }
 
-  async setSelection(id, selected) {
-    this.storage.setSelection(String(id), Boolean(selected));
-    return { id: String(id), selected: Boolean(selected) };
+  setSelection(id, selected) {
+    return this.enqueueMutation(() => {
+      this.storage.setSelection(String(id), Boolean(selected));
+      return { id: String(id), selected: Boolean(selected) };
+    });
   }
 
-  async clearSelection() {
-    this.storage.clearSelection();
-    return { cleared: true };
+  clearSelection() {
+    return this.enqueueMutation(() => {
+      this.storage.clearSelection();
+      return { cleared: true };
+    });
   }
 
   async getMedia(itemId, mediaId, options = {}) {
@@ -1144,7 +1228,14 @@ export class Gadget extends DurableObject {
    * one exists — handled the same as any other ungranted-door case below,
    * and self-heals with no change here once it lands (RISK-002).
    */
-  async fetchAndCacheMedia(itemId, mediaId, rendition) {
+  fetchAndCacheMedia(itemId, mediaId, rendition) {
+    // Reached from a read method (`getMedia`), so the lane is taken here, at
+    // the write — a missing cache row checked before an `await`ed fetch is
+    // the read-then-write shape this exists to serialise.
+    return this.enqueueMutation(() => this.fetchAndCacheMediaLocked(itemId, mediaId, rendition));
+  }
+
+  async fetchAndCacheMediaLocked(itemId, mediaId, rendition) {
     const item = this.storage.getItem(itemId);
     /*
      * Say which of the three was missing.
@@ -1250,15 +1341,15 @@ export class Gadget extends DurableObject {
   // -----------------------------------------------------------------------
 
   /**
-   * `itemIds` and `destinationBindings` — the client (TASK-203) sends every
-   * granted destination from `summary().destinations[]` every time, so one
-   * batch_items row per source item carries the whole `destinationBindings`
-   * set. That is a fact about today's picker, NOT the requirement: REQ-017's
-   * unit is the pair `(sourceItem, destinationBinding)`, and this method
-   * tests it as a pair (`duplicateKey`, `findDuplicates`) so adding a
-   * per-destination picker later changes the UI and nothing here.
+   * `itemIds`, and an optional `destinationBindings` — a destination is a
+   * `send` target decided at submit (`refactor-draft-before-destination-1`),
+   * not a precondition for drafting, so the argument is recorded as `bound`
+   * publications rather than stored on the item. REQ-017's unit is the pair
+   * `(sourceItem, destinationBinding)`: while an item has no filed
+   * publication, the item alone is the key (`findDuplicates`); once it has
+   * been sent, `submitForReview` tests the pair.
    *
-   * REFUSES, IT DOES NOT REPARENT. A second active localization for a pair
+   * REFUSES, IT DOES NOT REPARENT. A second active localization for a post
    * that already has one comes back as `{ ok: false, code:
    * "duplicate_active" }` naming the batch and item that hold it (PAT-007 —
    * by value, never a throw). This used to move the existing row into the new
@@ -1278,7 +1369,11 @@ export class Gadget extends DurableObject {
    * to this gadget's own `?w=<gadgetId>` (TASK-104), the same reason
    * `notifyNewItems` above never builds one either.
    */
-  async createBatch(input) {
+  createBatch(input) {
+    return this.enqueueMutation(() => this.createBatchLocked(input));
+  }
+
+  async createBatchLocked(input) {
     const opened = this.openBatch(input);
     if (opened.ok === false) return opened;
 
@@ -1308,51 +1403,35 @@ export class Gadget extends DurableObject {
       : [];
     if (!ids.length)
       return { ok: false, code: "batch_needs_items", message: "createBatch needs at least one item id." };
-    if (!destinations.length) {
-      return {
-        ok: false,
-        code: "batch_needs_destinations",
-        // Read by an owner, not only by the caller that made the mistake:
-        // the client puts this sentence on screen verbatim.
-        message: "No destination is set up yet. Add a destination account before moving posts to Localize."
-      };
-    }
 
-    // Checked BEFORE anything is written, so a refusal never leaves an empty
-    // batch row behind for the owner to wonder about.
+    /*
+     * A DESTINATION IS A SEND TARGET, NOT A PRECONDITION (TASK-001). Drafting
+     * a localized caption is `generate` — nothing about it needs a `send`
+     * target, so an absent or empty `destinationBindings` is a batch like any
+     * other and `batch_needs_destinations` is no longer answered here. The
+     * code stays in the vocabulary for `submitForReview`, where it is true.
+     *
+     * While a batch item has no FILED publication, REQ-017's duplicate key is
+     * the source item alone (TASK-002): two drafts of the same post is not a
+     * thing an owner asked for. Once an item has been sent somewhere, the
+     * pair rule takes over — at submit, not here.
+     */
     if (createNewVersion !== true) {
-      const duplicates = this.findDuplicates(ids, destinations);
+      const duplicates = this.findDuplicates(ids);
       if (duplicates.length) return duplicateRefusal(duplicates);
     }
 
-    const config = this.storage.getConfig();
-    const rightsPolicy = config?.rightsPolicy ?? "require_confirmation";
     const batchId = generateId("batch");
-    this.storage.createBatch(batchId);
+    // Every opened batch is a drafting request — the owner's Draft action
+    // here, a scan's workRequest below — so the mark is durable state the
+    // Content tab reads after any reload, not a flag in client memory.
+    this.storage.createBatch(batchId, "requested");
 
     const items = [];
     for (const itemId of ids) {
       const item = this.storage.getItem(itemId);
       if (!item) continue;
-      /**
-       * THE RIGHTS RULE, PER SOURCE (REQ-106/107).
-       *
-       * `trust_connected` means "trust this content because the account is
-       * connected". For an account this organisation does NOT hold, that
-       * sentence is false, and acting on it republishes a stranger's post to
-       * the owner's own channel with nobody having agreed.
-       *
-       * So an OPEN source is always `require_confirmation`, whatever the
-       * workspace-wide setting says. Per source and not per workspace: one
-       * trusted account does not vouch for the others, and a workspace mixing
-       * both kinds is the ordinary case rather than the exception.
-       *
-       * Decided here, where the batch item is created, rather than in the UI —
-       * a rule that only exists on a screen is a rule an agent can skip.
-       */
-      const sourceRow = this.storage.getSource(item.sourceBinding);
-      const effectivePolicy = sourceRow?.origin === "open" ? "require_confirmation" : rightsPolicy;
-      const batchItem = this.createOneBatchItem(batchId, item, destinations, effectivePolicy);
+      const batchItem = this.createOneBatchItem(batchId, item, destinations);
       items.push(this.projectBatchItem(batchItem));
     }
 
@@ -1361,50 +1440,56 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * Every `(sourceItem, destinationBinding)` pair among `itemIds` ×
-   * `destinations` that an active batch item already holds — REQ-017's real
-   * key. One entry per conflicting row, carrying the batch and item ids the
-   * owner needs in order to go and look at it.
+   * Every source item in `itemIds` that already has an active localization
+   * which never went anywhere — the item-key half of REQ-017 while drafting
+   * (TASK-002). An item with a FILED publication does not block a second
+   * draft here; the pair rule at submit owns that case (`submitForReview`).
+   * One entry per conflicting row, carrying the batch and item ids the owner
+   * needs in order to go and look at it.
    */
-  findDuplicates(itemIds, destinations) {
+  findDuplicates(itemIds) {
     const conflicts = [];
     for (const itemId of itemIds) {
       for (const existing of this.storage.activeBatchItemsFor(itemId)) {
-        const overlap = destinations.filter((binding) => existing.destinationBindings.includes(binding));
-        if (!overlap.length) continue;
+        if (this.storage.hasFiledPublication(existing.id)) continue;
         conflicts.push({
           itemId,
           batchId: existing.batchId,
           batchItemId: existing.id,
-          destinationBindings: overlap
+          destinationBindings: existing.destinationBindings
         });
       }
     }
     return conflicts;
   }
 
-  createOneBatchItem(batchId, item, destinationBindings, rightsPolicy) {
+  createOneBatchItem(batchId, item, destinationBindings) {
     // Only reachable with the owner's `createNewVersion` opt-in (createBatch
     // refuses otherwise), so a conflicting row here is one the owner asked to
-    // replace. Retired rather than edited: the old revisions, rights record
-    // and approval stay exactly as they were published (REQ-011, PAT-004).
+    // replace. Retired rather than edited: the old revisions and approval
+    // stay exactly as they were published (REQ-011, PAT-004).
+    // An item that HAS been sent somewhere stays active — its publications
+    // are the record, and the pair rule at submit owns them from there.
     for (const existing of this.storage.activeBatchItemsFor(item.id)) {
-      if (existing.destinationBindings.some((binding) => destinationBindings.includes(binding))) {
+      if (!this.storage.hasFiledPublication(existing.id)) {
         this.storage.supersedeBatchItem(existing.id);
       }
     }
 
     const batchItemId = generateId("bi");
-    const requiresConfirmation = rightsPolicy === "require_confirmation";
-    const state = requiresConfirmation ? "held_rights" : "drafting";
     this.storage.createBatchItem({
       id: batchItemId,
       batchId,
       itemId: item.id,
-      destinationBindings,
-      state,
-      rightsStatus: requiresConfirmation ? "pending" : "confirmed"
+      // TASK-003: the column is read for rows written before migration 8
+      // only. What a caller still sends is recorded as `bound` publications
+      // instead — a default the submit picker reads, not a send (TASK-005).
+      destinationBindings: [],
+      state: "drafting"
     });
+    for (const binding of destinationBindings) {
+      this.storage.boundPublication(batchItemId, binding);
+    }
     this.storage.setOriginLink(batchItemId, {
       provider: item.provider,
       sourceBinding: item.sourceBinding,
@@ -1420,12 +1505,10 @@ export class Gadget extends DurableObject {
 
   /**
    * `{ id, sourceItem, destinationBindings, revision, caption, posterLayout,
-   * confirmedClaims, rightsStatus, approval }` — the exact shape
+   * confirmedClaims, approval }` — the exact shape
    * `src/client/steps.js` (`draftFor`, `renderReview`) reads off
    * `getBatch()` / `createBatch()`'s items (`cc/social-localization-client`,
-   * PR #1483). `state` rides along as extra, harmless information the
-   * client does not read (it derives everything from `rightsStatus` and
-   * `approval` instead).
+   * PR #1483). `state` rides along as extra, harmless information.
    *
    * `approval` is non-null once a submission was actually made (`version` —
    * the Social Hub `versionId` — is set), NOT once the owner has approved
@@ -1437,26 +1520,53 @@ export class Gadget extends DurableObject {
    * "edited since" needs — the owner's actual decision is a `readStatus`
    * poll away (`readPublishState`), never tracked locally.
    */
+  /**
+   * The destinations this item is pointed at: the union of what a caller
+   * recorded (the legacy column, read for pre-migration rows) and every live
+   * publication's binding. This is the submit picker's default — it says
+   * where a draft WOULD go, never that it has gone.
+   */
+  bindingsForItem(batchItem) {
+    const recorded = this.storage
+      .publicationsFor(batchItem.id)
+      .filter((publication) => publication.state !== "superseded")
+      .map((publication) => publication.destinationBinding);
+    return [...new Set([...(batchItem.destinationBindings ?? []), ...recorded])];
+  }
+
   projectBatchItem(batchItem) {
     const latest = this.storage.latestRevision(batchItem.id);
     const sourceItem = this.storage.getItem(batchItem.itemId);
-    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
-    const obligation = rightsObligation({
-      ledger: latest?.ledger,
-      sourceOrigin: sourceRow?.origin
+    const destinationBindings = this.bindingsForItem(batchItem);
+    // The protected spans, detected — the agent is handed the values rather
+    // than left to infer from prose what must survive verbatim (and, on the
+    // grounded path, what a ledger entry has to name).
+    const config = this.storage.getConfig();
+    const protectedSpans = detectProtectedLiterals(typeof sourceItem?.text === "string" ? sourceItem.text : "", {
+      protectedTerms: config?.protectedTerms,
+      protectedHashtags: config?.protectedHashtags,
+      disclaimers: config?.disclaimers,
+      claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
     return {
       id: batchItem.id,
       sourceItem,
-      destinationBindings: batchItem.destinationBindings,
+      protectedSpans,
+      destinationBindings,
+      // TASK-009: where it went — one row per destination this item was sent
+      // to (or is pointed at, in the `bound` state).
+      publications: this.storage.publicationsFor(batchItem.id),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
       // nothing ever set.
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings),
+      limits: this.storage.limitsForDestinations(destinationBindings),
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
+      // Whether rendered PNG bytes already exist at this revision — the
+      // client materializes once per revision, never on every view.
+      posterStored: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -1464,8 +1574,6 @@ export class Gadget extends DurableObject {
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
       ledger: latest?.ledger ?? { spans: [], media: [] },
-      rightsStatus: batchItem.rightsStatus,
-      rightsRequired: obligation.required,
       state: batchItem.state,
       approval: batchItem.version
         ? {
@@ -1484,7 +1592,34 @@ export class Gadget extends DurableObject {
     const batch = this.storage.getBatch(batchId);
     if (!batch) return null;
     const items = this.storage.listBatchItems(batchId).map((batchItem) => this.projectBatchItem(batchItem));
-    return { id: batch.id, createdAt: batch.created_at, status: batch.status, items };
+    return { id: batch.id, createdAt: batch.created_at, status: batch.status, generation: batch.generation ?? null, items };
+  }
+
+  /** The owner dismissed the Content-tab generation ask for this batch. */
+  dismissGenerationAsk(batchId) {
+    return this.enqueueMutation(() => {
+      this.storage.clearGeneration(String(batchId));
+      return { ok: true };
+    });
+  }
+
+  /**
+   * The owner pressed Regenerate: re-arm the batch's durable generation
+   * mark so the agent's next turn re-drafts it. Refuses when the batch is
+   * unknown or has nothing left to draft (all items submitted).
+   */
+  requestGeneration(batchId) {
+    return this.enqueueMutation(() => {
+      const batch = this.storage.getBatch(String(batchId));
+      if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const draftable = this.storage.listBatchItems(batch.id).some((item) =>
+        ["drafting", "expired"].includes(item.state));
+      if (!draftable) {
+        return { ok: false, code: "nothing_to_draft", message: "Every item in this batch has already been submitted." };
+      }
+      this.storage.setGeneration(batch.id);
+      return { ok: true };
+    });
   }
 
   async listBatches() {
@@ -1502,7 +1637,35 @@ export class Gadget extends DurableObject {
   // revisions (PAT-004, REQ-007, REQ-011)
   // -----------------------------------------------------------------------
 
-  async saveRevision({
+  saveRevision(args) {
+    return this.enqueueMutation(() => this.saveRevisionLocked(args));
+  }
+
+  /**
+   * One agent turn, one approval card, the whole batch.
+   *
+   * A gadget method that is not a declared read carries no `routine` on its
+   * action shape, so `decide.ts` asks on every call and a refusal ends the
+   * turn — per-item `saveRevision` for a 12-post batch would be twelve
+   * separate asks the owner never meant to answer one by one. This is the
+   * same payload the owner sees once: every item's draft in a single write.
+   * Each entry validates independently; per-item refusals ride inside
+   * `results` rather than failing the whole call (PAT-007).
+   */
+  saveRevisions(input) {
+    return this.enqueueMutation(async () => {
+      const list = Array.isArray(input?.revisions) ? input.revisions.slice(0, 50) : [];
+      const results = [];
+      for (const entry of list) {
+        // One lane, one shared inner — the batch call is not a way around
+        // validation, it is the same saveRevision contract N times.
+        results.push(await this.saveRevisionLocked(entry && typeof entry === "object" ? entry : {}));
+      }
+      return { ok: results.every((result) => result.ok), results };
+    });
+  }
+
+  async saveRevisionLocked({
     batchItemId,
     expectedRevision,
     caption,
@@ -1543,8 +1706,19 @@ export class Gadget extends DurableObject {
         ]
       };
     }
+    /*
+     * CALLER-SUPPLIED allowedChanges, ORG-BOUND. `allowedChanges` selects the
+     * ledger path — and it arrives from whoever called saveRevision, which is
+     * the agent as often as the owner. A caller that wrote `["tone"]` into the
+     * brief got a validation path of its own choosing. The org's stored brief
+     * is the bound: only the changes it permits are honoured, so an empty
+     * stored list means no allowed changes regardless of what the call asked
+     * for.
+     */
+    const storedAllowed = normalizeRefinementBrief(config?.refinementBrief).allowedChanges;
     const brief = {
       ...refinement,
+      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change)),
       ...(acceptedVisualMode ? { visualTreatment: acceptedVisualMode } : {})
     };
     const overrides =
@@ -1556,6 +1730,14 @@ export class Gadget extends DurableObject {
       overrides
     );
 
+    /*
+     * Omitted means carried — a caption-only save must not erase the stored
+     * poster layout or un-confirm claims the previous revision confirmed.
+     * An explicit null/[] still clears.
+     */
+    const layout = posterLayout === undefined ? (previous?.posterLayout ?? null) : posterLayout;
+    const claims = confirmedClaims === undefined ? (previous?.confirmedClaims ?? []) : confirmedClaims;
+
     const validation = validateRevisionDraft({
       source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
       draft: caption,
@@ -1566,14 +1748,17 @@ export class Gadget extends DurableObject {
         protectedHashtags: config?.protectedHashtags,
         disclaimers: config?.disclaimers,
         claimsRequiringConfirmation: config?.claimsRequiringConfirmation,
-        confirmedClaims
+        confirmedClaims: claims
       },
-      limits: this.storage.limitsForDestinations(batchItem.destinationBindings)
+      // The union includes `bound` publications, so a destination recorded
+      // for this item still applies its own caption limit while drafting
+      // (REQ-016) — and a destinationless draft checks nothing, as it must.
+      limits: this.storage.limitsForDestinations(this.bindingsForItem(batchItem))
     });
     if (!validation.ok) return { ok: false, issues: validation.issues };
 
-    if (posterLayout) {
-      const posterValidation = validatePosterLayout(posterLayout);
+    if (layout) {
+      const posterValidation = validatePosterLayout(layout);
       if (!posterValidation.ok) {
         return { ok: false, issues: posterValidation.issues.map((issue) => ({ ...issue, severity: "block" })) };
       }
@@ -1600,8 +1785,8 @@ export class Gadget extends DurableObject {
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption,
-      posterLayout,
-      confirmedClaims,
+      posterLayout: layout,
+      confirmedClaims: claims,
       issues: validation.issues,
       refinementBrief: brief,
       protectedOverrides: overrides,
@@ -1613,11 +1798,16 @@ export class Gadget extends DurableObject {
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision, issues: validation.issues };
   }
 
-  async savePoster({ batchItemId, expectedRevision, template, png }) {
+  savePoster(args) {
+    return this.enqueueMutation(() => this.savePosterLocked(args));
+  }
+
+  async savePosterLocked({ batchItemId, expectedRevision, template, png }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
       return {
@@ -1706,33 +1896,16 @@ export class Gadget extends DurableObject {
    * ANY batch item that has ever been submitted expires on its next edit,
    * whether the owner already acted on it or it is still sitting in
    * Approvals; an item that was never submitted (`version` null) just goes
-   * back to drafting/held_rights as before.
+   * back to drafting as before.
    */
   nextStateAfterEdit(batchItem) {
-    if (batchItem.version) {
+    // "Was this ever submitted?" used to be `batchItem.version` alone; with
+    // destinations living on publications, a filed publication row is the
+    // same fact.
+    if (batchItem.version || this.storage.hasFiledPublication(batchItem.id)) {
       return { state: "expired", approval_id: null };
     }
-    return { state: batchItem.state === "held_rights" ? "held_rights" : "drafting" };
-  }
-
-  async confirmRights({ batchItemId, status, by }) {
-    // A caller bug, not an owner-facing condition — the only two callers of
-    // this method send a fixed "confirmed" or "denied" literal. Still a
-    // value, not a throw (see the file header note).
-    if (status !== "confirmed" && status !== "denied") {
-      return { ok: false, code: "invalid_argument", message: 'confirmRights status must be "confirmed" or "denied".' };
-    }
-    const batchItem = this.storage.getBatchItem(batchItemId);
-    if (!batchItem) return { ok: false, code: "batch_item_unknown", message: `No batch item ${batchItemId}.` };
-
-    this.storage.updateBatchItem(batchItemId, {
-      rights_status: status,
-      rights_confirmed_by: typeof by === "string" ? by.slice(0, 200) : null,
-      rights_confirmed_at: new Date().toISOString(),
-      state: status === "confirmed" ? "drafting" : "held_rights"
-    });
-    const updated = this.storage.getBatchItem(batchItemId);
-    return updated ? this.projectBatchItem(updated) : updated;
+    return { state: "drafting" };
   }
 
   // -----------------------------------------------------------------------
@@ -1756,16 +1929,36 @@ export class Gadget extends DurableObject {
    *    silently recording as submitted.
    *
    * On the expected refusal, the batch item moves to `review_requested` and
-   * stores the `versionId`/`contentHash` `createDraft` returned — never an
-   * `approvalId`, which this call never learns (see `projectBatchItem`).
+   * each filing lands as a `publications` row carrying the `versionId`/
+   * `contentHash` `createDraft` returned — never an `approvalId`, which this
+   * call never learns (see `projectBatchItem`).
+   *
+   * THE SIGNATURE CHANGED (TASK-010/011). Destination and timing were once
+   * fixed on the batch item at create; they are this call's arguments now —
+   * `destinationBindings` is where the submission goes (absent: the item's
+   * recorded bindings, the default a caller older than this flow relies on),
+   * `intent` is the timing (`publishMode` + schedule fields), and
+   * `createNewVersion` is REQ-017's explicit opt-in for a pair that is
+   * already claimed.
+   *
+   * ONE FILING PER BINDING: the door is asked per destination — one
+   * `createDraft` whose `targets` is that destination alone, one
+   * `submitForReview` for its `versionId` — so a `publications` row records
+   * one pair's intent and receipt. A binding that fails lands in `failures`
+   * and files nothing; the bindings that succeeded are still filed.
    *
    * EVERY early exit below is `{ ok: false, code, message }`, never a
-   * throw — the owner can hit each one through ordinary use (rights not yet
-   * confirmed, a stale revision, a destination the door cannot resolve, the
-   * Social Hub itself unreachable) and this method runs as a facet RPC
-   * target, where a throw is what breaks the output gate (file header note).
+   * throw — the owner can hit each one through ordinary use (a stale
+   * revision, no destination chosen, a destination the
+   * door cannot resolve, the Social Hub itself unreachable) and this method
+   * runs as a facet RPC target, where a throw is what breaks the output
+   * gate (file header note).
    */
-  async submitForReview({ batchItemId, expectedRevision }) {
+  submitForReview(args) {
+    return this.enqueueMutation(() => this.submitForReviewLocked(args));
+  }
+
+  async submitForReviewLocked({ batchItemId, expectedRevision, destinationBindings, intent, createNewVersion }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) return { ok: false, code: "batch_item_unknown", message: `No batch item ${batchItemId}.` };
     if (batchItem.currentRevision !== expectedRevision) {
@@ -1782,21 +1975,38 @@ export class Gadget extends DurableObject {
     }
 
     const sourceItem = this.storage.getItem(batchItem.itemId);
-    const sourceRow = sourceItem ? this.storage.getSource(sourceItem.sourceBinding) : null;
-    const obligation = rightsObligation({
-      ledger: revision.ledger,
-      sourceOrigin: sourceRow?.origin
-    });
-    // REQ-019: never submit while a computed rights obligation is unmet.
-    if (obligation.required && batchItem.rightsStatus !== "confirmed") {
+    /*
+     * Where this submission goes. An explicit `destinationBindings` argument
+     * wins — it is the picker's answer; absent, the recorded bindings are the
+     * default a caller older than this flow relied on (CON-004). An empty
+     * answer is the one place `batch_needs_destinations` still means what it
+     * says.
+     */
+    const recorded = this.bindingsForItem(batchItem);
+    const bindings =
+      destinationBindings === undefined
+        ? recorded
+        : [
+            ...new Set(
+              (Array.isArray(destinationBindings) ? destinationBindings : []).filter(
+                (binding) => typeof binding === "string" && binding
+              )
+            )
+          ];
+    if (!bindings.length) {
       return {
         ok: false,
-        code: "rights_unconfirmed",
-        message: `Rights must be confirmed before submitting (currently ${batchItem.rightsStatus}).`
+        code: "batch_needs_destinations",
+        message: "Choose a destination account before submitting for review."
       };
     }
+
     const caption = revision.caption ?? "";
-    const publication = normalizePublicationIntent(revision.publicationIntent ?? undefined);
+    // Timing comes with the submission now; the stored revision's own intent
+    // is only the default a caller that sends none relied on.
+    const publication = normalizePublicationIntent(
+      intent === undefined ? revision.publicationIntent ?? undefined : intent
+    );
     if (!publication.ok) {
       return { ok: false, code: publication.code, message: publication.message };
     }
@@ -1809,10 +2019,46 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     }).map((span) => span.value);
 
-    const packedMedia = publicationMedia({
+    /*
+     * The poster is generated media the owner can actually ship: its bytes
+     * live in `posters` (the client rendered them), so upload them through
+     * the door and the draft carries the returned publisher-addressable URL.
+     * No bytes at this revision — or a door that cannot take them — means
+     * the source media ships, disclosed rather than silent.
+     */
+    const warnings = [];
+    let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
       sourceMedia: sourceItem?.media
     });
+    const poster = this.storage.getPoster(batchItemId, revision.revision);
+    if (poster) {
+      try {
+        const uploaded = await socialUploadMedia(this.env, {
+          dataBase64: bytesToBase64(poster.bytes),
+          mimeType: "image/png",
+          filename: `poster-${batchItemId}-r${revision.revision}.png`
+        });
+        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
+          packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+        } else {
+          warnings.push({
+            code: "poster_not_shipped",
+            message: isDoorRefusal(uploaded) ? uploaded.message : "The poster upload did not return a publisher-addressable URL — the post carries the source media."
+          });
+        }
+      } catch (error) {
+        warnings.push({
+          code: "poster_not_shipped",
+          message: `The poster could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
+        });
+      }
+    } else if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
+      warnings.push({
+        code: "poster_not_shipped",
+        message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
+      });
+    }
     if (!packedMedia.ok) {
       return { ok: false, code: packedMedia.code, message: packedMedia.message };
     }
@@ -1828,60 +2074,143 @@ export class Gadget extends DurableObject {
       return { ok: false, code: attribution.code, message: attribution.message };
     }
 
-    // Both door calls below are wrapped: `socialCreateDraft` /
+    /*
+     * REQ-017's pair rule, where the send happens (TASK-012): an active
+     * publication on ANOTHER localization of this source post claims the
+     * pair — `bound` included, because a recorded claim is still a claim.
+     * Checked for every binding BEFORE the first door call, so a refusal
+     * files nothing. The owner's `createNewVersion` opt-in retires the
+     * conflicting rows as the new filing succeeds, never before.
+     */
+    const conflictsByBinding = new Map();
+    for (const binding of bindings) {
+      const conflicts = this.storage
+        .activePublicationsForPair(batchItem.itemId, binding)
+        .filter((publication) => publication.batchItemId !== batchItemId);
+      if (conflicts.length) conflictsByBinding.set(binding, conflicts);
+    }
+    if (conflictsByBinding.size && createNewVersion !== true) {
+      return duplicatePublicationRefusal(conflictsByBinding, batchItem.itemId);
+    }
+
+    const filed = [];
+    const skipped = [];
+    const failures = [];
+    const mergedTargets = [];
+    let lastFiled = null;
+
+    // The door calls below are wrapped: `socialCreateDraft` /
     // `socialSubmitForReview` (`doors.js`) throw when the door itself is
     // absent, and a real Social Hub RPC can reject on its own (a genuine
     // outage) — either way that is an owner-facing "try again later", not a
     // reason to let an exception cross this facet's RPC boundary.
-    let draft;
-    try {
-      draft = await socialCreateDraft(this.env, {
-        caption,
-        media: packedMedia.media,
-        targets: batchItem.destinationBindings.map((destinationBinding) => ({ destinationBinding })),
-        origin: attribution.origin,
-        protectedLiterals,
-        // The Social Hub owns schedule validation and time resolution. Carry
-        // the normalized, owner-reviewed intent through the door instead of
-        // silently downgrading every revision to save_draft.
-        schedule: publication.intent
+    for (const binding of bindings) {
+      const mine = this.storage.livePublication(batchItemId, binding);
+      // Already filed AT THIS revision — a retry of the same ask refreshes
+      // nothing, and the owner is told rather than handed a duplicate.
+      if (mine && mine.revision === expectedRevision && mine.state !== "bound") {
+        skipped.push({ destinationBinding: binding, publicationId: mine.id, reason: "already_submitted" });
+        continue;
+      }
+
+      let draft;
+      try {
+        draft = await socialCreateDraft(this.env, {
+          caption,
+          media: packedMedia.media,
+          targets: [{ destinationBinding: binding }],
+          origin: attribution.origin,
+          protectedLiterals,
+          // The Social Hub owns schedule validation and time resolution.
+          // Carry the normalized, owner-reviewed intent through the door
+          // instead of silently downgrading every revision to save_draft.
+          schedule: publication.intent
+        });
+      } catch (error) {
+        failures.push({ destinationBinding: binding, code: "provider_unavailable", message: errorMessage(error) });
+        continue;
+      }
+      if (isDoorRefusal(draft)) {
+        failures.push({
+          destinationBinding: binding,
+          code: draft.code || "destination_unresolved",
+          message: draft.message || "Could not create a draft for this post."
+        });
+        continue;
+      }
+
+      let submission;
+      try {
+        submission = await socialSubmitForReview(this.env, {
+          versionId: draft.versionId,
+          expectedContentHash: draft.contentHash
+        });
+      } catch (error) {
+        failures.push({ destinationBinding: binding, code: "provider_unavailable", message: errorMessage(error) });
+        continue;
+      }
+      if (!isDoorRefusal(submission) || submission.code !== "submission_required") {
+        failures.push({
+          destinationBinding: binding,
+          code: "provider_unavailable",
+          message: isDoorRefusal(submission)
+            ? submission.message
+            : "submitForReview returned an unexpected result."
+        });
+        continue;
+      }
+
+      // Retire what this filing replaces: this item's older/bound row for
+      // the pair, and — only under the explicit opt-in — the conflicting
+      // row on another localization. Failed filings supersede nothing.
+      const replaceIds = [mine, ...(conflictsByBinding.get(binding) ?? [])]
+        .filter(Boolean)
+        .map((publication) => publication.id);
+      const publicationId = this.storage.filePublication({
+        batchItemId,
+        destinationBinding: binding,
+        revision: expectedRevision,
+        intent: publication.intent,
+        state: "review_requested",
+        postId: draft.postId,
+        version: draft.versionId,
+        replaceIds
       });
-    } catch (error) {
-      return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
-    }
-    if (isDoorRefusal(draft)) {
-      return {
-        ok: false,
-        code: draft.code || "destination_unresolved",
-        message: draft.message || "Could not create a draft for this post."
-      };
+      filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
+      mergedTargets.push(...normalizeTargets(draft.targets, [binding]));
+      lastFiled = draft;
     }
 
-    let submission;
-    try {
-      submission = await socialSubmitForReview(this.env, {
-        versionId: draft.versionId,
-        expectedContentHash: draft.contentHash
-      });
-    } catch (error) {
-      return { ok: false, code: "provider_unavailable", message: errorMessage(error) };
-    }
-    if (!isDoorRefusal(submission) || submission.code !== "submission_required") {
-      const message = isDoorRefusal(submission) ? submission.message : "submitForReview returned an unexpected result.";
-      return { ok: false, code: "provider_unavailable", message };
+    if (!filed.length) {
+      if (skipped.length) {
+        return {
+          ok: false,
+          code: "already_submitted",
+          message: "This revision was already submitted for review to every selected destination.",
+          skipped
+        };
+      }
+      const first = failures[0] ?? { code: "provider_unavailable", message: "Nothing was submitted." };
+      return { ok: false, code: first.code, message: first.message, failures };
     }
 
     this.storage.updateBatchItem(batchItemId, {
       state: "review_requested",
       approval_id: null,
       approved_revision: expectedRevision,
-      content_hash: draft.contentHash,
-      post_id: draft.postId,
-      version: draft.versionId,
-      targets_json: JSON.stringify(normalizeTargets(draft.targets, batchItem.destinationBindings))
+      content_hash: lastFiled.contentHash,
+      post_id: lastFiled.postId,
+      version: lastFiled.versionId,
+      targets_json: JSON.stringify(mergedTargets.length ? mergedTargets : null)
     });
-    await this.broadcast({ type: "review_requested", batchItemId, versionId: draft.versionId });
-    return this.projectBatchItem(this.storage.getBatchItem(batchItemId));
+    await this.broadcast({ type: "review_requested", batchItemId, versionId: lastFiled.versionId });
+    return {
+      ...this.projectBatchItem(this.storage.getBatchItem(batchItemId)),
+      submitted: filed,
+      ...(skipped.length ? { skipped } : {}),
+      ...(failures.length ? { failures } : {}),
+      ...(warnings.length ? { warnings } : {})
+    };
   }
 
   /**
@@ -1896,17 +2225,25 @@ export class Gadget extends DurableObject {
    */
   async readPublishState(batchItemId) {
     const batchItem = this.storage.getBatchItem(batchItemId);
-    if (!batchItem) return null;
-    if (!batchItem.version) {
-      return { targets: [] };
+    if (!batchItem) return { publications: [], targets: [] };
+
+    const publications = [];
+    for (const publication of this.storage.publicationsFor(batchItemId)) {
+      // A `bound` row was never sent — there is no `versionId` to poll.
+      let targets = [];
+      if (publication.version) {
+        const fresh = await socialReadStatus(this.env, publication.version);
+        const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
+        targets = normalizeTargets(freshTargets, [publication.destinationBinding], null);
+        if (freshTargets) {
+          // The pair's own outcome rows are the item's canonical targets.
+          this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
+        }
+      }
+      publications.push({ ...publication, targets });
     }
 
-    const fresh = await socialReadStatus(this.env, batchItem.version);
-    const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-    const targets = normalizeTargets(freshTargets, batchItem.destinationBindings, batchItem.targets);
-    if (freshTargets) this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
-
-    return { targets };
+    return { publications, targets: publications.flatMap((publication) => publication.targets) };
   }
 
   // -----------------------------------------------------------------------
@@ -1978,8 +2315,16 @@ export class Gadget extends DurableObject {
           // `destinationBindings`, plural — one batch item carries the whole
           // set the owner picked (`hydrateBatchItem`). Reading the singular
           // `destinationBinding`, which no row has ever had, made this column
-          // blank on every export ever produced.
-          const destinations = (item.destinationBindings ?? []).join(", ");
+          // blank on every export ever produced. Under the publications
+          // model the destinations live on `publications` rows; the legacy
+          // column stays in the union for rows written before migration 8.
+          const publications = this.storage.publicationsFor(item.id);
+          const destinations = [
+            ...new Set([
+              ...(item.destinationBindings ?? []),
+              ...publications.map((publication) => publication.destinationBinding)
+            ])
+          ].join(", ");
           return `<tr><td>${escapeHtml(destinations)}</td><td>${escapeHtml(item.state)}</td><td>${escapeHtml(revision?.caption ?? "")}</td></tr>`;
         })
         .join("");
@@ -2140,12 +2485,43 @@ function duplicateRefusal(duplicates) {
     rest > 0
       ? ` ${rest} other selected post${rest === 1 ? "" : "s"} ${rest === 1 ? "is" : "are"} already localized too.`
       : "";
+  const bound = first.destinationBindings?.length ? ` for ${first.destinationBindings.join(", ")}` : "";
   return {
     ok: false,
     code: "duplicate_active",
     message:
-      `${first.itemId} already has an active localization for ${first.destinationBindings.join(", ")} in ${where}.${more}` +
+      `${first.itemId} already has an active localization${bound} in ${where}.${more}` +
       " Open it, or create a new version to localize it again.",
+    duplicates
+  };
+}
+
+/**
+ * REQ-017's refusal at submit — the pair rule, applied per destination
+ * (TASK-012). `conflictsByBinding` maps each requested binding to the active
+ * publication rows on OTHER localizations of the same source post that
+ * already claim it; the refusal names the batch and item holding the first
+ * conflict and lists every claimed pair.
+ */
+function duplicatePublicationRefusal(conflictsByBinding, itemId) {
+  const bindings = [...conflictsByBinding.keys()];
+  const first = [...conflictsByBinding.values()][0][0];
+  const where = `batch ${first.batchId ?? "—"} (item ${first.batchItemId})`;
+  const duplicates = [...conflictsByBinding.entries()].flatMap(([binding, pubs]) =>
+    pubs.map((pub) => ({
+      itemId,
+      batchId: pub.batchId,
+      batchItemId: pub.batchItemId,
+      publicationId: pub.id,
+      destinationBindings: [binding]
+    }))
+  );
+  return {
+    ok: false,
+    code: "duplicate_active",
+    message:
+      `${itemId} already has an active publication to ${bindings.join(", ")} in ${where}.` +
+      " Open it, or create a new version to send this post there again.",
     duplicates
   };
 }
@@ -2260,4 +2636,15 @@ function escapeHtml(value) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/* A poster PNG is a few hundred KB — chunked because fromCharCode spreads
+ * into the call frame, and a spread the size of a poster overflows it. */
+function bytesToBase64(bytes) {
+  let binary = "";
+  const CHUNK = 8192;
+  for (let offset = 0; offset < bytes.byteLength; offset += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK));
+  }
+  return btoa(binary);
 }

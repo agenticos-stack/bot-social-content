@@ -111,7 +111,6 @@ describe("normalizeConfig", () => {
   it("fills in defaults for an empty input", () => {
     const config = normalizeConfig({ cadence: { kind: "interval", everyMinutes: 60 } });
     expect(config.timeZone).toBe("UTC");
-    expect(config.rightsPolicy).toBe("require_confirmation");
     expect(config.locale).toEqual({ from: "en", to: "zh-HK" });
     expect(config.notifications).toEqual({ mode: "immediate" });
     expect(config.protectedTerms).toEqual([]);
@@ -144,7 +143,6 @@ describe("normalizeConfig", () => {
     const config = normalizeConfig({
       cadence: "daily",
       timezone: "Asia/Hong_Kong",
-      rightsPolicy: "trust_connected",
       sourceLocale: "en",
       targetLocale: "zh-HK",
       notificationPolicy: "daily",
@@ -156,15 +154,8 @@ describe("normalizeConfig", () => {
     });
     expect(config.cadence).toEqual({ kind: "daily", at: "09:00", timezone: "Asia/Hong_Kong" });
     expect(config.timeZone).toBe("Asia/Hong_Kong");
-    expect(config.rightsPolicy).toBe("trust_connected");
     expect(config.locale).toEqual({ from: "en", to: "zh-HK" });
     expect(config.notifications).toEqual({ mode: "daily", quietHours: { start: "22:00", end: "07:00" } });
-  });
-
-  it("an unrecognised rightsPolicy falls back to the safer require_confirmation default", () => {
-    expect(normalizeConfig({ cadence: "hourly", rightsPolicy: "anything_else" }).rightsPolicy).toBe(
-      "require_confirmation"
-    );
   });
 });
 

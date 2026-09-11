@@ -51,7 +51,6 @@ function sqliteContext() {
 
 function seed(gadget: Gadget) {
   gadget.storage.setConfig({
-    rightsPolicy: "require_confirmation",
     protectedTerms: [],
     protectedHashtags: [],
     disclaimers: [],
@@ -76,8 +75,7 @@ function seed(gadget: Gadget) {
     batchId: "batch-1",
     itemId: "instagram:IG_MAIN:p1",
     destinationBindings: ["FB_MAIN"],
-    state: "drafting",
-    rightsStatus: "confirmed"
+    state: "drafting"
   });
   gadget.storage.setOriginLink("item-1", {
     provider: "instagram",
@@ -246,99 +244,6 @@ describe("submitForReview createDraft media", () => {
     expect(created[0]).toMatchObject({
       media: [{ assetId: "source-media", url: "https://cdn.example.test/original.jpg", kind: "image" }]
     });
-  });
-});
-
-describe("submitForReview rights from the ledger", () => {
-  function seedPending(gadget: Gadget) {
-    seed(gadget);
-    gadget.storage.updateBatchItem("item-1", { rights_status: "pending", state: "held_rights" });
-  }
-
-  it("lets an original-only derived post submit without confirmRights", async () => {
-    const created: unknown[] = [];
-    const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
-    seedPending(gadget);
-    await gadget.saveRevision({
-      batchItemId: "item-1",
-      expectedRevision: 0,
-      caption: "第一稿內容文字",
-      refinementBrief: { visualTreatment: "ai_refinement", allowedChanges: ["price"] },
-      ledger: { spans: [], media: [{ ref: "gen-1", provenance: "original" }] }
-    });
-    expect(gadget.projectBatchItem(gadget.storage.getBatchItem("item-1")!).rightsRequired).toBe(false);
-    const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).not.toMatchObject({ ok: false });
-    expect(created[0]).toMatchObject({
-      origin: {
-        provider: "instagram",
-        providerItemId: "p1",
-        sourceContentHash: "source-hash"
-      }
-    });
-  });
-
-  it("blocks a derived post that reuses the source photo until rights are confirmed", async () => {
-    const created: unknown[] = [];
-    const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
-    seedPending(gadget);
-    await gadget.saveRevision({
-      batchItemId: "item-1",
-      expectedRevision: 0,
-      caption: "第一稿內容文字",
-      refinementBrief: { visualTreatment: "ai_refinement" },
-      ledger: { spans: [], media: [{ ref: "source-media", provenance: "source" }] }
-    });
-    expect(gadget.projectBatchItem(gadget.storage.getBatchItem("item-1")!).rightsRequired).toBe(true);
-    const blocked = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(blocked).toMatchObject({ ok: false, code: "rights_unconfirmed" });
-    await gadget.confirmRights({ batchItemId: "item-1", status: "confirmed", by: "owner" });
-    const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).not.toMatchObject({ ok: false });
-    expect(created[0]).toMatchObject({
-      origin: { provider: "instagram", providerItemId: "p1", permalink: "https://www.instagram.com/p/p1/" }
-    });
-  });
-
-  it("still requires confirmation for an open source even when the ledger is original-only", async () => {
-    const created: unknown[] = [];
-    const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
-    seedPending(gadget);
-    gadget.storage.addOpenSource({
-      binding: "open:instagram:natgeo",
-      platform: "instagram",
-      accountKey: "natgeo",
-      displayName: "@natgeo"
-    });
-    gadget.storage.upsertItem({
-      id: "instagram:open:instagram:natgeo:p1",
-      sourceBinding: "open:instagram:natgeo",
-      sourceLabel: "@natgeo",
-      provider: "instagram",
-      providerItemId: "p1",
-      text: "Original source",
-      media: [{ id: "source-media", kind: "image", url: "https://cdn.example.test/original.jpg" }],
-      metrics: {},
-      contentHash: "source-hash",
-      firstSeenAt: "2026-09-06T00:00:00.000Z",
-      lastSeenAt: "2026-09-06T00:00:00.000Z"
-    });
-    gadget.storage.updateBatchItem("item-1", { item_id: "instagram:open:instagram:natgeo:p1" });
-    await gadget.saveRevision({
-      batchItemId: "item-1",
-      expectedRevision: 0,
-      caption: "第一稿內容文字",
-      refinementBrief: { visualTreatment: "ai_refinement" },
-      ledger: { spans: [], media: [{ ref: "gen-1", provenance: "original" }] }
-    });
-    const blocked = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(blocked).toMatchObject({ ok: false, code: "rights_unconfirmed" });
-    await gadget.confirmRights({ batchItemId: "item-1", status: "confirmed", by: "owner" });
-    const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).not.toMatchObject({ ok: false });
   });
 });
 
