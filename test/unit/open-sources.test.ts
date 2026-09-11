@@ -348,17 +348,13 @@ describe("the setup form's public-accounts field", () => {
     expect(client).toContain("rpc.removeOpenSource");
   });
 
-  it("says the rights rule where the rights choice is made, in both locales", () => {
-    // A public account always confirms rights whatever the radio says. Without
-    // this line the setting looks broken.
-    expect(steps).toContain("openSourceRightsNote");
+  it("names the open-source field in both locales", () => {
     for (const locale of LOCALES) {
       for (const key of [
         "openSourceLabel",
         "openSourceDesc",
         "openSourcePlaceholder",
-        "openSourceHint",
-        "openSourceRightsNote"
+        "openSourceHint"
       ]) {
         expect(t(locale, key), `${locale}.${key}`).not.toBe(key);
       }

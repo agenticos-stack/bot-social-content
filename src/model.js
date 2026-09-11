@@ -822,31 +822,6 @@ export function applyProtectedOverridesToLedger(ledger, overrides) {
   return { spans: [...kept, ...ownerSpans].slice(0, 200), media: normalized.media };
 }
 
-function ledgerReusesSource(ledger) {
-  const normalized = normalizeLedger(ledger);
-  if (normalized.media.some((entry) => entry.provenance === "source" || entry.provenance.startsWith("derived-from:"))) {
-    return true;
-  }
-  return normalized.spans.some((span) => parseGroundingBasis(span.basis)?.kind === "source");
-}
-
-/**
- * Rights follow the ledger, not an assumption of republication.
- * Reused source material is gated; original-only is inspiration, recorded
- * and not gated; an `open` source is always gated (TASK-013 / TASK-014).
- * An empty ledger is localization: the source survives, so confirmation is
- * required (RISK-002).
- */
-export function rightsObligation({ ledger, sourceOrigin } = {}) {
-  const open = sourceOrigin === "open";
-  const reuse = ledgerReusesSource(ledger);
-  const originalOnly = !reuse && normalizeLedger(ledger).media.some((entry) => entry.provenance === "original");
-  return {
-    required: open || !originalOnly,
-    relationship: originalOnly ? "inspiration" : "reuse"
-  };
-}
-
 /** PAT-001: the door origin block IS the observation record. */
 export function observationOrigin(originLink) {
   const value = record(originLink);
@@ -880,8 +855,8 @@ const DOOR_ORIGIN_FIELDS = Object.freeze([
  * stated once. A `source:` basis names the item its span stands on, so a basis
  * naming an item other than the one observed would attribute the post to
  * something it does not stand on — refuse rather than send it. A ledger that
- * cites no source is inspiration-only, which `rightsObligation` reports on its
- * own; the observation record still travels, because it is what was observed.
+ * cites no source is inspiration-only; the observation record still travels,
+ * because it is what was observed.
  *
  * The completeness pass is here because `createDraft` requires all seven fields
  * as non-empty strings and refuses one field at a time, while `origin_links`
@@ -945,8 +920,44 @@ function detectGroundedDraftSpans(text, policy = {}) {
 }
 
 /**
+ * Source → draft preservation: every protected literal the SOURCE carried —
+ * product name, price, URL, protected hashtag, disclaimer — must survive
+ * verbatim into the draft. Runs on BOTH validation paths: a grounded brief
+ * ("make it punchier") used to route around this entirely, which let a
+ * protected product name be translated away and still validate.
+ * Claims are the confirm-severity case and stay the caller's to answer.
+ */
+function sourcePreservationIssues(sourceText, draftText, policy) {
+  const issues = [];
+  const sourceSpans = detectProtectedLiterals(sourceText, policy);
+  const draftSpans = detectProtectedLiterals(draftText, policy);
+  for (const span of sourceSpans) {
+    if (span.kind === "claim") continue;
+    const preserved = draftSpans.some((candidate) => candidate.kind === span.kind && candidate.value === span.value);
+    if (preserved) continue;
+    if (span.kind === "disclaimer") {
+      issues.push(issue("disclaimer_missing", "block", `${messages.disclaimerMissing.en}: "${span.value}"`, span));
+      continue;
+    }
+    const altered = draftSpans.some((candidate) => candidate.kind === span.kind);
+    const code = altered ? "protected_literal_altered" : "protected_literal_missing";
+    const messageKey = altered ? "protectedLiteralAltered" : "protectedLiteralMissing";
+    issues.push(issue(code, "block", `${messages[messageKey].en}: "${span.value}"`, span));
+  }
+  for (const claim of sourceSpans.filter((span) => span.kind === "claim")) {
+    const confirmed = Array.isArray(policy.confirmedClaims) && policy.confirmedClaims.includes(claim.value);
+    if (!confirmed) {
+      issues.push(issue("claim_unconfirmed", "confirm", `${messages.claimUnconfirmed.en}: "${claim.value}"`, claim));
+    }
+  }
+  return issues;
+}
+
+/**
  * Basis-anchored validation for derived drafts. House policy (register, limits)
- * still runs. Protected draft spans fail closed without a recognised basis.
+ * AND source preservation both run — a caller-chosen `allowedChanges` narrows
+ * what may change, it does not lift what must survive. Protected draft spans
+ * additionally fail closed without a recognised basis.
  * A `knowledge:` basis is a citation only — this function never fetches.
  */
 export function validateGrounded({ source = {}, draft, ledger, policy = {}, limits = {} } = {}) {
@@ -961,6 +972,7 @@ export function validateGrounded({ source = {}, draft, ledger, policy = {}, limi
   const entries = normalizeLedger(ledger).spans;
   const sourceText = typeof source.text === "string" ? source.text : "";
   const sourceId = typeof source.id === "string" ? source.id : "";
+  issues.push(...sourcePreservationIssues(sourceText, trimmed, policy));
 
   for (const span of detectGroundedDraftSpans(trimmed, policy)) {
     if (!GROUNDED_SPAN_KINDS.has(span.kind)) continue;
@@ -1011,29 +1023,7 @@ export function validateLocalization({ source = {}, draft, policy = {}, limits =
   issues.push(...housePolicyIssues(trimmed, policy, limits));
 
   const sourceText = typeof source.text === "string" ? source.text : "";
-  const sourceSpans = detectProtectedLiterals(sourceText, policy);
-  const draftSpans = detectProtectedLiterals(trimmed, policy);
-
-  for (const span of sourceSpans) {
-    if (span.kind === "claim") continue;
-    const preserved = draftSpans.some((candidate) => candidate.kind === span.kind && candidate.value === span.value);
-    if (preserved) continue;
-    if (span.kind === "disclaimer") {
-      issues.push(issue("disclaimer_missing", "block", `${messages.disclaimerMissing.en}: "${span.value}"`, span));
-      continue;
-    }
-    const altered = draftSpans.some((candidate) => candidate.kind === span.kind);
-    const code = altered ? "protected_literal_altered" : "protected_literal_missing";
-    const messageKey = altered ? "protectedLiteralAltered" : "protectedLiteralMissing";
-    issues.push(issue(code, "block", `${messages[messageKey].en}: "${span.value}"`, span));
-  }
-
-  for (const claim of sourceSpans.filter((span) => span.kind === "claim")) {
-    const confirmed = Array.isArray(policy.confirmedClaims) && policy.confirmedClaims.includes(claim.value);
-    if (!confirmed) {
-      issues.push(issue("claim_unconfirmed", "confirm", `${messages.claimUnconfirmed.en}: "${claim.value}"`, claim));
-    }
-  }
+  issues.push(...sourcePreservationIssues(sourceText, trimmed, policy));
 
   return { ok: !issues.some((entry) => entry.severity === "block"), issues };
 }

@@ -32,43 +32,31 @@ import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
+import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
-  addListEntry,
   applyPublishState,
-  applySavedRevision,
-  applySavedPoster,
   createSetupDraft,
   draftFromConfig,
   createWizardState,
-  draftIsDirty,
-  discardDraft,
   goToStep as goToWizardStep,
   isRefusal,
   refusalMessage,
-  removeListEntry,
-  renderLocalize,
-  renderPosterPng,
   renderPublish,
   renderResult,
   renderReview,
   renderSetup,
-  setActiveItem,
-  setBatch,
   resumeBatch,
-  submitEnabled,
-  recordDraftConflict,
-  resolveDraftConflict,
-  setMobilePane,
-  setSaving,
+  setPublishError,
+  setPublishIntent,
+  setSubmitting,
   setWizardError,
   toConfigPayload,
-  toggleConfirmedClaim,
-  updateDraft
+  togglePublishBinding
 } from "./steps.js";
 
-const WIZARD_BACK_TARGET = { localize: "select", review: "localize", publish: "review", result: "publish" };
+const WIZARD_BACK_TARGET = { review: "select", publish: "review", result: "publish" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
@@ -117,6 +105,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   outline: 2px solid var(--sl-focus); outline-offset: 2px;
 }
 .sl-app { max-width: 1080px; margin: 0 auto; padding: 20px clamp(16px, 3vw, 36px) 96px; }
+.sl-titleline { margin-bottom: 18px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
 .sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
@@ -160,13 +149,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
 .sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
-.sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-inbox-card-meta { display: flex; justify-content: space-between; color: var(--sl-muted); font-size: 9px; }
 .sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
-.sl-drawer-section { padding: 12px 0; border-bottom: 1px solid var(--sl-line); }
+.sl-state-chip { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border-radius: 999px; font: 600 8.5px var(--sl-font); letter-spacing: .03em; text-transform: uppercase; background: var(--sl-surface-2); color: var(--sl-muted); }
+.sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
+.sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
+.sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
+
+.sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
+.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: 26px; padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
@@ -287,6 +283,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-result-item { padding: 10px 0; border-top: 1px solid var(--sl-line); }
 .sl-result-item:first-child { border-top: 0; padding-top: 0; }
 .sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
+.sl-outcome { display: inline-flex; align-items: center; gap: 6px; }
 .sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
@@ -295,11 +292,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-section input, .sl-setup-section select { min-height: 42px; }
 .sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
-.sl-tag-field { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px; }
-.sl-tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.sl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); font-size: 10.5px; }
-.sl-tag button { border: 0; background: transparent; font-size: 12px; line-height: 1; }
-.sl-tag-field input { width: 100%; border: 0; height: 30px; }
 /*
  * SLIM, because the media is tall.
  *
@@ -397,18 +389,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-head { padding: 12px 20px; }
 .sl-preview-head strong { font-size: 16px; }
 .sl-preview-kicker { font-size: 11px; }
-.sl-preview-scroll .sl-field-note, .sl-preview-scroll .sl-rights { font-size: 13px; line-height: 1.65; }
+.sl-preview-scroll .sl-field-note { font-size: 13px; line-height: 1.65; }
 .sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
-.sl-rights { margin-top: 14px; padding: 12px; border-radius: var(--sl-radius-control); }
-.sl-rights-confirmed { background: color-mix(in srgb, var(--sl-success) 14%, var(--sl-surface)); }
-.sl-rights-pending { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); }
-.sl-rights-denied { background: color-mix(in srgb, var(--sl-danger) 14%, var(--sl-surface)); }
-.sl-rights strong { display: block; font-size: 10.5px; }
-.sl-rights span { display: block; margin-top: 2px; font-size: 9.5px; }
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
+/* The batch drawer's actions match the rest of the app: compact, right-aligned.
+   The doubled class out-specifies bot-shell's .bot-button.bot-button pin. */
+.sl-drawer-actions { justify-content: flex-end; }
+.sl-drawer-actions .sl-secondary.sl-secondary,
+.sl-drawer-actions .sl-primary.sl-primary { flex: 0 0 auto; min-height: 30px; padding: 0 12px; font-size: 10.5px; margin-left: 0; }
+.sl-drawer-actions .sl-drawer-regen { margin-right: auto; }
+/* An item's stage sits inside a sheet that already scrolls — a little shorter
+   than the source drawer's, same media fidelity. */
+.sl-drawer-section .sl-stage { min-height: 220px; }
+.sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
+.sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
+.sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
+.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
+.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
+.sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
+.sl-drawer-caption::placeholder { color: var(--sl-muted); }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -567,7 +569,6 @@ function App() {
   let activePreviewStage = null;
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
-  let leavingEditor = false;
 
   /**
    * PUT IT ON THE SCREEN.
@@ -649,31 +650,6 @@ function App() {
     if (activePreviewStage) activePreviewStage.dispose();
     activePreviewStage = createMediaStage(rpc, item, locale);
 
-    /*
-     * THE RULE, NOT AN INVENTED STATUS.
-     *
-     * This read `item.rightsStatus || "pending"`, and a source item has no
-     * `rightsStatus` — `hydrateItem` does not return one, because rights are
-     * recorded on the batch item that a draft creates, not on the post it was
-     * derived from. So every post in this drawer reported "Rights not yet
-     * confirmed / this item cannot be submitted for review", a per-item
-     * verdict about an item that has no such field.
-     *
-     * What is true is the rule `createBatch` will apply: a source whose origin
-     * is `open` always requires confirmation, whatever the org's policy says
-     * (server.js, `effectivePolicy`). State that, from the source row the
-     * summary already carries, and say it as something that happens next
-     * rather than something already wrong.
-     */
-    const sourceRow = Array.isArray(summary?.sources)
-      ? summary.sources.find((row) => row.binding === item.sourceBinding)
-      : null;
-    const willNeedRights = sourceRow?.origin === "open" || policy.rightsPolicy !== "owner_asserted";
-    const rightsBlock = el("div", { class: `sl-rights sl-rights-${willNeedRights ? "pending" : "confirmed"}` }, [
-      el("strong", null, t(locale, willNeedRights ? "drawerRightsAheadTitle" : "drawerRightsClearTitle")),
-      el("span", null, t(locale, willNeedRights ? "drawerRightsAheadBody" : "drawerRightsClearBody"))
-    ]);
-
     replace(body, [
       el("div", { class: "sl-preview-stage-wrap" }, [
         activePreviewStage.node,
@@ -684,7 +660,6 @@ function App() {
       item.permalink
         ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
         : null,
-      rightsBlock,
       item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
     ]);
 
@@ -744,7 +719,7 @@ function App() {
            * watched — so four of the twelve posts a real account produced were
            * headed @essentialfoodsofficial while belonging to @hilde.oest,
            * @junior_the_copenhagen_lab, @nordictail and @arcticspots. Those
-           * are precisely the posts whose rights are somebody else's, so the
+           * are precisely the posts whose authors are somebody else — the
            * one screen that has to get the author right had it wrong.
            */
           el("div", { class: "sl-preview-who" }, [
@@ -786,17 +761,123 @@ function App() {
     }
     if (request !== drawerRequest) return;
     const editable = batch.items?.some(isEditableItem);
+    const destinationLabel = (binding) =>
+      (summary?.destinations || []).find((d) => d.destinationBinding === binding || d.binding === binding)?.label || binding;
+    const posterPreview = (item) => {
+      const layout = item.posterLayout;
+      if (!layout?.template) return null;
+      const canvas = el("canvas", { class: "sl-drawer-poster", "aria-label": t(locale, "posterTitle") });
+      const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
+      canvas.width = computed.width;
+      canvas.height = computed.height;
+      const ctx2d = canvas.getContext("2d");
+      if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
+      /*
+       * The poster is the only "generated image" this gadget can make, and it
+       * cannot travel through the publisher door (hosted URLs only). What the
+       * owner CAN do with it is download the PNG — deterministic render, same
+       * pixels as the preview.
+       */
+      const download = el("button", {
+        type: "button", class: "sl-secondary sl-drawer-poster-dl",
+        onclick: async () => {
+          const bytes = await renderPosterPng(layout.template, {
+            headline: layout.headline, subline: layout.subline,
+            background: { value: layout.background?.value }, textColor: layout.textColor, align: layout.align
+          });
+          const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+          const link = el("a", { href: url, download: `poster-${layout.template}-${item.id}.png` });
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }
+      }, t(locale, "posterDownload"));
+      return el("div", null, [canvas, download]);
+    };
+    /*
+     * The drawer IS the editor: one plain-text composer per draftable item,
+     * and the footer's Save commits every dirty one in a single
+     * `saveRevisions` call — the same shape the agent uses, so the platform
+     * shows one approval for the batch either way.
+     */
+    const composers = new Map(); // batchItemId -> { textarea, note, item }
+    const captionEditor = (item) => {
+      if (!isEditableItem(item)) return null;
+      const note = el("p", { class: "sl-field-note", role: "status" });
+      const textarea = el("textarea", {
+        class: "sl-drawer-caption",
+        rows: "4",
+        placeholder: t(locale, "drawerCaptionPlaceholder"),
+        oninput: () => textarea.classList.toggle("sl-dirty", textarea.value !== (item.caption || ""))
+      });
+      textarea.value = item.caption || "";
+      composers.set(item.id, { textarea, note, item });
+      return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, note]);
+    };
+    /*
+     * The source post's own media, at the Sources drawer's fidelity — a full
+     * media stage per item (carousel strip included), not a cover strip. The
+     * source CAPTION does not render here: the drawer is about the draft.
+     */
+    const stages = [];
+    const stage = (item) => {
+      if (!item.sourceItem) return null;
+      const mediaStage = createMediaStage(rpc, item.sourceItem, locale);
+      stages.push(mediaStage);
+      return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
+    };
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
-      ...batch.items.map((item) => el("section", { class: "sl-drawer-section" }, [
+      ...batch.items.map((item) => {
+        return el("section", { class: "sl-drawer-section" }, [
+        stage(item),
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
-        el("p", null, item.sourceItem?.text || t(locale, "inboxNoSource")),
+        isEditableItem(item)
+          ? captionEditor(item)
+          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        posterPreview(item),
+        batch.generation === "requested"
+          ? el("p", { class: "sl-field-note" }, t(locale, "drawerQueuedNote"))
+          : null,
         el("p", { class: "sl-field-note" }, t(locale, "drawerRevision", { n: item.revision })),
-        el("p", { class: `sl-rights sl-rights-${item.rightsStatus}` }, `${t(locale, "drawerRightsPendingTitle")}: ${item.rightsStatus}`),
-        el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        // TASK-018: where this draft was sent — one line per publication,
+        // including `bound` ones (recorded destinations, never sent).
+        item.publications?.length
+          ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
+              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
+          : null,
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
-      ]))
+      ]); })
     ]);
+    /** One saveRevisions for every dirty composer; per-item issues land under their own field. */
+    const saveDirty = async () => {
+      const dirty = [...composers.values()].filter((entry) => entry.textarea.value !== (entry.item.caption || ""));
+      if (!dirty.length) return true;
+      for (const entry of dirty) entry.note.textContent = t(locale, "saving");
+      const result = await rpc.saveRevisions({
+        revisions: dirty.map((entry) => ({
+          batchItemId: entry.item.id,
+          expectedRevision: entry.item.revision,
+          caption: entry.textarea.value
+        }))
+      });
+      let allOk = true;
+      for (const [index, entry] of dirty.entries()) {
+        const one = result?.results?.[index];
+        if (one?.ok) {
+          entry.item.revision = one.revision;
+          entry.item.caption = entry.textarea.value;
+          entry.textarea.classList.remove("sl-dirty");
+          entry.note.textContent = t(locale, "drawerRevision", { n: one.revision });
+        } else {
+          allOk = false;
+          entry.note.textContent = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
+        }
+      }
+      if (allOk || !result?.ok) {
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      }
+      return allOk;
+    };
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
         el("button", {
@@ -806,13 +887,65 @@ function App() {
         }, icon("close"))
       ])]),
       body,
-      el("footer", { class: "sl-preview-actions" }, [
+      el("footer", { class: "sl-preview-actions sl-drawer-actions" }, [
+        editable ? el("button", {
+          type: "button", class: "sl-secondary sl-drawer-regen",
+          onclick: async () => {
+            try {
+              const result = await rpc.requestGeneration(batch.id);
+              if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+            } catch (error) {
+              announce(error instanceof Error ? error.message : String(error), "");
+              return;
+            }
+            batchDialog.close();
+            announce(t(locale, "drawerRegenerateNote"), "");
+            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+            renderCurrentView();
+          }
+        }, t(locale, "drawerRegenerate")) : null,
         el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
-        editable ? el("button", { type: "button", class: "sl-primary", onclick: () => { batchDialog.close(); wizard = { ...resumeBatch(wizard, batch), returnToDrawer: batch.id }; renderCurrentView(); } }, t(locale, "drawerContinue")) : null
+        editable ? el("button", {
+          type: "button", class: "sl-secondary",
+          onclick: async () => {
+            if (!(await saveDirty())) return;
+            // The poster's PNG exists only when the client renders it — and
+            // it must exist before submit, or the post ships source media.
+            for (const item of batch.items ?? []) {
+              if (!item.posterLayout || item.posterStored) continue;
+              try {
+                const png = await renderPosterPng(item.posterLayout.template, {
+                  headline: item.posterLayout.headline, subline: item.posterLayout.subline,
+                  background: { value: item.posterLayout.background?.value },
+                  textColor: item.posterLayout.textColor, align: item.posterLayout.align
+                });
+                const stored = await rpc.savePoster({
+                  batchItemId: item.id, expectedRevision: item.revision ?? 0,
+                  template: item.posterLayout.template, png
+                });
+                if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
+              } catch (error) {
+                announce(error instanceof Error ? error.message : String(error), "");
+                return;
+              }
+            }
+            batchDialog.close();
+            wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
+            renderCurrentView();
+          }
+        }, t(locale, "continueToPublish")) : null,
+        editable ? el("button", {
+          type: "button", class: "sl-primary",
+          onclick: async () => { await saveDirty(); }
+        }, t(locale, "saveChanges")) : null
       ])
     ])]);
-    batchDialog.showModal();
-    batchDialog.addEventListener("close", () => { if (previous instanceof HTMLElement) previous.focus(); }, { once: true });
+    if (!batchDialog.open) batchDialog.showModal();
+    batchDialog.addEventListener("close", () => {
+      // Every item's stage minted blob URLs; close returns them.
+      for (const mediaStage of stages) mediaStage.dispose();
+      if (previous instanceof HTMLElement) previous.focus();
+    }, { once: true });
   }
 
   function closePreview() {
@@ -825,9 +958,6 @@ function App() {
     if (lastFocusedBeforePreview instanceof HTMLElement) lastFocusedBeforePreview.focus();
   }
 
-  function askLeaveEditor() {
-    return confirmUnsavedNavigation(leaveDialog, locale);
-  }
   previewDialog.addEventListener("close", closePreview);
   previewDialog.addEventListener("click", (event) => {
     const rect = previewDialog.getBoundingClientRect();
@@ -942,15 +1072,41 @@ function App() {
     announce(t(locale, "batchBlockedTitle"), refusalMessage(refusal));
   }
 
+  /**
+   * Source items already covered by an active batch — the client's mirror of
+   * `findDuplicates` (active, never-filed batch items). The summaries only
+   * approximate it: a batch with filed-but-still-active rows is not a
+   * conflict, and the server stays authoritative for whatever this misses.
+   * Drafts and attention rows are the ones that would refuse.
+   */
+  function takenSourceIds() {
+    return new Set(
+      (inboxState.summaries ?? [])
+        .filter((entry) => (entry.draftCount ?? 0) + (entry.attentionCount ?? 0) > 0)
+        .flatMap((entry) => entry.sourceItemIds ?? [])
+    );
+  }
+
   async function continueWithSelection(createNewVersion) {
-    const ids = selectedIds(collectionState);
-    if (!ids.length) return;
+    const selected = selectedIds(collectionState);
+    if (!selected.length) return;
+    /*
+     * The count on the action is what the action can actually draft
+     * (PM decision 5, corrected): selected posts already in an open draft
+     * are not drafted again — they are skipped and named, not sent to a
+     * batch the server would refuse. When every selected post is taken,
+     * all ids still go to createBatch so its refusal can offer the
+     * explicit new-version path (REQ-017's opt-in entry).
+     */
+    const taken = takenSourceIds();
+    const draftable = selected.filter((id) => !taken.has(id));
+    const ids = draftable.length ? draftable : selected;
     try {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
-      // createBatch answers an expected refusal (no items, no destinations,
-      // an existing active localization) as a value, not a throw — see
-      // server.js's header note.
+      // createBatch answers an expected refusal (no items, an existing
+      // active localization) as a value, not a throw — see server.js's
+      // header note.
       if (isRefusal(batch)) {
         if (batch.code === "duplicate_active") {
           collectionState = setNotice(collectionState, {
@@ -966,179 +1122,119 @@ function App() {
         return;
       }
       collectionState = clearNotice(collectionState);
-      wizard = setBatch(wizard, batch);
+      /*
+       * The batch is pending drafts now — generation happens on the agent's
+       * next turn (no platform work-request mechanism exists yet;
+       * agenticos-stack/agenticos#1863). Land on Content, where the pending
+       * items read as queued cards off the batch's durable `generation`
+       * mark and drafts appear as they are saved. Editing still reaches the
+       * wizard through a card → Continue editing.
+       */
+      if (draftable.length && draftable.length < selected.length) {
+        collectionState = setNotice(collectionState, {
+          message: t(locale, "skippedDrafts", { n: selected.length - draftable.length })
+        });
+      }
+      activeSection = "content";
+      inboxState = setInboxFilter(inboxState, "drafts");
       await rpc.markSeen(ids).catch(() => {});
+      try {
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      } catch (error) {
+        console.error(error);
+      }
       renderCurrentView();
     } catch (error) {
       console.error(error);
     }
   }
 
-  // --- Wizard (localize / review / publish / result) handlers --------------
+  // --- Wizard (review / publish / result) handlers ---------------------------
   const wizardHandlers = {
-    onSelectItem: (id) => {
-      wizard = setActiveItem(wizard, id);
+    // --- Publish step: the send decision is per item, made at submit -------
+    onToggleBinding: (id, binding) => {
+      wizard = togglePublishBinding(wizard, id, binding);
       renderCurrentView();
     },
-    onMobilePane: (pane) => { wizard = setMobilePane(wizard, pane); renderCurrentView(); },
-    onDraftChange: (id, patch, redraw = true) => {
-      const field = document.activeElement;
-      const selection = field?.classList?.contains("sl-zh-edit") ? [field.selectionStart, field.selectionEnd] : null;
-      wizard = updateDraft(wizard, id, patch);
-      if (!redraw) {
-        viewHost.querySelector?.(".sl-selection .sl-primary")?.setAttribute("disabled", "");
-        return;
-      }
-      renderCurrentView();
-      if (selection) {
-        const replacement = document.querySelector(".sl-zh-edit");
-        replacement?.focus();
-        replacement?.setSelectionRange(...selection);
-      }
+    onPublishIntent: (id, patch, redraw = true) => {
+      wizard = setPublishIntent(wizard, id, patch);
+      // Radio changes redraw; the schedule text/datetime inputs stay put so
+      // typing does not lose focus mid-keystroke.
+      if (redraw) renderCurrentView();
     },
-    onToggleClaim: (id, value) => {
-      wizard = toggleConfirmedClaim(wizard, id, value);
-      renderCurrentView();
-    },
-    onPosterChange: (patch) => {
-      wizard = updateDraft(wizard, wizard.activeItemId, patch);
-      renderCurrentView();
-    },
-    onSave: async (id) => {
-      if (wizard.submitting || wizard.savingByItem[id] || Object.hasOwn(wizard.conflicts ?? {}, id)) return;
-      const item = wizard.batch.items.find((entry) => entry.id === id);
-      const draft = wizard.drafts[id];
-      const submittedDraft = { ...draft, confirmedClaims: [...(draft.confirmedClaims || [])] };
-      wizard = setSaving(wizard, id, true);
-      wizard = setWizardError(wizard, null);
+    /**
+     * TASK-016's submit: one item, the bindings the picker has chosen, the
+     * timing it carries. `createNewVersion` arrives only from the refusal's
+     * own button — REQ-017's opt-in, taken by the owner, never retried.
+     * Every expected refusal (a stale revision, no
+     * destination chosen, an already-filed pair, a provider outage) is a
+     * value — server.js's header note — shown on the item it belongs to.
+     */
+    onSubmitItem: async (id, createNewVersion = false) => {
+      const item = wizard.batch?.items.find((entry) => entry.id === id);
+      if (!item || wizard.submittingByItem?.[id]) return;
+      const choice = wizard.publishChoices?.[id] ?? {};
+      wizard = setPublishError(wizard, id, null);
+      wizard = setSubmitting(wizard, id, true);
       renderCurrentView();
       try {
-        const result = await rpc.saveRevision({
+        const result = await rpc.submitForReview({
           batchItemId: id,
           expectedRevision: item.revision ?? 0,
-          caption: submittedDraft.caption,
-          posterLayout: { template: submittedDraft.template, headline: submittedDraft.headline, subline: submittedDraft.subline, background: { kind: "solid", value: submittedDraft.background }, textColor: submittedDraft.textColor, align: submittedDraft.align },
-          confirmedClaims: submittedDraft.confirmedClaims,
-          publicationIntent: submittedDraft.publicationIntent,
-          refinementBrief: submittedDraft.refinementBrief,
-          acceptedVisualMode: submittedDraft.acceptedVisualMode,
-          ledger: submittedDraft.ledger
+          destinationBindings: choice.bindings ?? [],
+          intent: choice.intent,
+          createNewVersion
         });
-        if (result?.ok) wizard = applySavedRevision(wizard, id, result, submittedDraft);
-        // A `{ ok: false }` refusal (a validation `block` issue, or a
-        // now-unknown batch item) is a value, never a caught exception —
-        // server.js's header note — so it is surfaced the same way a
-        // genuine throw is, via the inline banner below.
-        else {
-          wizard = setWizardError(wizard, refusalMessage(result));
-          if (result?.issues?.some((issue) => issue.code === "revision_conflict")) {
-            const batch = await rpc.getBatch(wizard.batch.id);
-            wizard = recordDraftConflict(wizard, id, batch?.items?.find((entry) => entry.id === id));
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      }
-      wizard = setSaving(wizard, id, false);
-      renderCurrentView();
-    },
-    onSavePoster: async (id) => {
-      if (wizard.submitting || wizard.savingByItem[id] || Object.hasOwn(wizard.conflicts ?? {}, id)) return;
-      const item = wizard.batch.items.find((entry) => entry.id === id);
-      const draft = wizard.drafts[id];
-      const submittedDraft = { ...draft };
-      wizard = setSaving(wizard, id, true);
-      wizard = setWizardError(wizard, null);
-      try {
-        const png = await renderPosterPng(draft.template, { headline: draft.headline, subline: draft.subline, background: { value: draft.background }, textColor: draft.textColor });
-        const result = await rpc.savePoster({ batchItemId: id, expectedRevision: item.revision ?? 0, template: draft.template, png });
-        if (result?.ok) wizard = applySavedPoster(wizard, id, result, submittedDraft);
-        else if (isRefusal(result)) {
-          wizard = setWizardError(wizard, refusalMessage(result));
-          if (result?.issues?.some((issue) => issue.code === "revision_conflict")) {
-            const batch = await rpc.getBatch(wizard.batch.id);
-            wizard = recordDraftConflict(wizard, id, batch?.items?.find((entry) => entry.id === id));
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      }
-      wizard = setSaving(wizard, id, false);
-      renderCurrentView();
-    },
-    onResolveConflict: (id, keepEdits) => {
-      wizard = resolveDraftConflict(wizard, id, keepEdits);
-      renderCurrentView();
-    },
-    onSubmitForReview: async () => {
-      if (!submitEnabled(wizard, policy)) {
-        wizard = setWizardError(wizard, t(locale, "submitBlocked"));
-        renderCurrentView();
-        return;
-      }
-      wizard = setWizardError(wizard, null);
-      wizard = { ...wizard, submitting: true };
-      renderCurrentView();
-      try {
-        for (const item of wizard.batch.items) {
-          const result = await rpc.submitForReview({ batchItemId: item.id, expectedRevision: item.revision ?? 0 });
-          // Every expected refusal (rights unconfirmed, a stale revision, an
-          // unresolved destination, a provider outage) is a value now, not
-          // a rejected promise — server.js's header note. Stop at the first
-          // one and show it rather than moving on as if every item cleared.
-          if (isRefusal(result)) {
-            wizard = setWizardError(wizard, refusalMessage(result));
-            renderCurrentView();
-            return;
-          }
-        }
-        const refreshed = await rpc.getBatch(wizard.batch.id);
-        wizard = setBatch(wizard, refreshed);
-        wizard = goToWizardStep(wizard, "review");
-      } catch (error) {
-        console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
-      } finally {
-        wizard = { ...wizard, submitting: false };
-        renderCurrentView();
-      }
-      renderCurrentView();
-    },
-    onBack: async () => {
-      if (wizard.submitting || leavingEditor) return;
-      leavingEditor = true;
-      try {
-      const dirtyIds = wizard.batch ? wizard.batch.items.map((item) => item.id).filter((id) => draftIsDirty(wizard, id)) : [];
-      if (dirtyIds.length) {
-        const decision = await askLeaveEditor();
-        if (decision === "keep") return;
-        if (decision === "discard") {
-          for (const id of dirtyIds) wizard = discardDraft(wizard, id);
+        if (isRefusal(result)) {
+          wizard = setPublishError(wizard, id, { code: result.code, message: refusalMessage(result) });
         } else {
-          for (const id of dirtyIds) await wizardHandlers.onSave(id);
-          if (wizard.batch && dirtyIds.some((id) => draftIsDirty(wizard, id))) return;
+          // The filing landed — read back the item and its publication rows
+          // so the picker shows them as filed rather than chosen.
+          const refreshed = await rpc.getBatch(wizard.batch.id);
+          const fresh = refreshed?.items?.find((entry) => entry.id === id);
+          if (fresh) {
+            wizard = { ...wizard, batch: { ...wizard.batch, items: wizard.batch.items.map((entry) => (entry.id === id ? fresh : entry)) } };
+          }
+          if (result.warnings?.length) announce(result.warnings[0].message, "");
+          const publishState = await rpc.readPublishState(id);
+          wizard = applyPublishState(wizard, id, publishState);
         }
+      } catch (error) {
+        console.error(error);
+        wizard = setPublishError(wizard, id, { code: "error", message: error instanceof Error ? error.message : String(error) });
       }
-      const target = WIZARD_BACK_TARGET[wizard.step];
-      if (wizard.step === "localize" && wizard.returnToDrawer) {
-        const row = inboxState.summaries.find((entry) => entry.id === wizard.returnToDrawer);
-        wizard = createWizardState();
+      wizard = setSubmitting(wizard, id, false);
+      renderCurrentView();
+    },
+    // The Publish step's empty state offers the same grant re-check the
+    // Settings screen does (TASK-022) — a destination granted after setup is
+    // exactly the case an owner reaches it with.
+    onRefreshGrants: async () => {
+      try {
+        const result = await rpc.refreshGrants();
+        if (result && result.ok === false) {
+          announce(t(locale, "genericError"), result.message || "");
+          return;
+        }
+        await refreshSummary();
+        const names = [...(result?.added?.sources ?? []), ...(result?.added?.destinations ?? [])].map((row) => row.label || row.binding);
+        announce(t(locale, names.length ? "setupConnectionsFound" : "setupConnectionsNone", names.length ? { names: names.join(", ") } : {}), "");
         renderCurrentView();
-        if (row) await openBatchDrawer(row);
-        return;
+      } catch (error) {
+        console.error(error);
+        announce(t(locale, "genericError"), error instanceof Error ? error.message : "");
       }
-      // "select" has no wizard view of its own — going back from Localize
-      // means dropping the batch and returning to the collection.
+    },
+    onOpenSettings: () => collectionHandlers.onOpenSettings(),
+    onBack: async () => {
+      const target = WIZARD_BACK_TARGET[wizard.step];
+      // "select" has no wizard view of its own — going back from Review
+      // means leaving the batch and returning to the collection.
       wizard = target === "select" ? createWizardState() : target ? goToWizardStep(wizard, target) : wizard;
       // A refusal banner from the step being left does not belong on the
       // step navigated to.
       wizard = setWizardError(wizard, null);
       renderCurrentView();
-      } finally {
-        leavingEditor = false;
-      }
     },
     onContinue: async () => {
       if (wizard.step === "review") {
@@ -1148,21 +1244,25 @@ function App() {
       renderCurrentView();
     },
     onRetry: async (itemId, destinationBinding) => {
-      wizard = setWizardError(wizard, null);
+      // A failed pair re-files through the same per-item submit, scoped to
+      // the one destination that failed.
+      wizard = setPublishError(wizard, itemId, null);
       try {
         const result = await rpc.submitForReview({
           batchItemId: itemId,
-          expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0
+          expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0,
+          destinationBindings: [destinationBinding]
         });
         if (isRefusal(result)) {
-          wizard = setWizardError(wizard, refusalMessage(result));
+          wizard = setPublishError(wizard, itemId, { code: result.code, message: refusalMessage(result) });
         } else {
-          await refreshPublishState();
+          const state = await rpc.readPublishState(itemId);
+          wizard = applyPublishState(wizard, itemId, state);
         }
         renderCurrentView();
       } catch (error) {
         console.error(error);
-        wizard = setWizardError(wizard, error instanceof Error ? error.message : String(error));
+        wizard = setPublishError(wizard, itemId, { code: "error", message: error instanceof Error ? error.message : String(error) });
         renderCurrentView();
       }
     },
@@ -1228,28 +1328,25 @@ function App() {
           el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
         ])
       ]);
-      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers });
+      const taken = takenSourceIds();
+      const draftableCount = selectedIds(collectionState).filter((id) => !taken.has(id)).length;
+      if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover, draftableCount });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, loadCover, sources: summary?.sources });
       replace(viewHost, [navigation, body]);
       return;
     }
-    if (wizard.step === "localize") renderLocalize(viewHost, wizard, { locale, policy, handlers: wizardHandlers });
-    else if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
-    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, handlers: wizardHandlers });
-    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, handlers: wizardHandlers });
+    if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
+    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
+    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
   }
 
-  globalThis.addEventListener?.("beforeunload", (event) => {
-    if (!wizard.batch || !wizard.batch.items.some((item) => draftIsDirty(wizard, item.id))) return;
-    event.preventDefault();
-    event.returnValue = "";
-  });
+
 
   // --- First run, and every visit after it (TASK-302) ------------------------
   /**
    * `options.editing` re-enters the form for a gadget that is already
    * configured, prefilled from its stored config. Without it this was a
-   * one-way door — cadence, timezone, rights policy and the protected-term
+   * one-way door — cadence, timezone and the protected-term
    * lists were fixed at first run for the life of the gadget, on every
    * surface. Door grants and schedules were never the problem: the workspace
    * page has owned both, with revoke and stop, all along.
@@ -1273,6 +1370,10 @@ function App() {
     let openSources = (summary?.sources || []).filter((source) => source.origin === "open");
     let openBusy = false;
     let openError = null;
+    // The additive grant re-check — busy/result live beside the button that
+    // asks for it (TASK-021), namespaced like the open-source fields.
+    let grantsBusy = false;
+    let grantsNote = null;
 
     const draw = () =>
       renderSetup(viewHost, draft, {
@@ -1289,6 +1390,8 @@ function App() {
         // clobbered the setConfig one and a failed save showed nothing.
         openBusy,
         openError,
+        grantsBusy,
+        grantsNote,
         handlers: setupHandlers
       });
     const setupHandlers = {
@@ -1339,6 +1442,39 @@ function App() {
         draw();
       },
 
+      /**
+       * "Check for new connections" — TASK-021. A connector granted after
+       * first setup never reached the lists this form shows, because the
+       * derive step only ran at first setup or through the legacy `setConfig`
+       * path and this payload carries no bindings. `refreshGrants` is the
+       * additive re-derive; what it added (or that it added nothing) is said
+       * beside the button.
+       */
+      onRefreshGrants: async () => {
+        if (grantsBusy) return;
+        grantsBusy = true;
+        grantsNote = null;
+        draw();
+        try {
+          const result = await rpc.refreshGrants();
+          if (!result || result.ok === false) {
+            grantsNote = result?.message || t(locale, "genericError");
+          } else {
+            await refreshSummary();
+            const names = [...(result.added?.sources || []), ...(result.added?.destinations || [])]
+              .map((row) => row.label || row.binding);
+            grantsNote = names.length
+              ? t(locale, "setupConnectionsFound", { names: names.join(", ") })
+              : t(locale, "setupConnectionsNone");
+          }
+        } catch (thrown) {
+          console.error(thrown);
+          grantsNote = thrown instanceof Error ? thrown.message : String(thrown);
+        }
+        grantsBusy = false;
+        draw();
+      },
+
       // Leaves the form without writing anything, back to the collection the
       // owner came from. Only rendered while `editing`.
       onCancel: async () => {
@@ -1364,18 +1500,6 @@ function App() {
         const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
         if (savedNotice) savedNotice.textContent = "";
         viewHost.querySelector?.(".sl-setup-error")?.remove();
-      },
-      onAdd: (field, value) => {
-        draft = addListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
-      },
-      onRemove: (field, value) => {
-        draft = removeListEntry(draft, field, value);
-        error = null;
-        notice = null;
-        draw();
       },
       onMonitoring: async (enabled) => {
         if (saving || (enabled && JSON.stringify(draft) !== savedDraft)) return;

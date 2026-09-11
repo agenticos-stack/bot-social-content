@@ -28,22 +28,33 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * What the browser may call.
    *
    * The first list needs no door: browsing what has already been scanned,
-   * selecting, batching, revising, confirming rights. It is what this runtime
-   * has always admitted, and it stays the whole list when no door is
-   * connected — those methods would only fail on a missing `env` member.
+   * selecting, batching, revising — and the two calls that
+   * must work BEFORE any door exists. `saveSetup` derives connector bindings
+   * only when it has doors to derive them from, and `refreshGrants` is the
+   * discovery mechanism itself: refusing it without doors would make the
+   * first grant unreachable. `readPublishState` polls a door only for rows
+   * that were actually filed; `bound` rows answer from storage alone, and
+   * `submitForReview` wraps every door call and refuses by value — an absent
+   * publisher is `provider_unavailable`, not an admission failure.
    *
-   * The second is admitted ONLY with doors, because each one goes through one:
-   * setup writes bindings and arms a schedule, scanning reads a source,
-   * submission hands the approved version to the publisher. Admitting them
-   * without doors would move a clear "this is unavailable" to a confusing
-   * failure inside the gadget.
+   * `getMedia` and `savePoster` belong to drafting, not to doors: a media
+   * cache hit serves local bytes with no fetch at all (a miss refuses by
+   * value — `media_missing`), and a poster PNG is rendered in the browser
+   * and only stored. Gating either on doors left a no-door session unable
+   * to read its own cache or save its own poster.
+   *
+   * The second list is admitted ONLY with doors, because each one's whole
+   * purpose is a door call: scanning reads a source, monitoring arms a
+   * schedule, source add/remove resolves through the connector. Admitting
+   * them without doors would move a clear "this is unavailable" to a
+   * confusing failure inside the gadget.
    *
    * Admission is not authority either way — the platform still decides whether
    * any door call proceeds, and `submitForReview` is gated there as it is for
    * an installed gadget.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','saveRevision','confirmRights'];
-  const needsDoors = ['setConfig','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule','savePoster','submitForReview','readPublishState','getMedia'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
+  const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],
     allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });

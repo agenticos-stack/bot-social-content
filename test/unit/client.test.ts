@@ -56,6 +56,7 @@ import {
   updateDraft
 } from "../../src/src/client/steps.js";
 import { createInboxState, drawerAction, drawerProjection, groupSourcesWithBatches, renderInbox, setInboxFilter, setInboxSummaries, visibleBatchSummaries } from "../../src/src/client/inbox.js";
+import { suggestProtectedTerms } from "../../src/src/client/steps.js";
 import { LOCALES, STRINGS, t } from "../../src/src/client/i18n.js";
 import { normalizeConfig } from "../../src/config.js";
 import { findAll, flushAsyncWork, hasClass, installMinimalDom } from "./_helpers/minimal-dom";
@@ -232,15 +233,18 @@ describe("the selection tray, when nothing is set up to publish to", () => {
       .map((button: { textContent?: string }) => button.textContent ?? "");
   }
 
-  it("points at settings instead of offering Continue", () => {
+  it("offers the draft action — the destination is picked at submit, never before drafting", () => {
+    // TASK-015: the `send` target stopped being a precondition for
+    // `generate`. A destinationless workspace drafts first and chooses where
+    // it goes on the Publish step.
     const labels = tray({ destinations: [] });
-    expect(labels.some((label) => label.includes("Add a destination"))).toBe(true);
-    expect(labels.some((label) => label.startsWith("Continue with"))).toBe(false);
+    expect(labels.some((label) => label.includes("Draft 1 post"))).toBe(true);
+    expect(labels.some((label) => label.includes("Add a destination"))).toBe(false);
   });
 
-  it("offers Continue once a destination exists", () => {
+  it("offers the draft action once a destination exists", () => {
     const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
-    expect(labels.some((label) => label.includes("Continue with 1 post"))).toBe(true);
+    expect(labels.some((label) => label.includes("Draft 1 post"))).toBe(true);
     expect(labels.some((label) => label.includes("Add a destination"))).toBe(false);
   });
 
@@ -249,15 +253,34 @@ describe("the selection tray, when nothing is set up to publish to", () => {
    * reading its absence as "no destinations" would flash a setup prompt at
    * every owner on every load and then take it back.
    */
-  it("keeps Continue while the summary has not arrived", () => {
+  it("keeps the draft action while the summary has not arrived", () => {
     const labels = tray(undefined);
-    expect(labels.some((label) => label.includes("Continue with 1 post"))).toBe(true);
+    expect(labels.some((label) => label.includes("Draft 1 post"))).toBe(true);
   });
 
   it("says one post, not 1 post(s)", () => {
     const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
-    expect(labels.join(" ")).toContain("Continue with 1 post");
+    expect(labels.join(" ")).toContain("Draft 1 post");
     expect(labels.join(" ")).not.toContain("post(s)");
+  });
+});
+
+describe("suggestProtectedTerms", () => {
+  it("offers repeated capitalized names and hashtags from the owner's own posts", () => {
+    const items = [
+      { text: "Essential Marine Collagen back in stock. #essentialfoods #hk" },
+      { text: "Essential Marine Collagen pairs with breakfast. #essentialfoods" },
+      { text: "The usual roundup. #hk" }
+    ];
+    const { terms, hashtags } = suggestProtectedTerms(items as never);
+    expect(terms).toContain("Essential Marine Collagen");
+    expect(terms).not.toContain("The"); // sentence-opener, not a product name
+    expect(hashtags).toEqual(["essentialfoods", "hk"]); // sorted by frequency
+  });
+
+  it("suggests nothing seen only once, and nothing from an empty list", () => {
+    expect(suggestProtectedTerms([{ text: "AgenticOS Pro once." }] as never).terms).toEqual([]);
+    expect(suggestProtectedTerms([] as never)).toEqual({ terms: [], hashtags: [] });
   });
 });
 
@@ -272,11 +295,11 @@ describe("steps.js transitions", () => {
     items: [{ id: "item1", sourceItem, destinationBindings: ["IG_MAIN"], revision: 0, caption: "", confirmedClaims: [] }]
   };
 
-  it("Continue creates a batch and moves the wizard from select to localize", () => {
+  it("Continue creates a batch and moves the wizard from select to review", () => {
     let wizard = createWizardState();
     expect(wizard.step).toBe("select");
     wizard = setBatch(wizard, baseBatch);
-    expect(wizard.step).toBe("localize");
+    expect(wizard.step).toBe("review");
     expect(wizard.activeItemId).toBe("item1");
     expect(wizard.drafts.item1.caption).toBe(""); // draft seeded from the (empty) saved caption
   });
@@ -345,22 +368,6 @@ describe("steps.js transitions", () => {
     expect(updateDraft(sending, "item1", { caption: "changed" })).toBe(sending);
   });
 
-  it("rights pending on any item blocks Submit even with a clean draft", () => {
-    let wizard = createWizardState();
-    wizard = setBatch(wizard, { id: "batch1", items: [{ ...baseBatch.items[0], rightsStatus: "pending" }] });
-    wizard = updateDraft(wizard, "item1", { caption: "今日優惠，建議零售價 HK$268，數量有限，售完即止。" });
-    expect(submitEnabled(wizard, {})).toBe(false);
-  });
-
-  it("does not block Submit when rights are pending but the ledger is original-only", () => {
-    let wizard = createWizardState();
-    wizard = setBatch(wizard, {
-      id: "batch1",
-      items: [{ ...baseBatch.items[0], rightsStatus: "pending", rightsRequired: false, caption: "今日優惠，建議零售價 HK$268，數量有限，售完即止。" }]
-    });
-    expect(submitEnabled(wizard, {})).toBe(true);
-  });
-
   it("Review flips to expired once the item's current revision has moved past the approved one", () => {
     expect(isApprovalExpired(null)).toBe(false);
     expect(isApprovalExpired({ approvedRevision: 3, currentRevision: 3 })).toBe(false);
@@ -423,7 +430,9 @@ describe("inbox.js projections", () => {
     });
     const buttons = findAll(root, (node) => node.tagName === "BUTTON");
     expect(buttons.some((button) => button.textContent?.includes("Draft items"))).toBe(true);
-    await buttons.find((button) => button.textContent?.includes("Inspect"))?.dispatchEvent({ type: "click" });
+    // The whole card is the open affordance — the Sources shape's
+    // `.sl-post-open` button — which opens the drawer for its batch.
+    await buttons.find((button) => button.classList?.contains("sl-post-open"))?.dispatchEvent({ type: "click" });
     expect(calls).toEqual(["inspect:b1"]);
   });
 });
@@ -715,6 +724,82 @@ describe("bundled client.js smoke test", () => {
     expect(glyphs[0].textContent).toBe("IG");
   });
 
+  it("Draft N posts lands on Content as a queued card, not the wizard", async () => {
+    installMinimalDom();
+    document.documentElement.lang = "en";
+
+    const item = makeItem({ id: "a", seen: false, selected: true });
+    let createdArgs: unknown = null;
+    (globalThis as any).gadget = {
+      async summary() {
+        return {
+          configured: true,
+          sources: [{ binding: "IG_MAIN", provider: "instagram", label: "Instagram · main" }],
+          destinations: [],
+          config: {}
+        };
+      },
+      async listItems() {
+        return { items: [item], nextCursor: null };
+      },
+      async setSelection() {},
+      async clearSelection() {},
+      async refresh() {},
+      async markSeen() {},
+      async createBatch(args: unknown) {
+        createdArgs = args;
+        return {
+          id: "batch_test1",
+          items: [{ id: "bi_1", sourceItem: item, state: "drafting", revision: 0, destinationBindings: [], publications: [] }]
+        };
+      },
+      async listBatchSummaries() {
+        // Empty until the batch exists — otherwise the view opens on Content
+        // before the click this test is about. The batch row carries the
+        // durable `generation: "requested"` mark the server sets, and the
+        // per-item projection the Content grid reads its cards from.
+        if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
+        return {
+          batches: [{
+            id: "batch_test1", status: "open", generation: "requested", itemCount: 1, draftCount: 1, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
+            sourceItemIds: ["a"],
+            preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false },
+            items: [{ batchItemId: "bi_1", itemId: "a", state: "drafting", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null }]
+          }],
+          nextCursor: null,
+          totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 0 }
+        };
+      },
+      async subscribe() {
+        return {};
+      }
+    };
+
+    await import(pathToFileURL(bundlePath).href + `?case=draft-ask-${Date.now()}`);
+    await flushAsyncWork();
+
+    const primary = findAll(document.body, (element) => element.tagName === "BUTTON" && element.classList.contains("sl-primary"))[0];
+    expect(primary.textContent).toBe("Draft 1 post");
+    await primary.dispatchEvent({ type: "click", preventDefault: () => {} });
+    await flushAsyncWork();
+
+    // The batch was created with no destination precondition — an empty
+    // list is the recorded default, not a refusal.
+    expect(createdArgs).toBeTruthy();
+    expect((createdArgs as { destinationBindings: string[] }).destinationBindings).toEqual([]);
+
+    // Content tab shows the selected post as a queued card immediately — the
+    // Sources shape (article.sl-post) carrying the durable generation mark as
+    // its chip. There is no ask card: the owner is not the courier.
+    expect(findAll(document.body, (element) => element.classList.contains("sl-ask"))).toHaveLength(0);
+    const card = findAll(document.body, (element) => element.classList.contains("sl-post"))[0];
+    expect(card).toBeTruthy();
+    expect(card.textContent).toContain(item.text.split("\n")[0].slice(0, 90));
+    expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("queued");
+    // The wizard's Localize step never opened.
+    expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
+  });
+
   // -------------------------------------------------------------------------
   // Finding C (design-plans/evidence/social-localization-gadget-1/
   // verification.md): the local end-to-end browser walk showed the first-run
@@ -792,12 +877,11 @@ describe("bundled client.js smoke test", () => {
       const form = findSetupForm(document);
       expect(form).toBeTruthy();
 
-      // Mirrors the walk's own interaction: add a protected term via the
-      // tag input's Enter-to-add (steps.js `renderTagList`), so the
-      // submitted payload is not just the bare default draft.
-      const termInput = findAll(document.body, (element) => hasClass(element, "sl-field-input"))[0];
-      termInput.value = "AgenticOS Pro";
-      await termInput.dispatchEvent({ type: "keydown", key: "Enter", preventDefault: () => {} });
+      // Fill the content prompt, so the submitted payload is not just the
+      // bare default draft.
+      const promptInput = findAll(document.body, (element) => element.getAttribute?.("name") === "setupContentPrompt")[0];
+      promptInput.value = "Keep AgenticOS Pro verbatim.";
+      await promptInput.dispatchEvent({ type: "change" });
       await flushAsyncWork();
 
       const submitButton = findPrimaryButton(document);
@@ -819,7 +903,7 @@ describe("bundled client.js smoke test", () => {
       // shape, so a defect here is not a payload-shape mismatch.
       expect(() => normalizeConfig(capturedConfig)).not.toThrow();
       const normalized = normalizeConfig(capturedConfig);
-      expect(normalized.protectedTerms).toEqual(["AgenticOS Pro"]);
+      expect(normalized.contentPrompt).toBe("Keep AgenticOS Pro verbatim.");
       expect(normalized.locale).toEqual({ from: "en", to: "zh-HK" });
 
       // No leftover error banner, and the setup form is gone — the view
@@ -870,8 +954,9 @@ describe("bundled client.js smoke test", () => {
 
         // Editing a field clears the stale error rather than leaving it
         // stuck until the next submit resolves.
-        const termInput = findAll(document.body, (element) => hasClass(element, "sl-field-input"))[0];
-        await termInput.dispatchEvent({ type: "keydown", key: "Enter", preventDefault: () => {} });
+        const promptInput = findAll(document.body, (element) => element.getAttribute?.("name") === "setupContentPrompt")[0];
+        promptInput.value = "changed";
+        await promptInput.dispatchEvent({ type: "change" });
         await flushAsyncWork();
         expect(findAll(document.body, (element) => hasClass(element, "sl-setup-error"))).toHaveLength(0);
       } finally {
@@ -894,7 +979,6 @@ describe("settings: the setup form is no longer a one-way door", () => {
       ...createSetupDraft(),
       cadence: "weekly",
       timezone: "Asia/Tokyo",
-      rightsPolicy: "trust_connected",
       notificationPolicy: "daily",
       quietHoursStart: "22:00",
       quietHoursEnd: "07:00",
@@ -924,7 +1008,6 @@ describe("settings: the setup form is no longer a one-way door", () => {
     const back = draftFromConfig(partial);
     const fresh = createSetupDraft();
     expect(back.cadence).toBe("hourly");
-    expect(back.rightsPolicy).toBe(fresh.rightsPolicy);
     expect(back.notificationPolicy).toBe(fresh.notificationPolicy);
     expect(back.protectedTerms).toEqual(fresh.protectedTerms);
   });

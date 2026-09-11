@@ -38,7 +38,7 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     assert.equal((await browser.gadget.subscribe()).supported, false);
     const batch = await browser.gadget.createBatch({itemIds:['fixture-0'],destinationBindings:['LOCAL_DRAFT']});
     assert.equal(batch.items.length, 1);
-    assert.equal(batch.items[0].rightsStatus, 'pending');
+    assert.equal(batch.items[0].state, 'drafting');
     const batchItemId = batch.items[0].id;
     const caption = '每天從美好的早晨開始，探索生活中的精彩時刻。';
     const saved = await browser.gadget.saveRevision({batchItemId,expectedRevision:0,caption});
@@ -50,12 +50,9 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     const reopened = await browser.gadget.getBatch(batch.id);
     assert.equal(reopened.items[0].caption, caption);
     assert.equal(reopened.items[0].revision, 1);
-    assert.equal(reopened.items[0].rightsStatus, 'pending');
     const duplicate = await browser.gadget.createBatch({itemIds:['fixture-0'],destinationBindings:['LOCAL_DRAFT']});
     assert.equal(duplicate.code, 'duplicate_active');
     assert.equal((await browser.gadget.listBatchSummaries()).batches.length, 1);
-    const rights = await browser.gadget.confirmRights({batchItemId,status:'confirmed',by:'local-developer'});
-    assert.equal(rights.rightsStatus, 'confirmed');
     await assert.rejects(browser.gadget.submitForReview(), /method_not_admitted/);
     for (const method of ['submitForReview','seedLocal','setConfig','refresh']) assert.equal((await call(method)).status,403);
     const previousToken = session.token;
@@ -65,7 +62,6 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     const persisted = (await (await call('getBatch',[batch.id])).json()).value;
     assert.equal(persisted.items[0].caption,caption);
     assert.equal(persisted.items[0].revision,1);
-    assert.equal(persisted.items[0].rightsStatus,'confirmed');
     assert.equal((await (await call('listItems',[{filter:'all'}])).json()).value.items.length,3);
     await assert.rejects(browser.gadget.summary(), /local_session_required/);
   } finally { await session?.dispose(); await rm(root,{recursive:true,force:true}); }

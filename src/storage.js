@@ -19,7 +19,7 @@
 
 import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
 
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 11;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -111,9 +111,6 @@ const MIGRATIONS = {
       item_id TEXT NOT NULL,
       destination_bindings_json TEXT NOT NULL,
       state TEXT NOT NULL,
-      rights_status TEXT NOT NULL DEFAULT 'pending',
-      rights_confirmed_by TEXT,
-      rights_confirmed_at TEXT,
       current_revision INTEGER NOT NULL DEFAULT 0,
       approved_revision INTEGER,
       active INTEGER NOT NULL DEFAULT 1,
@@ -285,6 +282,107 @@ const MIGRATIONS = {
   /** TASK-009: grounding ledger per revision. NULL means the row predates the ledger. */
   7(sql) {
     sql.exec("ALTER TABLE revisions ADD COLUMN ledger_json TEXT");
+  },
+
+  /**
+   * Where a draft was SENT (refactor-draft-before-destination-1, TASK-006).
+   *
+   * A destination binding is a `send` target, and REQ-017's unit is the pair
+   * (source item, destination) — so destination, timing, approval and the
+   * provider's own receipt live together on one `publications` row, created
+   * at submit, instead of a column on the draft.
+   *
+   * `state` vocabulary: `bound` is a destination recorded but never sent
+   * (what a `destinationBindings` argument means under the new flow, and
+   * what the backfill gives rows that carried bindings but never
+   * submitted); `review_requested` once the ask was filed through the door;
+   * `superseded` when the owner replaced the pair; `failed` for a filed
+   * attempt that died. Anything the Social Hub later reports lands verbatim.
+   *
+   * The UNIQUE key is (item, destination, revision): filing the same
+   * revision to the same destination again refreshes the row in place —
+   * never a second row that could read as a second send.
+   */
+  8(sql) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS publications (
+      id TEXT PRIMARY KEY,
+      batch_item_id TEXT NOT NULL,
+      destination_binding TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      intent_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      approval_id TEXT,
+      post_id TEXT,
+      version TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (batch_item_id, destination_binding, revision)
+    )`);
+    sql.exec("CREATE INDEX IF NOT EXISTS idx_publications_item ON publications(batch_item_id)");
+    sql.exec("CREATE INDEX IF NOT EXISTS idx_publications_binding ON publications(destination_binding)");
+
+    /*
+     * The backfill (TASK-007): one row per binding each live batch_items row
+     * carried, preserving `post_id`, `version` and `approval_id` so nothing
+     * already published loses its receipt. The row keys on the revision the
+     * item was actually submitted at (`approved_revision`, else the current
+     * one), and inherits the item's intent from that revision when there is
+     * one. An item that was never submitted keeps its bindings as `bound`
+     * rows — recorded defaults, not sends.
+     */
+    sql.exec(`INSERT INTO publications
+        (id, batch_item_id, destination_binding, revision, intent_json, state,
+         approval_id, post_id, version, created_at, updated_at)
+      SELECT
+        'pub_' || bi.id || ':' || je.value,
+        bi.id,
+        je.value,
+        COALESCE(bi.approved_revision, bi.current_revision, 0),
+        COALESCE(r.publication_intent_json, '{}'),
+        CASE WHEN bi.version IS NULL THEN 'bound' ELSE bi.state END,
+        bi.approval_id,
+        bi.post_id,
+        bi.version,
+        bi.created_at,
+        bi.updated_at
+      FROM batch_items bi
+      JOIN json_each(bi.destination_bindings_json) je
+      LEFT JOIN revisions r
+        ON r.batch_item_id = bi.id
+       AND r.revision = COALESCE(bi.approved_revision, bi.current_revision, 0)
+      GROUP BY bi.id, je.value`);
+  },
+
+  /*
+   * The durable "drafting was asked for" mark (PM decision 1, refined). The
+   * Content-tab ask used to live in client memory — after a reload a batch at
+   * revision 0 was indistinguishable from one the owner opened to hand-edit.
+   * `"requested"` is set when the batch is opened and cleared when the owner
+   * dismisses the ask or every active item carries a revision.
+   */
+  9(sql) {
+    sql.exec("ALTER TABLE batches ADD COLUMN generation TEXT");
+  },
+
+  /*
+   * The rights concept is gone — a watched post is a reference the draft is
+   * generated from, not a republication awaiting a rights decision. The three
+   * columns go with it rather than lingering as write-only defaults.
+   */
+  10(sql) {
+    // A fresh database's CREATE already lacks them; an upgraded one carries
+    // them. DROP COLUMN has no IF EXISTS — read the table first.
+    const columns = new Set(rows(sql.exec("PRAGMA table_info(batch_items)")).map((col) => col.name));
+    for (const column of ["rights_status", "rights_confirmed_by", "rights_confirmed_at"]) {
+      if (columns.has(column)) sql.exec(`ALTER TABLE batch_items DROP COLUMN ${column}`);
+    }
+  },
+
+  // Rows mid-flight at `held_rights` are drafts — nothing gates them now.
+  // Its own migration, not folded into 10: databases that already ran 10
+  // (this change shipped while it was open) still get the remap.
+  11(sql) {
+    sql.exec("UPDATE batch_items SET state = 'drafting' WHERE state = 'held_rights'");
   }
 };
 
@@ -369,6 +467,36 @@ export class Storage {
         );
       }
     });
+  }
+
+  /**
+   * Add one grant-derived binding without disturbing the row already there.
+   *
+   * `setSources`/`setDestinations` are REPLACE — right for "these are the
+   * bindings" at setup, wrong for `refreshGrants`: a connector granted after
+   * first setup must appear WITHOUT the existing rows' cursor, scan history
+   * and stored describe being rewritten. `INSERT OR IGNORE` keeps the row
+   * that is there when the binding was already known.
+   */
+  addSourceBinding(source) {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO sources (binding, label, provider, page_id, describe_json) VALUES (?, ?, ?, ?, ?)",
+      source.binding,
+      source.label,
+      source.provider,
+      source.pageId ?? null,
+      source.describe ? JSON.stringify(source.describe) : null
+    );
+  }
+
+  addDestinationBinding(destination) {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO destinations (binding, label, provider, describe_json) VALUES (?, ?, ?, ?)",
+      destination.binding,
+      destination.label,
+      destination.provider,
+      destination.describe ? JSON.stringify(destination.describe) : null
+    );
   }
 
   /**
@@ -785,8 +913,33 @@ export class Storage {
   // batches / batch_items (REQ-017)
   // ---------------------------------------------------------------------
 
-  createBatch(id) {
-    this.sql.exec("INSERT INTO batches (id, created_at, status) VALUES (?, ?, ?)", id, nowIso(), "open");
+  createBatch(id, generation = null) {
+    this.sql.exec("INSERT INTO batches (id, created_at, status, generation) VALUES (?, ?, ?, ?)", id, nowIso(), "open", generation);
+  }
+
+  /** The owner dismissed the Content-tab ask — durable, unlike a reload. */
+  clearGeneration(batchId) {
+    this.sql.exec("UPDATE batches SET generation = NULL WHERE id = ?", batchId);
+  }
+
+  /**
+   * The owner asked for this batch to be drafted again — the same durable
+   * mark createBatch writes, re-armed. Existing drafts stay; the agent's
+   * next turn sees `generation: "requested"` and saves a new revision.
+   */
+  setGeneration(batchId) {
+    this.sql.exec("UPDATE batches SET generation = 'requested' WHERE id = ?", batchId);
+  }
+
+  /**
+   * Drafts arrived for everything the batch asked about — the ask has
+   * answered itself, so it clears rather than waiting on a dismiss.
+   */
+  clearGenerationIfAllDrafted(batchId) {
+    const pending = Number(rows(this.sql.exec(
+      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND current_revision = 0", batchId
+    ))[0]?.n ?? 0);
+    if (pending === 0) this.clearGeneration(batchId);
   }
 
   getBatch(id) {
@@ -810,7 +963,7 @@ export class Storage {
    * Bounded inbox projection. Counts are intentionally calculated over the
    * complete facet and only the batch rows are paged, so a limited page can
    * never masquerade as the workspace total. The state buckets are derived
-   * from the current batch-item domain state (and rights outcome), not from a
+   * from the current batch-item domain state, not from a
    * browser intent or the legacy batch label.
    */
   listBatchSummaries({ limit = 50, cursor = null } = {}) {
@@ -824,12 +977,12 @@ export class Storage {
     }
     const filter = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const rowsFound = rows(this.sql.exec(
-      `SELECT b.id, b.created_at, b.status,
+      `SELECT b.id, b.created_at, b.status, b.generation,
          COUNT(bi.id) AS item_count,
-         SUM(CASE WHEN bi.state IN ('drafting','held_rights','expired') THEN 1 ELSE 0 END) AS draft_count,
+         SUM(CASE WHEN bi.state IN ('drafting','expired') THEN 1 ELSE 0 END) AS draft_count,
          SUM(CASE WHEN bi.state IN ('submitted','awaiting_approval') THEN 1 ELSE 0 END) AS review_count,
          SUM(CASE WHEN bi.state = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_count,
-         SUM(CASE WHEN bi.state IN ('failed','unknown','held') OR bi.rights_status IN ('pending','denied') THEN 1 ELSE 0 END) AS attention_count,
+         SUM(CASE WHEN bi.state IN ('failed','unknown','held') THEN 1 ELSE 0 END) AS attention_count,
          MIN(bi.updated_at) AS first_updated_at,
          MAX(bi.updated_at) AS last_updated_at,
          GROUP_CONCAT(DISTINCT bi.item_id) AS source_item_ids,
@@ -847,18 +1000,61 @@ export class Storage {
        LEFT JOIN origin_links origin ON origin.batch_item_id = sample.id
        LEFT JOIN revisions revision ON revision.batch_item_id = sample.id AND revision.revision = sample.current_revision
        ${filter}
-       GROUP BY b.id, b.created_at, b.status
+       GROUP BY b.id, b.created_at, b.status, b.generation
        ORDER BY b.created_at DESC, b.id DESC LIMIT ?`,
       ...params,
       bounded + 1
     ));
     const page = rowsFound.slice(0, bounded);
     const last = page[page.length - 1];
+    /*
+     * Per-item projection for the Content grid — the card there is a POST
+     * (cover + snapshot + state chip), not a batch header. One extra query
+     * over the page's batch ids, grouped in memory; a batch card keeps its
+     * `preview` for callers that only need the representative.
+     */
+    const itemsByBatch = new Map();
+    if (page.length) {
+      const batchIds = page.map((row) => row.id);
+      const itemRows = rows(this.sql.exec(
+        `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.current_revision,
+           COALESCE(origin.source_label, source.source_label, source.provider) AS source_label,
+           source.provider AS provider, source.source_binding AS source_binding,
+           SUBSTR(source.text, 1, 160) AS source_text,
+           json_extract(source.media_json, '$[0].id') AS cover_media_id,
+           SUBSTR(revision.caption, 1, 160) AS caption,
+           revision.revision AS caption_revision
+         FROM batch_items bi
+         LEFT JOIN items source ON source.id = bi.item_id
+         LEFT JOIN origin_links origin ON origin.batch_item_id = bi.id
+         LEFT JOIN revisions revision ON revision.batch_item_id = bi.id AND revision.revision = bi.current_revision
+         WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
+         ORDER BY bi.id`,
+        ...batchIds
+      ));
+      for (const row of itemRows) {
+        const list = itemsByBatch.get(row.batch_id) ?? [];
+        list.push({
+          batchItemId: row.batch_item_id,
+          itemId: row.item_id,
+          state: row.state,
+          revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          sourceLabel: row.source_label ?? null,
+          provider: row.provider ?? null,
+          sourceBinding: row.source_binding ?? null,
+          sourceText: row.source_text ?? null,
+          coverMediaId: row.cover_media_id == null ? null : String(row.cover_media_id),
+          caption: row.caption ?? null
+        });
+        itemsByBatch.set(row.batch_id, list);
+      }
+    }
     return {
       batches: page.map((row) => ({
         id: row.id,
         createdAt: row.created_at,
         status: row.status,
+        generation: row.generation ?? null,
         itemCount: Number(row.item_count ?? 0),
         draftCount: Number(row.draft_count ?? 0),
         reviewCount: Number(row.review_count ?? 0),
@@ -874,17 +1070,18 @@ export class Storage {
           caption: row.preview_caption ?? null,
           revision: row.preview_revision == null ? null : Number(row.preview_revision),
           hasMediaReference: Boolean(row.preview_has_media)
-        } : null
+        } : null,
+        items: itemsByBatch.get(row.id) ?? []
       })),
       nextCursor: rowsFound.length > bounded && last ? `${last.created_at}|${last.id}` : null,
       totals: {
         batches: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batches"))[0]?.n ?? 0),
         new: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM items LEFT JOIN seen ON seen.item_id = items.id WHERE seen.item_id IS NULL"))[0]?.n ?? 0),
         items: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1"))[0]?.n ?? 0),
-        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','held_rights','expired')"))[0]?.n ?? 0),
+        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','expired')"))[0]?.n ?? 0),
         review: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('submitted','awaiting_approval')"))[0]?.n ?? 0),
         scheduled: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state = 'scheduled'"))[0]?.n ?? 0),
-        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND (state IN ('failed','unknown','held') OR rights_status IN ('pending','denied'))"))[0]?.n ?? 0)
+        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('failed','unknown','held')"))[0]?.n ?? 0)
       }
     };
   }
@@ -932,7 +1129,7 @@ export class Storage {
   /**
    * Retires a batch item: the owner explicitly created a new version, so this
    * row stops being the active localization of its pair (REQ-017). The row
-   * itself is kept — its revisions, rights record and approval history are
+   * itself is kept — its revisions and approval history are
    * the audit trail of what was published before.
    */
   supersedeBatchItem(id) {
@@ -942,14 +1139,13 @@ export class Storage {
   createBatchItem(row) {
     this.sql.exec(
       `INSERT INTO batch_items (
-        id, batch_id, item_id, destination_bindings_json, state, rights_status, current_revision, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
       row.id,
       row.batchId,
       row.itemId,
       JSON.stringify(row.destinationBindings ?? []),
       row.state,
-      row.rightsStatus,
       nowIso(),
       nowIso()
     );
@@ -977,6 +1173,184 @@ export class Storage {
     params.push(nowIso());
     params.push(id);
     this.sql.exec(`UPDATE batch_items SET ${fields.join(", ")} WHERE id = ?`, ...params);
+  }
+
+  // ---------------------------------------------------------------------
+  // publications — REQ-017's pair, one row per (item, destination) sent to
+  // ---------------------------------------------------------------------
+
+  /**
+   * Record a `bound` destination — what a caller's `destinationBindings`
+   * argument means under the new flow (TASK-005): a recorded default the
+   * submit picker reads, not a send. `INSERT` is safe because a batch item's
+   * bound rows are written once, at creation.
+   */
+  boundPublication(batchItemId, destinationBinding) {
+    this.sql.exec(
+      `INSERT INTO publications
+        (id, batch_item_id, destination_binding, revision, intent_json, state, created_at, updated_at)
+       VALUES (?, ?, ?, 0, '{}', 'bound', ?, ?)`,
+      `pub_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      batchItemId,
+      destinationBinding,
+      nowIso(),
+      nowIso()
+    );
+  }
+
+  /** Every row this item ever filed or was pointed at, oldest first. */
+  publicationsFor(batchItemId) {
+    return rows(
+      this.sql.exec("SELECT * FROM publications WHERE batch_item_id = ? ORDER BY created_at, id", batchItemId)
+    ).map(hydratePublication);
+  }
+
+  /**
+   * This item's live row for a destination — the newest that is neither
+   * superseded nor failed. `bound` counts: a recorded default is live until
+   * a filing replaces it.
+   */
+  livePublication(batchItemId, destinationBinding) {
+    const row = rows(
+      this.sql.exec(
+        `SELECT * FROM publications
+         WHERE batch_item_id = ? AND destination_binding = ? AND state NOT IN ('superseded','failed')
+         ORDER BY revision DESC LIMIT 1`,
+        batchItemId,
+        destinationBinding
+      )
+    )[0];
+    return row ? hydratePublication(row) : null;
+  }
+
+  /**
+   * REQ-017's pair rule at submit: every publication claiming
+   * (sourceItem, destinationBinding) across every ACTIVE localization of the
+   * item — `bound` included, because a recorded claim is still a claim, and
+   * the owner transfers it only by the explicit `createNewVersion` opt-in.
+   * `superseded`/`failed` rows block nothing.
+   */
+  activePublicationsForPair(itemId, destinationBinding) {
+    return rows(
+      this.sql.exec(
+        `SELECT p.*, bi.batch_id AS pair_batch_id FROM publications p
+         JOIN batch_items bi ON bi.id = p.batch_item_id
+         WHERE bi.item_id = ? AND p.destination_binding = ? AND bi.active = 1
+           AND p.state NOT IN ('superseded','failed')`,
+        itemId,
+        destinationBinding
+      )
+    ).map(hydratePublication);
+  }
+
+  /**
+   * Was this item ever actually SENT anywhere? `bound` rows are recorded
+   * defaults, not sends — the item-key duplicate rule ("one active
+   * localization per post while it is still drafting") applies only until a
+   * filing exists.
+   */
+  hasFiledPublication(batchItemId) {
+    return (
+      rows(
+        this.sql.exec(
+          "SELECT 1 AS x FROM publications WHERE batch_item_id = ? AND state NOT IN ('bound','superseded','failed') LIMIT 1",
+          batchItemId
+        )
+      ).length > 0
+    );
+  }
+
+  /** Retires a pair's claim — the owner's `createNewVersion` opt-in, or a newer revision of the same item taking over. */
+  supersedePublication(id) {
+    this.sql.exec("UPDATE publications SET state = 'superseded', updated_at = ? WHERE id = ?", nowIso(), id);
+  }
+
+  /**
+   * One filing, recorded atomically (TASK-010): retire the rows this filing
+   * replaces, then write — or revive — the row keyed by
+   * (item, destination, revision). Keyed that way on purpose: re-filing the
+   * same revision to the same destination refreshes one row rather than
+   * stacking a second record of the same ask.
+   */
+  filePublication({ batchItemId, destinationBinding, revision, intent, state, postId, version, replaceIds = [] }) {
+    return this.ctx.storage.transactionSync(() => {
+      const atRevision = rows(
+        this.sql.exec(
+          "SELECT id, state FROM publications WHERE batch_item_id = ? AND destination_binding = ? AND revision = ?",
+          batchItemId,
+          destinationBinding,
+          revision
+        )
+      )[0];
+      // A `bound` row is THIS pair's recorded intent — the filing fills it in
+      // rather than superseding it, so one row reads recorded-then-sent
+      // instead of a dead r0 beside the real one. Only when nothing already
+      // sits at the target revision; otherwise the bound row retires as a
+      // replacement like any other.
+      const bound = atRevision
+        ? null
+        : rows(
+            this.sql.exec(
+              "SELECT id FROM publications WHERE batch_item_id = ? AND destination_binding = ? AND state = 'bound' LIMIT 1",
+              batchItemId,
+              destinationBinding
+            )
+          )[0];
+      for (const id of replaceIds) {
+        if (bound && id === bound.id) continue;
+        this.supersedePublication(id);
+      }
+      if (bound) {
+        this.sql.exec(
+          "UPDATE publications SET revision = ?, state = ?, intent_json = ?, post_id = ?, version = ?, updated_at = ? WHERE id = ?",
+          revision,
+          state,
+          JSON.stringify(intent ?? {}),
+          postId ?? null,
+          version ?? null,
+          nowIso(),
+          bound.id
+        );
+        return bound.id;
+      }
+      if (atRevision) {
+        // Any bound row for the pair was intent this filing is taking over —
+        // it retires even when the filing lands on an existing row.
+        this.sql.exec(
+          "UPDATE publications SET state = 'superseded', updated_at = ? WHERE batch_item_id = ? AND destination_binding = ? AND state = 'bound'",
+          nowIso(),
+          batchItemId,
+          destinationBinding
+        );
+        this.sql.exec(
+          "UPDATE publications SET state = ?, intent_json = ?, post_id = ?, version = ?, updated_at = ? WHERE id = ?",
+          state,
+          JSON.stringify(intent ?? {}),
+          postId ?? null,
+          version ?? null,
+          nowIso(),
+          atRevision.id
+        );
+        return atRevision.id;
+      }
+      const id = `pub_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+      this.sql.exec(
+        `INSERT INTO publications
+          (id, batch_item_id, destination_binding, revision, intent_json, state, approval_id, post_id, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+        id,
+        batchItemId,
+        destinationBinding,
+        revision,
+        JSON.stringify(intent ?? {}),
+        state,
+        postId ?? null,
+        version ?? null,
+        nowIso(),
+        nowIso()
+      );
+      return id;
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -1200,8 +1574,9 @@ function hydrateSource(row) {
     lastOutcome: row.last_outcome ?? null,
     lastMessage: row.last_message ?? null,
     cursor: row.cursor ?? null,
-    // Schema 5. `origin` is the field the rights rule reads: `binding` means
-    // this organisation holds the account, `open` means it does not.
+    // Schema 5. `binding` means a connected account; `open` means a watched
+    // public account — the source posts it yields are references, not
+    // republications.
     origin: row.origin === "open" ? "open" : "binding",
     platform: row.platform ?? null,
     accountKey: row.account_key ?? null,
@@ -1252,6 +1627,26 @@ function hydrateItem(row) {
   };
 }
 
+function hydratePublication(row) {
+  return {
+    id: row.id,
+    batchItemId: row.batch_item_id,
+    // The batch this publication belongs to — present only on the pair-rule
+    // join (`activePublicationsForPair`), which is the one caller that names
+    // the batch holding the conflict.
+    batchId: row.pair_batch_id ?? null,
+    destinationBinding: row.destination_binding,
+    revision: Number(row.revision),
+    intent: parseDescribe(row.intent_json) ?? {},
+    state: row.state,
+    approvalId: row.approval_id ?? null,
+    postId: row.post_id ?? null,
+    version: row.version ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function hydrateBatchItem(row) {
   return {
     id: row.id,
@@ -1259,9 +1654,6 @@ function hydrateBatchItem(row) {
     itemId: row.item_id,
     destinationBindings: row.destination_bindings_json ? JSON.parse(row.destination_bindings_json) : [],
     state: row.state,
-    rightsStatus: row.rights_status,
-    rightsConfirmedBy: row.rights_confirmed_by ?? null,
-    rightsConfirmedAt: row.rights_confirmed_at ?? null,
     currentRevision: Number(row.current_revision),
     approvedRevision:
       row.approved_revision === null || row.approved_revision === undefined ? null : Number(row.approved_revision),

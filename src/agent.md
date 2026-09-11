@@ -19,22 +19,45 @@ No AI image refinement capability is exposed by this UI; do not invent completio
 
 ## Preparing selected source posts
 
-The owner picks source posts in the collection and presses Continue. That
-call is `createBatch`, and the result — a batch id and one entry per item,
-each carrying its `sourceItem`, `destinationBindings`, `rightsStatus` and
-current `revision` — is your whole context for this round. Read it with
+The owner picks source posts in the collection and presses "Draft N posts".
+That call is `createBatch`, and the result — a batch id and one entry per
+item, each carrying its `sourceItem`, `protectedSpans`,
+`destinationBindings`, `publications` and current
+`revision` — is your whole context for this round. Read it with
 `getBatch(batchId)` rather than assuming the shape from a previous batch;
-`destinationBindings` and `rightsStatus` can differ item to item.
+`destinationBindings` can differ item to item.
+`destinationBindings` is where the draft WOULD go — the recorded default
+the owner can change at submit — and `publications` is where it actually
+went: one row per destination filing, `bound` rows included for
+destinations recorded but never sent.
 
-An item whose `rightsStatus` is `"pending"` or `"denied"` is held. Do not
-draft it and do not include it when you tell the owner the batch is ready —
-say plainly which items are waiting on a rights decision and why.
+`protectedSpans` is the detected list of literals that must survive into the
+draft verbatim — product names, prices, URLs, protected hashtags,
+disclaimers, claims. You are handed the values; do not infer what is
+protected from prose.
+
+What you may NOT do is draft unattended. `createBatch` marks a batch
+`generation: "requested"` — draft only batches carrying that mark, only
+the items the owner selected into them, and only when the owner (or a
+brief naming the batch) actually asked. New scanned content arriving on
+its own is not a drafting ask; never draft a batch nobody requested.
 
 ## When a scan asked for the drafting, not a person
 
-You can arrive here with nobody having typed anything. If the owner turned
-drafting on, a scheduled scan that finds new posts opens a batch and files a
-request; when the owner approves it, you are handed a brief like this:
+A scan's `runScan` result can carry a `workRequest` — `{ batchId, sourceLabel,
+itemIds, intake: "saveRevision" }` — but **the platform currently discards
+it**: the schedule invoker keeps only ok/error from the hook's response, so no
+brief has ever arrived through that path (tracked as
+agenticos-stack/agenticos#1861). What actually reaches you is the owner
+pasting the ask from the Content tab: "Draft localized captions for the N
+posts in batch …", or asking in their own words. Either way the contract below
+is identical — the batch already exists; do not `createBatch`.
+
+The owner's drafting instructions live in config: read `summary().config`'s
+`contentPrompt` (what captions should say and how they should read) and
+`posterPrompt` (what the text poster should look like) and honor them.
+
+If you ever ARE handed a structured brief, it looks like this:
 
 ```
 { drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: "saveRevision", next: "..." }
@@ -51,17 +74,24 @@ Do this, in order:
 1. `getBatch(batchId)` — the batch already exists. Do **not** call
    `createBatch`; it would refuse as a duplicate, and if it did not it would
    split one owner's decision across two batches.
-2. Draft each item and return it with `saveRevision`, one call per item, exactly
-   as the section below describes. `intake` names that method so the brief does
-   not have to restate this contract.
-3. You are finished when `saveRevision` has accepted every item it can. Then say
-   in one line what was drafted.
+2. Draft every item still editable — `state` `drafting` or `expired`. Items
+   already `submitted`/`awaiting_approval` are DONE: a revision you save to
+   one would flip it to `expired` and void its approval, which the owner
+   never asked for. Return the drafts with ONE
+   `saveRevisions({ revisions: [...] })` call — one approval card covers the
+   batch, which is what the owner saw when they pressed "Draft N posts" (or
+   "Regenerate" — the mark is identical). `expectedRevision` must be each
+   item's current revision from `getBatch` — on a re-armed batch that is
+   already 1 or higher, and a stale value refuses `revision_conflict`.
+   Per-item results come back in `results`; a refused entry names its issue
+   without costing the others. `saveRevision` (singular) stays for edits to
+   one item after that.
+3. You are finished when `saveRevisions` has accepted every item it can. Then
+   say in one line what was drafted.
 
-Everything else here still applies without exception. An item whose
-`rightsStatus` is `"pending"` or `"denied"` is held — a scan asking for drafting
-is not a rights decision, and nobody approved republishing anything. Name the
-held items when you report. `itemIds` are the SOURCE post ids for the record;
-the `batchItemId` each `saveRevision` needs comes from `getBatch`.
+Everything else here still applies without exception. `itemIds` are the
+SOURCE post ids for the record; the `batchItemId` each revision entry needs
+comes from `getBatch`.
 
 Nothing you do here publishes. Publication stays the owner's own approval of a
 pinned revision, and a scan cannot reach it.
@@ -85,9 +115,34 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
   protected-literal overrides, original/derived media references, accepted
   visual mode, and publication intent. These are proposals and provenance, not
   permission to publish; keep `save_draft` when no intent is supplied.
+- `refinementBrief.allowedChanges` is bound by the org's stored brief — an
+  entry you supply that setup never permitted is stripped, not honoured. And
+  whatever the brief allows, source preservation still runs on every path: a
+  protected product name, price, URL, hashtag or disclaimer that does not
+  survive into the draft is a `block`, whether or not the brief allowed
+  other changes.
 - `confirmedClaims` lists which flagged claims the owner (or you, on their
   clear instruction) has confirmed are accurate. Do not confirm a claim on
   your own authority when the source gave you no basis for it.
+- `posterLayout` is how you refine the image. The poster is deterministic
+  text-on-colour — you write its PARAMS, never pixels:
+
+  ```
+  posterLayout: { template: "1080x1350" | "1080x1080", headline, subline,
+                  background: { kind: "solid", value: "#1c1c1e" },
+                  textColor: "#ffffff", align: "left" | "center" | "right" }
+  ```
+
+  The gadget renders it to a preview the owner sees in the batch drawer —
+  a layout you save becomes visible without you ever holding bytes. Do not
+  call `savePoster`: it requires rendered PNG bytes you cannot produce —
+  the owner-side client renders them when the batch heads to publish.
+  Honour `posterPrompt` from config when choosing headline and colours.
+  At submit the gadget uploads those bytes through `social.uploadMedia`
+  and the draft carries the returned URL — the poster IS the published
+  image when bytes exist. When they don't (layout only), the post ships
+  the source media and the result warns `poster_not_shipped`. The owner
+  can also download the PNG from the drawer.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own

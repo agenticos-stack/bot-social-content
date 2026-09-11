@@ -35,7 +35,7 @@ describe("saved inbox SQL", () => {
   afterEach(() => db.close());
 
   function batch(id: string) {
-    db.prepare("INSERT INTO batches VALUES (?, '2026-09-06T12:00:00Z', 'open')").run(id);
+    db.prepare("INSERT INTO batches (id, created_at, status, generation) VALUES (?, '2026-09-06T12:00:00Z', 'open', NULL)").run(id);
   }
   function item(id: string, batchId: string, sourceId: string, revision: number) {
     db.prepare(
