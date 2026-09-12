@@ -756,9 +756,6 @@ export function renderPublish(root, state, ctx) {
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
     const enabled = submitItemEnabled(state, item.id, policy);
-    // Only used as the fallback line when there is no poster to show yet —
-    // the card's real heading is the source label in its header.
-    const fallbackLine = (draft.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
     const poster = posterCanvas(locale, item);
     // The slot keeps the ratio it ships in whether or not a poster exists
     // yet, so the caption beside it does not jump as the owner moves
@@ -842,11 +839,11 @@ export function renderPublish(root, state, ctx) {
         // below it, poster first.
         el("div", { class: "sl-pc-media" }, [
           el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${mediaAspect}` }, [
-            // Never the id: an id is not a label, and a missing one is
-            // dropped rather than printed. Falls back to the caption's
-            // own first line, then to a human "no poster yet" line --
-            // never the item's id.
-            poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))
+            // Never the id, and never the caption again either: the
+            // header above already carries the item's identity, and the
+            // body paragraph below already carries the caption. This slot
+            // says exactly one thing when there is no poster to show.
+            poster || el("span", { class: "sl-pc-media-empty" }, t(locale, "posterPending"))
           ])
         ]),
         el("div", { class: "sl-pc-body" }, [
