@@ -176,6 +176,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
 .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
+/* Content card foot: chip leading, a muted timestamp trailing -- one row,
+   not the chip and a separate two-line meta block underneath it. */
+.sl-card-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.sl-card-foot .sl-state-chip { margin: 0; }
+.sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
 .sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
@@ -196,7 +201,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
 .sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
+/* Two lines, ellipsised -- a fixed height cut a line off mid-glyph;
+   line-clamp stops at a whole line instead. */
+.sl-post-body p { margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
 .sl-meta-unavail { color: var(--sl-warning); font-weight: 650; }
 .sl-duplicate-badge { display: block; padding: 6px 13px 10px; color: var(--sl-muted); font-size: 9.5px; }

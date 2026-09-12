@@ -1,7 +1,7 @@
 // Card-first inbox projections. This module deliberately keeps source rows
 // and localization batches separate: one source may have many historical
 // batches, and inspecting a batch must never create another one.
-import { el } from "./dom.js";
+import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
 
@@ -140,10 +140,14 @@ function itemCard(locale, batch, item, ctx, covers) {
     // later lines it dropped belong here.
     body: snapshot === title ? "" : snapshot,
     chip: itemChip(locale, batch, item),
-    meta: el("span", { class: "sl-meta" }, [
-      el("span", null, item.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
-      el("span", null, (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"))
-    ])
+    // Chip leading, a muted relative timestamp trailing -- replaces the
+    // old two-line "draft/source · revision N" meta block, which read as
+    // mechanism detail the drawer (behind Inspect) already carries.
+    when: batch.generation === "requested"
+      ? t(locale, "stateQueued")
+      : batch.lastUpdatedAt
+        ? t(locale, "cardEditedAgo", { time: relativeLabel(locale, batch.lastUpdatedAt) })
+        : null
   }, covers);
 }
 
