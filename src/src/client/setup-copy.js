@@ -29,14 +29,13 @@ export const SETUP_COPY = {
     setupCustomCadence: "Keep existing custom cadence",
     setupQuietStart: "Quiet hours start",
     setupQuietEnd: "Quiet hours end",
-    publicationTiming: "Publication timing for this revision",
+    publicationTiming: "When",
     publicationDraft: "Keep as draft",
     publicationNow: "Publish after approval",
     publicationSchedule: "Schedule after approval",
     publicationLocalTime: "Local publication date and time",
-    publicationTimezone: "Publication timezone (IANA)",
-    publicationOffset: "UTC offset minutes (optional, for ambiguous times)",
-    publicationHint: "Save timing with the content revision, then submit for review. A chosen time is not a confirmed schedule. Missed times are held, never silently sent late."
+    publicationTimezone: "Publication timezone",
+    publicationHint: "A chosen time is not a confirmed schedule."
   },
   "zh-HK": {
     setupFlow: "來源參考 → 修訂內容及視覺素材 → 審核 → 發佈",
@@ -68,13 +67,12 @@ export const SETUP_COPY = {
     setupCustomCadence: "保留現有自訂頻率",
     setupQuietStart: "靜音時段開始",
     setupQuietEnd: "靜音時段結束",
-    publicationTiming: "此版本的發佈時間",
+    publicationTiming: "發佈時間",
     publicationDraft: "保留為草稿",
     publicationNow: "批准後發佈",
     publicationSchedule: "批准後按排程發佈",
     publicationLocalTime: "當地發佈日期及時間",
-    publicationTimezone: "發佈時區（IANA）",
-    publicationOffset: "UTC 偏移分鐘（選填，用於重複的當地時間）",
-    publicationHint: "請將時間選項與內容版本一併儲存，再提交審核。選擇時間不代表排程已確認；錯過的時間會暫停處理，不會自動延後發佈。"
+    publicationTimezone: "發佈時區",
+    publicationHint: "選擇時間不代表排程已確認。"
   }
 };

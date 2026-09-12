@@ -321,6 +321,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Quiet grouping labels, same register as .sl-preview-kicker below. */
 .sl-pc-field { display: grid; gap: 8px; }
 .sl-pc-field-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); font-weight: 700; }
+/* One step down from .sl-pc-field-label's section register -- sentence
+   case, no letter-spacing, no uppercase, so a field inside a section
+   reads as subordinate to it rather than a second section of its own. */
+.sl-pc-subfield { display: grid; gap: 4px; margin-top: 10px; }
+.sl-pc-subfield-label { font-size: 11px; color: var(--sl-muted); font-weight: 600; }
+.sl-pc-subfield input { height: var(--sl-h-control); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font: inherit; }
 .sl-dest { display: grid; gap: 7px; }
 .sl-dest-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: 10px; font-size: 12.5px; cursor: pointer; }
 .sl-dest-row:hover { background: var(--sl-surface-2); }

@@ -196,7 +196,7 @@ export const STRINGS = Object.freeze({
     // --- Publish (step 4) ----------------------------------------------------
     publishTitle: "Publish",
     publishDesc: "Pick where each draft goes and when, then submit. What happened at each destination is listed under it.",
-    publishPickDestinations: "Where it goes",
+    publishPickDestinations: "Where",
     publishAlreadyFiled: "already submitted",
     publishNoDestinationsBody: "The drafts are saved. Pick a destination in Settings — or check for newly granted connections — when you are ready to send.",
     stateScheduled: "Scheduled",

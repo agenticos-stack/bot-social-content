@@ -609,7 +609,14 @@ export function renderSetup(root, draft, ctx) {
  */
 function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
   const change = (patch, redraw = true) => handlers.onPublishIntent(itemId, patch, redraw);
-  const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
+  // Subordinate to .sl-pc-field-label's section register (below it, not a
+  // second shout): small, muted, sentence case. Its own class -- the
+  // shared .sl-field is the setup form's own label+input wiring and does
+  // not style a bare text child the way this needs.
+  const field = (key, control) => el("label", { class: "sl-pc-subfield" }, [
+    el("span", { class: "sl-pc-subfield-label" }, t(locale, key)),
+    control
+  ]);
   return el("div", { class: "sl-pc-field" }, [
     el("span", { class: "sl-pc-field-label" }, t(locale, "publicationTiming")),
     el("div", { class: "sl-timing", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
@@ -619,12 +626,16 @@ function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
             onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }),
           t(locale, key)
         ]))),
+    // UTC offset removed: no owner fills that in correctly, and the
+    // mode-change handler above already keeps utcOffsetMinutes null --
+    // the door's contract (and its own ambiguous-time resolution) is
+    // unchanged. The hint lives here, not below the whole control: it is
+    // about a chosen time specifically, not about "Keep as draft".
     ...(intent.publishMode === "schedule" ? [
       field("publicationLocalTime", el("input", { type: "datetime-local", value: intent.publishLocalTime || "", oninput: e => change({ publishLocalTime: e.currentTarget.value }, false) })),
       field("publicationTimezone", el("input", { type: "text", value: intent.timezone || "", oninput: e => change({ timezone: e.currentTarget.value }, false) })),
-      field("publicationOffset", el("input", { type: "number", min: -840, max: 840, value: intent.utcOffsetMinutes ?? "", oninput: e => change({ utcOffsetMinutes: e.currentTarget.value === "" ? null : Number(e.currentTarget.value) }, false) }))
-    ] : []),
-    el("p", { class: "sl-field-note" }, t(locale, "publicationHint"))
+      el("p", { class: "sl-field-note" }, t(locale, "publicationHint"))
+    ] : [])
   ]);
 }
 
