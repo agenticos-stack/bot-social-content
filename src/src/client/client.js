@@ -286,14 +286,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    the primary one -- so the decisions read as the active half. One column
    below 760px (poster first), two at and above it. */
 .sl-pc-grid { display: grid; }
-@media (min-width: 760px) { .sl-pc-grid { grid-template-columns: 264px 1fr; align-items: stretch; } }
+@media (min-width: 760px) { .sl-pc-grid { grid-template-columns: 264px 1fr; } }
 .sl-pc-media { background: var(--sl-surface-2); display: grid; place-items: center; padding: 18px; gap: 10px; text-align: center; border-bottom: 1px solid var(--sl-line); }
 @media (min-width: 760px) { .sl-pc-media { border-bottom: 0; border-right: 1px solid var(--sl-line); } }
-/* The poster canvas is drawn at the template's real pixel size (up to
-   1080x1350), so it is capped by a LENGTH, not a percentage -- see
-   preview-media.js's FRAME_MAX for why a percentage max-height on a centred
-   grid item cannot be trusted here. */
-.sl-pc-canvas { display: block; max-width: 100%; height: auto; max-height: min(360px, 46dvh); border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
+/* The reserved slot, not the (stretched, full-column-height) surface
+   around it: this is what actually carries the aspect-ratio, so the
+   poster/placeholder keeps the shape it ships in regardless of how tall
+   the decision column beside it grows. */
+.sl-pc-media-slot { width: 100%; display: grid; place-items: center; }
+/* The slot already reserves the exact ratio the template draws at (see
+   steps.js's mediaAspect), so the canvas fills it edge to edge rather than
+   capping its own height the way a variable-ratio source frame has to
+   (preview-media.js's FRAME_MAX) -- there is no mismatch here to guard. */
+.sl-pc-canvas { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
 .sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
 .sl-pc-body > p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }

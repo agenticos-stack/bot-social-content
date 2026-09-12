@@ -749,6 +749,12 @@ export function renderPublish(root, state, ctx) {
     // the card's real heading is the source label in its header.
     const fallbackLine = (draft.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
     const poster = posterCanvas(locale, item);
+    // The slot keeps the ratio it ships in whether or not a poster exists
+    // yet, so the caption beside it does not jump as the owner moves
+    // between posts. 1080x1080 is the only square template; every other
+    // template (including "no template chosen yet") is the portrait shape
+    // most posts actually use.
+    const mediaAspect = item.posterLayout?.template === "1080x1080" ? "1 / 1" : "4 / 5";
 
     const pubRows = publications
       .filter((pub) => pub.state !== "superseded")
@@ -817,11 +823,13 @@ export function renderPublish(root, state, ctx) {
         // exists, not what to decide. Two columns at 760px and up; stacked
         // below it, poster first.
         el("div", { class: "sl-pc-media" }, [
-          // Never the id: an id is not a label, and a missing one is
-          // dropped rather than printed. Falls back to the caption's own
-          // first line, then to a human "no poster yet" line -- never the
-          // item's id.
-          poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))
+          el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${mediaAspect}` }, [
+            // Never the id: an id is not a label, and a missing one is
+            // dropped rather than printed. Falls back to the caption's
+            // own first line, then to a human "no poster yet" line --
+            // never the item's id.
+            poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))
+          ])
         ]),
         el("div", { class: "sl-pc-body" }, [
         el("p", null, draft.caption || item.caption || ""),
