@@ -17,7 +17,7 @@ import { t } from "./i18n.js";
 import { isEditableItem } from "./inbox.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
 
-export const STEPS = Object.freeze(["select", "publish", "result"]);
+export const STEPS = Object.freeze(["select", "publish"]);
 
 const POSTER_TEMPLATES = Object.freeze(["1080x1350", "1080x1080"]);
 const DEFAULT_BACKGROUND = "#1c1c1e";
@@ -903,8 +903,7 @@ export function renderPublish(root, state, ctx) {
   // and secondary: the real action on this screen is a card's own submit
   // row, not this pair.
   const footer = el("div", { class: "sl-page-nav" }, [
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
+    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back"))
   ]);
 
   replace(root, [
@@ -912,46 +911,6 @@ export function renderPublish(root, state, ctx) {
     renderWizardError(state),
     destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
     footer
-  ]);
-}
-
-export function renderResult(root, state, ctx) {
-  const { locale, handlers, summary } = ctx;
-  const batch = state.batch;
-  if (!batch) return replace(root, []);
-
-  const destinations = Array.isArray(summary?.destinations) ? summary.destinations : [];
-  const destinationLabel = (binding) =>
-    destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
-
-  const items = batch.items.map((item) => {
-    const publishState = state.publishByItem[item.id];
-    const publications = publishState?.publications ?? item.publications ?? [];
-    const rows = publications
-      .filter((pub) => pub.state !== "superseded")
-      .map((pub) =>
-        el("span", { class: "sl-outcome" }, [
-          el("span", null, destinationLabel(pub.destinationBinding)),
-          stateBadge(locale, publicationOutcome(pub).outcome)
-        ])
-      );
-    return el("div", { class: "sl-result-item" }, [
-      el("strong", null, item.sourceItem?.text ? item.sourceItem.text.split("\n")[0].slice(0, 60) : item.id),
-      el("div", { class: "sl-outcomes" }, rows.length ? rows : [el("span", { class: "sl-field-note" }, t(locale, "resultNotSent"))])
-    ]);
-  });
-
-  const exportRow = el("div", { class: "sl-export-row" }, [
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onExport("json") }, t(locale, "exportJson")),
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onExport("html") }, t(locale, "exportHtml"))
-  ]);
-
-  replace(root, [
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "resultTitle"))]),
-    el("div", { class: "sl-result-summary" }, items),
-    el("p", { class: "sl-result-note" }, t(locale, "resultNote")),
-    exportRow,
-    el("button", { type: "button", class: "sl-primary", onclick: () => handlers.onStartAnother() }, t(locale, "startAnother"))
   ]);
 }
 

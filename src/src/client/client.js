@@ -46,7 +46,6 @@ import {
   publicationStateSummary,
   refusalMessage,
   renderPublish,
-  renderResult,
   renderSetup,
   resumeBatch,
   setPublishError,
@@ -57,7 +56,7 @@ import {
   togglePublishBinding
 } from "./steps.js";
 
-const WIZARD_BACK_TARGET = { publish: "select", result: "publish" };
+const WIZARD_BACK_TARGET = { publish: "select" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
@@ -241,7 +240,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Ordinary in-flow end-of-page navigation -- quiet, secondary, not tied to
    a selection and not fixed over the content. */
 .sl-page-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
-.sl-page-nav > *:last-child { margin-left: auto; }
+/* :not(:only-child) -- with a lone Back button (Publish's own row, since the
+   Batch summary screen and its "View summary" partner were removed), this
+   must not push the one child to the far edge the way it correctly pushes a
+   second child in a row that still has one. */
+.sl-page-nav > *:last-child:not(:only-child) { margin-left: auto; }
 .sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
@@ -379,12 +382,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
 .sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
-.sl-result-summary { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); padding: 16px; margin-bottom: 12px; }
-.sl-result-item { padding: 10px 0; border-top: 1px solid var(--sl-line); }
-.sl-result-item:first-child { border-top: 0; padding-top: 0; }
-.sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
-.sl-outcome { display: inline-flex; align-items: center; gap: 6px; }
-.sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
 .sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
@@ -978,9 +975,18 @@ function App() {
           }, t(locale, "drawerRegenerate"))
         ])
       : null;
+    // Moved here from the removed Batch summary screen: the drawer is
+    // already scoped to one batch, which is what an export is of. Renders
+    // regardless of `editable` -- a submitted batch is still exportable.
+    // Unchanged handler (onExport, in wizardHandlers below).
+    const exportRow = el("div", { class: "sl-export-row" }, [
+      el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
+    ]);
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, batch.items.length === 1 ? "inboxItemCountOne" : "inboxItemCount", { n: batch.items.length })),
       regenerateRow,
+      exportRow,
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
         stage(item),
@@ -1434,10 +1440,10 @@ function App() {
         console.error(error);
       }
     },
-    onViewSummary: () => {
-      wizard = goToWizardStep(wizard, "result");
-      renderCurrentView();
-    },
+    // Relocated into the batch drawer's body (openBatchDrawer, next to
+    // Regenerate) now that the Batch summary screen is gone -- the drawer
+    // is already scoped to one batch, which is what an export is of.
+    // Unchanged: same rpc call, same refusal handling.
     onExport: async (format) => {
       try {
         await rpc.exportAs(format);
@@ -1445,11 +1451,6 @@ function App() {
         console.error(error);
         announce(t(locale, "exportFailed"), "");
       }
-    },
-    onStartAnother: async () => {
-      wizard = createWizardState();
-      await loadCollection("new");
-      renderCurrentView();
     }
   };
 
@@ -1495,7 +1496,6 @@ function App() {
       return;
     }
     if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
-    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
   }
 
 

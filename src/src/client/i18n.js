@@ -215,16 +215,11 @@ export const STRINGS = Object.freeze({
     retry: "Retry",
     checkManually: "Check manually",
     unknownGuidance: "This did not automatically retry, to avoid a duplicate post. Confirm on the destination directly before retrying.",
-    viewSummary: "View batch summary",
-
-    // --- Result (step 5) ------------------------------------------------------
-    resultTitle: "Batch summary",
-    resultNotSent: "Not sent yet",
-    resultNote: "New posts appear under New the next time this scans.",
+    // --- Export (moved from the removed Batch summary screen into the
+    // batch drawer, next to Regenerate) -----------------------------------
     exportJson: "Export data (JSON)",
     exportHtml: "Export summary (HTML)",
     exportFailed: "Export failed. Try again.",
-    startAnother: "Start another batch",
 
     // --- Providers -------------------------------------------------------------
     providerInstagram: "Instagram",
@@ -416,15 +411,10 @@ export const STRINGS = Object.freeze({
     retry: "重試",
     checkManually: "手動核實",
     unknownGuidance: "為避免建立重複帖文，系統並未自動重試。請先於目的地直接核實，再決定是否重試。",
-    viewSummary: "查看批次摘要",
 
-    resultTitle: "批次摘要",
-    resultNotSent: "尚未發佈",
-    resultNote: "下次掃描後，新帖文將顯示在「新增」之下。",
     exportJson: "匯出資料（JSON）",
     exportHtml: "匯出摘要（HTML）",
     exportFailed: "匯出失敗，請重試。",
-    startAnother: "開始新批次",
 
     providerInstagram: "Instagram",
     providerFacebook: "Facebook"
