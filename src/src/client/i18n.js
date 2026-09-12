@@ -176,9 +176,7 @@ export const STRINGS = Object.freeze({
     saved: "Saved",
     saveFailed: "Save failed",
 
-    // --- Review (step 3) -----------------------------------------------------
-    reviewTitle: "Review",
-    reviewDesc: "The drafts as they will be sent. Destinations and timing are picked on the next step.",
+    // --- Publish's approval banner (folded in from the old Review step) ------
     approvalReadyTitle: "Ready for review",
     approvalReadyBody: "Submitted for approval. Approve or decline from the conversation or the Approvals inbox.",
     approvalPendingTitle: "Not yet submitted",
@@ -205,7 +203,6 @@ export const STRINGS = Object.freeze({
     retry: "Retry",
     checkManually: "Check manually",
     unknownGuidance: "This did not automatically retry, to avoid a duplicate post. Confirm on the destination directly before retrying.",
-    backToReview: "Back to review",
     viewSummary: "View batch summary",
 
     // --- Result (step 5) ------------------------------------------------------
@@ -376,8 +373,6 @@ export const STRINGS = Object.freeze({
     saved: "已儲存",
     saveFailed: "儲存失敗",
 
-    reviewTitle: "審閱",
-    reviewDesc: "檢視即將發佈的草稿。發佈目的地及時間於下一步選擇。",
     approvalReadyTitle: "已準備好待審閱",
     approvalReadyBody: "已送交審批。請在對話或「待批准」清單中批准或拒絕。",
     approvalPendingTitle: "尚未送交",
@@ -403,7 +398,6 @@ export const STRINGS = Object.freeze({
     retry: "重試",
     checkManually: "手動核實",
     unknownGuidance: "為避免建立重複帖文，系統並未自動重試。請先於目的地直接核實，再決定是否重試。",
-    backToReview: "返回審閱",
     viewSummary: "查看批次摘要",
 
     resultTitle: "批次摘要",

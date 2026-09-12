@@ -57,7 +57,7 @@ test("the client stylesheet survives the bundler intact", async () => {
   const { buildClient } = await import("../scripts/client.mjs");
   const bundle = await buildClient();
   for (const rule of [
-    ".sl-icon-action { width:34px",   // early, before the drawer rules
+    ".sl-icon-action { width:var(--sl-h-control)",   // early, before the drawer rules
     ".sl-preview-head-actions",       // the drawer header
     ".sl-stage-strip",                // the media stage
     ".sl-announce-card",              // the last block in the sheet

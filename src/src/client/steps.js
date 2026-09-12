@@ -1,15 +1,23 @@
-// Social Localization client — the Localize / Review / Publish / Result
-// steps (TASK-203), plus the first-run setup screen this gadget owns
-// (TASK-302). Pure state/selectors are exported separately from the render
-// functions so tests/social-localization-client.test.ts can assert step
-// transitions and validation gating without a DOM.
+// Social Localization client — the Localize / Publish / Result steps
+// (TASK-203), plus the first-run setup screen this gadget owns (TASK-302).
+// Pure state/selectors are exported separately from the render functions so
+// tests/social-localization-client.test.ts can assert step transitions and
+// validation gating without a DOM.
+//
+// Publish used to be preceded by a separate Review step that repeated what
+// the batch drawer already showed and rendered the poster as a text span
+// instead of the image that actually ships. That step is gone: Publish's own
+// cards now carry the poster, caption, destinations, timing and submit
+// together, so there is one screen with the real preview on it, not a
+// summary screen followed by the screen with the controls.
 
 import { detectProtectedLiterals, validateRevisionDraft } from "../../model.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { isEditableItem } from "./inbox.js";
+import { computePosterLayout, drawPoster } from "./poster.js";
 
-export const STEPS = Object.freeze(["select", "review", "publish", "result"]);
+export const STEPS = Object.freeze(["select", "publish", "result"]);
 
 const POSTER_TEMPLATES = Object.freeze(["1080x1350", "1080x1080"]);
 const DEFAULT_BACKGROUND = "#1c1c1e";
@@ -98,7 +106,7 @@ export function setBatch(state, batch) {
       intent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" }
     };
   }
-  return { ...state, step: "review", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
+  return { ...state, step: "publish", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
 }
 
 export function recordDraftConflict(state, id, savedItem) {
@@ -617,44 +625,25 @@ function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
 }
 
 
-export function renderReview(root, state, ctx) {
-  const { locale, handlers } = ctx;
-  const batch = state.batch;
-  if (!batch) return replace(root, []);
-
-  // One card per DRAFT — the destination is chosen on the next step, so a
-  // card headed by a destination would be asserting a decision not yet made.
-  const cards = batch.items.map((item) => {
-    const draft = state.drafts[item.id] ?? {};
-    return el("div", { class: "sl-preview-card" }, [
-      el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
-      el("div", { class: "sl-pc-media" }, [el("span", null, draft.headline || "")]),
-      el("div", { class: "sl-pc-body" }, [el("p", null, draft.caption || item.caption || "")])
-    ]);
-  });
-
-  const approval = batch.approval || null;
-  const expired = isApprovalExpired(approval);
-  const approvalCard = el("div", { class: `sl-approval-card${expired ? " sl-approval-expired" : ""}` }, [
-    el("h3", null, t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle")),
-    el("p", null, t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody")),
-    approval?.contentHash ? el("span", { class: "sl-hash" }, t(locale, "contentHash", { hash: approval.contentHash })) : null
-  ]);
-
-  const footer = el("footer", { class: "sl-selection" }, [
-    el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
-      el("button", { type: "button", class: "sl-secondary", style: "margin-left:auto", onclick: () => handlers.onContinue() }, t(locale, "continueToPublish"))
-    ])
-  ]);
-
-  replace(root, [
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "reviewTitle")), el("p", null, t(locale, "reviewDesc"))]),
-    renderWizardError(state),
-    el("div", { class: "sl-review-grid" }, cards),
-    approvalCard,
-    footer
-  ]);
+/**
+ * The poster as it will actually publish — drawn locally with the same
+ * layout math the batch drawer and `savePoster` both use (poster.js), never
+ * a text stand-in. A gadget canvas is an opaque origin: an `<img>` can only
+ * show bytes it already holds (`blob:`/`data:`), and a plain `<canvas>`
+ * sidesteps that fetch entirely by drawing the same pixels the drawer draws.
+ * Returns `null` when the item has no poster layout yet, so the caller can
+ * fall back to an identifying line instead of an empty box.
+ */
+function posterCanvas(locale, item) {
+  const layout = item.posterLayout;
+  if (!layout?.template) return null;
+  const canvas = el("canvas", { class: "sl-pc-canvas", "aria-label": t(locale, "posterTitle") });
+  const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
+  canvas.width = computed.width;
+  canvas.height = computed.height;
+  const ctx2d = canvas.getContext("2d");
+  if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
+  return canvas;
 }
 
 function stateBadge(locale, outcome) {
@@ -702,7 +691,22 @@ export function renderPublish(root, state, ctx) {
     ])
   ]);
 
+  /*
+   * The batch's own approval, once per batch, above the cards it covers —
+   * not a screen the owner has to click through before reaching the cards.
+   * `renderReview` used to be that screen; folding it in here is the point
+   * of the merge (see the file header).
+   */
+  const approval = batch.approval || null;
+  const expired = isApprovalExpired(approval);
+  const approvalCard = el("div", { class: `sl-approval-card${expired ? " sl-approval-expired" : ""}` }, [
+    el("h3", null, t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle")),
+    el("p", null, t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody")),
+    approval?.contentHash ? el("span", { class: "sl-hash" }, t(locale, "contentHash", { hash: approval.contentHash })) : null
+  ]);
+
   const itemCards = batch.items.map((item) => {
+    const draft = state.drafts[item.id] ?? {};
     const publishState = state.publishByItem[item.id];
     const publications = publishState?.publications ?? item.publications ?? [];
     // A pair already filed at the current revision is shown, not re-offered —
@@ -719,7 +723,10 @@ export function renderPublish(root, state, ctx) {
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
     const enabled = submitItemEnabled(state, item.id, policy);
-    const heading = (state.drafts[item.id]?.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
+    // Only used as the fallback line when there is no poster to show yet —
+    // the card's real heading is the source label in its header.
+    const fallbackLine = (draft.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
+    const poster = posterCanvas(locale, item);
 
     const pubRows = publications
       .filter((pub) => pub.state !== "superseded")
@@ -777,39 +784,50 @@ export function renderPublish(root, state, ctx) {
         ])
       : null;
 
-    return el("section", { class: "sl-drawer-section" }, [
-      el("h3", null, heading || item.id),
-      pubRows.length ? el("div", null, pubRows) : null,
-      picker,
-      renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
-      refusal,
-      destinations.length
-        ? el(
-            "button",
-            {
-              type: "button",
-              class: "sl-primary",
-              disabled: !enabled,
-              title: enabled ? "" : t(locale, "submitBlocked"),
-              onclick: () => handlers.onSubmitItem(item.id, false)
-            },
-            submitting ? t(locale, "saving") : t(locale, "submitForReview")
-          )
-        : null
+    // ONE card: the poster as it will ship, the caption beside it, then
+    // every control that decides where and when it ships, ending in this
+    // item's own submit — no separate screen between looking at the draft
+    // and acting on it.
+    return el("div", { class: "sl-preview-card" }, [
+      el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
+      el("div", { class: "sl-pc-media" }, [poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || item.id)]),
+      el("div", { class: "sl-pc-body" }, [
+        el("p", null, draft.caption || item.caption || ""),
+        pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
+        picker,
+        renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
+        refusal,
+        destinations.length
+          ? el(
+              "button",
+              {
+                type: "button",
+                class: "sl-primary",
+                disabled: !enabled,
+                title: enabled ? "" : t(locale, "submitBlocked"),
+                onclick: () => handlers.onSubmitItem(item.id, false)
+              },
+              submitting ? t(locale, "saving") : t(locale, "submitForReview")
+            )
+          : null
+      ])
     ]);
   });
 
+  // Not `.sl-primary` — the item's own submit is this screen's one primary
+  // action; this button only navigates.
   const footer = el("footer", { class: "sl-selection" }, [
     el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "backToReview")),
-      el("button", { type: "button", class: "sl-primary", style: "margin-left:auto", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
     ])
   ]);
 
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
+    approvalCard,
     renderWizardError(state),
-    destinations.length ? el("div", null, itemCards) : emptyDestinations,
+    destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
     footer
   ]);
 }

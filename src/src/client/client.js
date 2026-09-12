@@ -45,7 +45,6 @@ import {
   refusalMessage,
   renderPublish,
   renderResult,
-  renderReview,
   renderSetup,
   resumeBatch,
   setPublishError,
@@ -56,7 +55,7 @@ import {
   togglePublishBinding
 } from "./steps.js";
 
-const WIZARD_BACK_TARGET = { review: "select", publish: "review", result: "publish" };
+const WIZARD_BACK_TARGET = { publish: "select", result: "publish" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
@@ -87,15 +86,28 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
   --sl-radius-card: var(--studio-v2-radius-card, 14px);
   --sl-radius-control: var(--studio-v2-radius-control, 9px);
-  /* One height for every toolbar control, so the search field and the filter
-     buttons beside it cannot drift apart again. */
-  --sl-control-h: 40px;
-  /* One height for every toolbar control, so a search field and the filter
-     buttons beside it cannot drift apart. */
-  --sl-control-h: 40px;
+  /*
+   * THE control scale. Every button, input, chip and tab in this sheet sizes
+   * off one of these three -- nothing below declares a height of its own.
+   * --bot-control-height is bot-shell's own hook for .bot-button/.bot-input;
+   * it is pointed at the same scale instead of carrying a second number
+   * that can drift from it.
+   *
+   * (No backticks anywhere in this stylesheet: it is a template literal.)
+   */
+  --sl-h-control: 36px;
+  --sl-h-compact: 28px;
+  --sl-h-touch: 44px;
+  --bot-control-height: var(--sl-h-control);
   --sl-radius-row: var(--studio-v2-radius-row, 8px);
   --sl-focus: var(--gadget-focus, var(--sl-ink));
   --sl-font: var(--font-sans, system-ui, sans-serif);
+}
+/* Coarse pointers fold control and compact into the one touch size, so a
+   28px chip and a 36px input alike grow to 44px without a second override
+   anywhere else in this file. */
+@media (pointer: coarse) {
+  :root { --sl-h-control: var(--sl-h-touch); --sl-h-compact: var(--sl-h-touch); }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--sl-bg); color: var(--sl-ink); font: 13.5px/1.55 var(--sl-font); }
@@ -108,7 +120,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-titleline { margin-bottom: 18px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
-.sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
+.sl-main-nav > button { min-height:var(--sl-h-control); padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
 .sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
 .sl-main-actions { margin-left:auto; display:flex; gap:4px; }
 /*
@@ -120,25 +132,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  *
  * (No backticks anywhere in this stylesheet: it is a template literal.)
  */
-.sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
+.sl-icon-action { width:var(--sl-h-control); height:var(--sl-h-control); border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
 .sl-icon-action svg { width:18px; height:18px; display:block; }
 .sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
 .sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
-@media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
 .sl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .sl-search { flex: 1 1 200px; }
-.sl-search-input { width: 100%; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
+.sl-search-input { width: 100%; height: var(--sl-h-control); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-h-control); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
 .sl-filter-btn.sl-filter-active { background: var(--sl-selected); color: var(--sl-ink); font-weight: 650; }
 /* The count is a reading of the filter, not part of its name: it stays legible
    at a glance and stops "New" and "3" reading as one word. */
 .sl-filter-count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font: 600 9.5px/18px var(--sl-font); font-variant-numeric: tabular-nums; text-align: center; }
 .sl-filter-active .sl-filter-count { background: var(--sl-ink); color: var(--sl-surface); }
 .sl-sync-refresh { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--sl-muted); font-size: 10.5px; }
-.sl-sync-refresh button { height: 32px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
+.sl-sync-refresh button { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
 .sl-chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
-.sl-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 10.5px; }
+.sl-chip { display: inline-flex; align-items: center; gap: 6px; height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-chip-active { background: var(--sl-selected); font-weight: 650; }
 .sl-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sl-success); }
 .sl-chip-degraded { border-color: var(--sl-warning); color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 10%, var(--sl-surface)); }
@@ -147,13 +158,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-mobile-panes { display: none; }
 .sl-inbox { margin: 0 0 24px; padding: 0 0 20px; border-bottom: 1px solid var(--sl-line); background: var(--sl-surface); }
 .sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
+.sl-inbox-tabs button { min-height: var(--sl-h-compact); padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
 .sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-inbox-card-meta { display: flex; justify-content: space-between; color: var(--sl-muted); font-size: 9px; }
-.sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
+.sl-inbox-card .sl-secondary.sl-secondary { min-height: var(--sl-h-compact); font-size: 10.5px; }
 .sl-state-chip { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border-radius: 999px; font: 600 8.5px var(--sl-font); letter-spacing: .03em; text-transform: uppercase; background: var(--sl-surface-2); color: var(--sl-muted); }
 .sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
 .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
@@ -161,8 +172,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-regen-row { margin: 0 0 16px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
-.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: 26px; padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
+.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: var(--sl-h-compact); padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
@@ -175,9 +187,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-post-body { display: block; padding: 16px; }
 .sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
 .sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
-.sl-app { --bot-control-height: 34px; --sl-control-h: 36px; }
 .sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
-@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; --sl-control-h: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
@@ -201,13 +211,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    bottom padding on .sl-app is what lets the last row scroll clear of it. */
 .sl-selection { position: fixed; bottom: clamp(10px, 2vh, 18px); left: 50%; translate: -50% 0; z-index: 5; width: fit-content; max-width: calc(100% - 32px); padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
 .sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* The footer container owns alignment, not the buttons in it: whichever
+   action is last in a footer row is the one pushed to the far end. */
+.sl-selection-inner > *:last-child { margin-left: auto; }
 .sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
-.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-control-h); padding: 0 10px; }
+.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-h-control); padding: 0 10px; }
 .sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
-.sl-primary, .sl-secondary { min-height: 40px; padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
-.sl-primary { margin-left: auto; border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
+/* Appearance only -- alignment belongs to the footer container (see
+   .sl-selection-inner and .sl-preview-actions above/below), not this class. */
+.sl-primary, .sl-secondary { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+.sl-primary { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
 .sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
 /* A faded brand fill reads as a broken button. An unavailable action is inert,
    so it drops the brand entirely instead of wearing a washed-out version. */
@@ -224,9 +239,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
-.sl-setup-actions .sl-primary { margin-left: 0; }
 .sl-item-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
-.sl-item-tabs button { height: 32px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
+.sl-item-tabs button { height: var(--sl-h-compact); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
 .sl-item-tabs button[aria-selected="true"] { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
 .sl-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
 .sl-dual-pane { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
@@ -256,12 +270,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-error, .sl-wizard-error { margin: 0 0 10px; padding: 9px 12px; border: 1px solid var(--sl-danger); border-radius: var(--sl-radius-row); background: color-mix(in srgb, var(--sl-danger) 10%, var(--sl-surface)); color: var(--sl-danger); font-size: 11px; }
 .sl-poster-preview { display: grid; place-items: center; }
 .sl-poster-canvas { max-width: 100%; max-height: 220px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); }
-.sl-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 18px; }
-.sl-preview-card { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
+.sl-review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 18px; align-items: start; }
+.sl-preview-card { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-preview-card header { padding: 10px 13px; border-bottom: 1px solid var(--sl-line); font-size: 11px; font-weight: 650; }
-.sl-pc-media { aspect-ratio: 1/1; background: var(--sl-surface-2); display: grid; place-items: center; padding: 14px; text-align: center; }
-.sl-pc-body { padding: 11px 13px; }
-.sl-pc-body p { margin: 0; font-size: 11px; }
+.sl-pc-media { background: var(--sl-surface-2); display: grid; place-items: center; padding: 14px; text-align: center; }
+/* The poster canvas is drawn at the template's real pixel size (up to
+   1080x1350), so it is capped by a LENGTH, not a percentage -- see
+   preview-media.js's FRAME_MAX for why a percentage max-height on a centred
+   grid item cannot be trusted here. */
+.sl-pc-canvas { display: block; max-width: 100%; height: auto; max-height: min(360px, 46dvh); border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
+.sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
+.sl-pc-body { padding: 13px; display: grid; gap: 10px; }
+.sl-pc-body > p { margin: 0; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
 .sl-approval-card { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-card); padding: 16px; }
 .sl-approval-expired { border-color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 8%, var(--sl-surface)); }
@@ -276,7 +296,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-state-published { background: color-mix(in srgb, var(--sl-success) 16%, var(--sl-surface)); color: var(--sl-success); }
 .sl-state-failed_safe { background: color-mix(in srgb, var(--sl-danger) 12%, var(--sl-surface)); color: var(--sl-danger); }
 .sl-state-unknown { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); color: var(--sl-warning); }
-.sl-cta { height: 28px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
+.sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
 .sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
 .sl-result-summary { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); padding: 16px; margin-bottom: 12px; }
@@ -393,14 +413,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+/* One footer rule for both drawers -- the single-post preview and the batch
+   drawer each carry exactly one action now, so there is no second, opposing
+   system to keep in sync with this one. */
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
-.sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
-/* The batch drawer's actions match the rest of the app: compact, right-aligned.
-   The doubled class out-specifies bot-shell's .bot-button.bot-button pin. */
-.sl-drawer-actions { justify-content: flex-end; }
-.sl-drawer-actions .sl-secondary.sl-secondary,
-.sl-drawer-actions .sl-primary.sl-primary { flex: 0 0 auto; min-height: 30px; padding: 0 12px; font-size: 10.5px; margin-left: 0; }
-.sl-drawer-actions .sl-drawer-regen { margin-right: auto; }
+.sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
 .sl-drawer-section .sl-stage { min-height: 220px; }
@@ -425,7 +442,6 @@ ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-preview-dialog { width: 100vw; height: 100dvh; margin: 0; border-left: 0; }
   .sl-preview-scroll { padding: 14px; }
   .sl-preview-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .sl-preview-actions button { min-height: 44px; }
   .sl-zh-edit, .sl-field input, .sl-field select { font-size: 16px; }
 }
 `;
@@ -825,8 +841,35 @@ function App() {
       stages.push(mediaStage);
       return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
     };
+    /*
+     * The drawer's job is "open this batch" — look at it, edit it, move on.
+     * Regenerate lives here in the body rather than the footer: it acts on
+     * the whole batch the same way the item-count line above it does, and
+     * the footer's one job now is to advance into Publish (TASK-203 merge).
+     */
+    const regenerateRow = editable
+      ? el("div", { class: "sl-drawer-regen-row" }, [
+          el("button", {
+            type: "button", class: "sl-secondary sl-drawer-regen",
+            onclick: async () => {
+              try {
+                const result = await rpc.requestGeneration(batch.id);
+                if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+              } catch (error) {
+                announce(error instanceof Error ? error.message : String(error), "");
+                return;
+              }
+              batchDialog.close();
+              announce(t(locale, "drawerRegenerateNote"), "");
+              inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+              renderCurrentView();
+            }
+          }, t(locale, "drawerRegenerate"))
+        ])
+      : null;
     const body = el("div", { class: "sl-preview-scroll" }, [
       el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
+      regenerateRow,
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
         stage(item),
@@ -878,6 +921,49 @@ function App() {
       }
       return allOk;
     };
+    /*
+     * One action: Continue to publish already saves every dirty caption
+     * (saveDirty(), below) before it does anything else, so a standalone
+     * "Save changes" button was the same action offered twice. Close lives
+     * in the header as the wrapped icon button, not repeated here as text.
+     */
+    const footer = editable
+      ? el("footer", { class: "sl-preview-actions" }, [
+          el("button", {
+            type: "button", class: "sl-primary",
+            onclick: async () => {
+              if (!(await saveDirty())) return;
+              // The poster's PNG exists only when the client renders it — and
+              // it must exist before submit, or the post ships source media.
+              for (const item of batch.items ?? []) {
+                if (!item.posterLayout || item.posterStored) continue;
+                try {
+                  const png = await renderPosterPng(item.posterLayout.template, {
+                    headline: item.posterLayout.headline, subline: item.posterLayout.subline,
+                    background: { value: item.posterLayout.background?.value },
+                    textColor: item.posterLayout.textColor, align: item.posterLayout.align
+                  });
+                  const stored = await rpc.savePoster({
+                    batchItemId: item.id, expectedRevision: item.revision ?? 0,
+                    template: item.posterLayout.template, png
+                  });
+                  if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
+                } catch (error) {
+                  announce(error instanceof Error ? error.message : String(error), "");
+                  return;
+                }
+              }
+              batchDialog.close();
+              wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
+              // The merged Publish step reads publication rows off
+              // wizard.publishByItem — fetch them on the way in rather than
+              // showing a picker for pairs that are already filed.
+              await refreshPublishState();
+              renderCurrentView();
+            }
+          }, t(locale, "continueToPublish"))
+        ])
+      : null;
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
         el("button", {
@@ -887,58 +973,7 @@ function App() {
         }, icon("close"))
       ])]),
       body,
-      el("footer", { class: "sl-preview-actions sl-drawer-actions" }, [
-        editable ? el("button", {
-          type: "button", class: "sl-secondary sl-drawer-regen",
-          onclick: async () => {
-            try {
-              const result = await rpc.requestGeneration(batch.id);
-              if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
-            } catch (error) {
-              announce(error instanceof Error ? error.message : String(error), "");
-              return;
-            }
-            batchDialog.close();
-            announce(t(locale, "drawerRegenerateNote"), "");
-            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
-            renderCurrentView();
-          }
-        }, t(locale, "drawerRegenerate")) : null,
-        el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
-        editable ? el("button", {
-          type: "button", class: "sl-secondary",
-          onclick: async () => {
-            if (!(await saveDirty())) return;
-            // The poster's PNG exists only when the client renders it — and
-            // it must exist before submit, or the post ships source media.
-            for (const item of batch.items ?? []) {
-              if (!item.posterLayout || item.posterStored) continue;
-              try {
-                const png = await renderPosterPng(item.posterLayout.template, {
-                  headline: item.posterLayout.headline, subline: item.posterLayout.subline,
-                  background: { value: item.posterLayout.background?.value },
-                  textColor: item.posterLayout.textColor, align: item.posterLayout.align
-                });
-                const stored = await rpc.savePoster({
-                  batchItemId: item.id, expectedRevision: item.revision ?? 0,
-                  template: item.posterLayout.template, png
-                });
-                if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
-              } catch (error) {
-                announce(error instanceof Error ? error.message : String(error), "");
-                return;
-              }
-            }
-            batchDialog.close();
-            wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
-            renderCurrentView();
-          }
-        }, t(locale, "continueToPublish")) : null,
-        editable ? el("button", {
-          type: "button", class: "sl-primary",
-          onclick: async () => { await saveDirty(); }
-        }, t(locale, "saveChanges")) : null
-      ])
+      footer
     ])]);
     if (!batchDialog.open) batchDialog.showModal();
     batchDialog.addEventListener("close", () => {
@@ -1149,7 +1184,7 @@ function App() {
     }
   }
 
-  // --- Wizard (review / publish / result) handlers ---------------------------
+  // --- Wizard (publish / result) handlers -------------------------------------
   const wizardHandlers = {
     // --- Publish step: the send decision is per item, made at submit -------
     onToggleBinding: (id, binding) => {
@@ -1228,19 +1263,12 @@ function App() {
     onOpenSettings: () => collectionHandlers.onOpenSettings(),
     onBack: async () => {
       const target = WIZARD_BACK_TARGET[wizard.step];
-      // "select" has no wizard view of its own — going back from Review
+      // "select" has no wizard view of its own — going back from Publish
       // means leaving the batch and returning to the collection.
       wizard = target === "select" ? createWizardState() : target ? goToWizardStep(wizard, target) : wizard;
       // A refusal banner from the step being left does not belong on the
       // step navigated to.
       wizard = setWizardError(wizard, null);
-      renderCurrentView();
-    },
-    onContinue: async () => {
-      if (wizard.step === "review") {
-        wizard = goToWizardStep(wizard, "publish");
-        await refreshPublishState();
-      }
       renderCurrentView();
     },
     onRetry: async (itemId, destinationBinding) => {
@@ -1335,8 +1363,7 @@ function App() {
       replace(viewHost, [navigation, body]);
       return;
     }
-    if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
-    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
+    if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
     else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
   }
 
