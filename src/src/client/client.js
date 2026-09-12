@@ -111,6 +111,12 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--sl-bg); color: var(--sl-ink); font: 13.5px/1.55 var(--sl-font); }
+/* The canvas root sits on the surface token (white), not the page's own
+   off-white --sl-bg -- ships in the gadget's own stylesheet so it applies
+   wherever the archive runs, not only in the preview host's chrome.
+   min-height keeps the surface filling the viewport even when .sl-app's
+   content is shorter, so there is no seam of --sl-bg below it. */
+#gadget-root { background: var(--sl-surface); min-height: 100dvh; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
