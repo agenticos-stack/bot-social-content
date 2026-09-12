@@ -385,7 +385,7 @@ export const STRINGS = Object.freeze({
     editCaption: "編輯文案",
     submitForReview: "送交審閱",
     submitBlocked: "請先儲存所有修改、等待儲存完成、解決所有須修正的問題，並選擇發佈目的地，方可送交。",
-    submitHint: "在未獲批准前，內容不會傳送到工作間以外。",
+    submitHint: "在未獲批准前，內容不會傳送到工作區以外。",
     saving: "儲存中……",
     saved: "已儲存",
     saveFailed: "儲存失敗",
