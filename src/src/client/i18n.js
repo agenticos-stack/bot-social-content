@@ -181,8 +181,11 @@ export const STRINGS = Object.freeze({
     // --- Publish's approval banner (folded in from the old Review step) ------
     approvalReadyTitle: "Ready for review",
     approvalReadyBody: "Submitted for approval. Approve or decline from the conversation or the Approvals inbox.",
-    approvalPendingTitle: "Not yet submitted",
-    approvalPendingBody: "Submit this batch to send it for approval.",
+    // The resting state, before this item has been submitted. api #1899
+    // (in production) is what makes this true rather than aspirational:
+    // the gadget records the submit, never asserts the approval itself.
+    approvalPendingTitle: "Submitting asks the owner",
+    approvalPendingBody: "Approving it confirms the rights for this version and records who did — the gadget never asserts that itself.",
     approvalExpiredTitle: "Approval expired because this version changed",
     approvalExpiredBody: "The approved content no longer matches the current version. Review the change, then submit again.",
     contentHash: "Content hash {hash}",
@@ -383,8 +386,8 @@ export const STRINGS = Object.freeze({
 
     approvalReadyTitle: "已準備好待審閱",
     approvalReadyBody: "已送交審批。請在對話或「待批准」清單中批准或拒絕。",
-    approvalPendingTitle: "尚未送交",
-    approvalPendingBody: "送交此批次以進入審批程序。",
+    approvalPendingTitle: "送交後將交由負責人審批",
+    approvalPendingBody: "批准即代表確認此版本已獲授權，並記錄批准人——小工具本身不會自行作出此確認。",
     approvalExpiredTitle: "版本已變更，批准已失效",
     approvalExpiredBody: "已批准的內容與目前版本不符。請先查看變更，再重新送交。",
     contentHash: "內容雜湊值 {hash}",

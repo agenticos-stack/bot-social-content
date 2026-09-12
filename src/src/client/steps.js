@@ -718,18 +718,25 @@ export function renderPublish(root, state, ctx) {
   ]);
 
   /*
-   * The batch's own approval, once per batch, above the cards it covers —
-   * not a screen the owner has to click through before reaching the cards.
-   * `renderReview` used to be that screen; folding it in here is the point
-   * of the merge (see the file header).
+   * The batch's own approval fact -- one per batch, not per item -- but it
+   * belongs on the card it describes, not a separate screen the owner has
+   * to click through before reaching the cards `renderReview` used to be.
+   * One quiet note, built fresh for each item's own card.
    */
   const approval = batch.approval || null;
   const expired = isApprovalExpired(approval);
-  const approvalCard = el("div", { class: `sl-approval-card${expired ? " sl-approval-expired" : ""}` }, [
-    el("h3", null, t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle")),
-    el("p", null, t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody")),
-    approval?.contentHash ? el("span", { class: "sl-hash" }, t(locale, "contentHash", { hash: approval.contentHash })) : null
-  ]);
+  const approvalLead = t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle");
+  const approvalRest = t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody");
+  function renderApprovalNote() {
+    return el("div", { class: `sl-approval-note${expired ? " sl-approval-expired" : ""}` }, [
+      el("span", { class: "sl-approval-mark", "aria-hidden": "true" }, "◆"),
+      el("span", null, [
+        el("strong", null, approvalLead + (/[.!?]$/.test(approvalLead) ? "" : ".") + " "),
+        approvalRest,
+        approval?.contentHash ? el("span", { class: "sl-hash" }, " " + t(locale, "contentHash", { hash: approval.contentHash })) : null
+      ])
+    ]);
+  }
 
   const itemCards = batch.items.map((item) => {
     const draft = state.drafts[item.id] ?? {};
@@ -847,6 +854,7 @@ export function renderPublish(root, state, ctx) {
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
         picker,
         renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
+        renderApprovalNote(),
         refusal,
         destinations.length
           ? el(
@@ -877,7 +885,6 @@ export function renderPublish(root, state, ctx) {
 
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
-    approvalCard,
     renderWizardError(state),
     destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
     footer

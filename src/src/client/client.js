@@ -320,10 +320,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-seg:has(input:focus-visible) { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-seg-on { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
-.sl-approval-card { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-card); padding: 16px; }
+/* One quiet block, on the card it describes, not a screen before it. */
+.sl-approval-note { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border: 1px solid var(--sl-line-strong); border-radius: 10px; background: var(--sl-accent-soft); font-size: 11.5px; line-height: 1.55; color: var(--sl-ink); }
+.sl-approval-mark { flex-shrink: 0; color: var(--sl-accent-strong); }
 .sl-approval-expired { border-color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 8%, var(--sl-surface)); }
-.sl-approval-card h3 { margin: 0 0 4px; font-size: 13px; }
-.sl-approval-card p { margin: 0 0 8px; color: var(--sl-muted); font-size: 11px; }
 .sl-hash { font: 10px var(--sl-font); color: var(--sl-muted); word-break: break-all; }
 .sl-target-row { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); margin-bottom: 8px; }
 .sl-who strong { display: block; font-size: 12px; }
