@@ -18,7 +18,7 @@
     "validate": "tsx scripts/validate.mjs",
     "preview": "node --import tsx scripts/preview.mjs",
     "test": "npm run test:host && npm run test:unit",
-    "test:host": "tsx --test --test-concurrency=1 test/build.test.mjs test/preview.test.mjs test/connected-api.test.mjs test/connected-agent.test.mjs test/development-session.test.mjs test/gadget-dev-mint.test.mjs",
+    "test:host": "tsx --test --test-concurrency=1 test/build.test.mjs test/preview-seed-budget.test.mjs test/preview.test.mjs test/connected-api.test.mjs test/connected-agent.test.mjs test/development-session.test.mjs test/gadget-dev-mint.test.mjs",
     "test:unit": "vitest run --pool=threads --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
