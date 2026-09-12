@@ -610,11 +610,15 @@ export function renderSetup(root, draft, ctx) {
 function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
   const change = (patch, redraw = true) => handlers.onPublishIntent(itemId, patch, redraw);
   const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
-  return el("fieldset", { class: "sl-setup-section", disabled }, [
-    el("legend", null, t(locale, "publicationTiming")),
-    ...[["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
-      el("label", { class: "sl-radio" }, [el("input", { type: "radio", name: `publicationMode-${itemId}`, checked: intent.publishMode === mode,
-        onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }), t(locale, key)])),
+  return el("div", { class: "sl-pc-field" }, [
+    el("span", { class: "sl-pc-field-label" }, t(locale, "publicationTiming")),
+    el("div", { class: "sl-timing", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
+      [["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
+        el("label", { class: `sl-seg${intent.publishMode === mode ? " sl-seg-on" : ""}` }, [
+          el("input", { type: "radio", name: `publicationMode-${itemId}`, checked: intent.publishMode === mode, disabled,
+            onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }),
+          t(locale, key)
+        ]))),
     ...(intent.publishMode === "schedule" ? [
       field("publicationLocalTime", el("input", { type: "datetime-local", value: intent.publishLocalTime || "", oninput: e => change({ publishLocalTime: e.currentTarget.value }, false) })),
       field("publicationTimezone", el("input", { type: "text", value: intent.timezone || "", oninput: e => change({ timezone: e.currentTarget.value }, false) })),
@@ -781,23 +785,30 @@ export function renderPublish(root, state, ctx) {
         ]);
       });
 
+    // REQ-016's own rule (post-card.js's providerGlyph) applies here too:
+    // the two-case fallback is precedent already established there, not a
+    // new provider table -- a trailing tag naming the provider type, never
+    // a data source of its own.
+    const providerTag = (provider) => provider === "instagram" ? t(locale, "providerInstagram") : provider === "facebook" ? t(locale, "providerFacebook") : null;
     const picker = destinations.length
-      ? el("fieldset", { class: "sl-setup-section", disabled: submitting }, [
-          el("legend", null, t(locale, "publishPickDestinations")),
-          ...destinations.map((destination) => {
+      ? el("div", { class: "sl-pc-field" }, [
+          el("span", { class: "sl-pc-field-label" }, t(locale, "publishPickDestinations")),
+          el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "publishPickDestinations") }, destinations.map((destination) => {
             const binding = destination.destinationBinding ?? destination.binding;
             const filed = filedPairs.has(binding);
-            return el("label", { class: "sl-radio" }, [
+            const checked = filed || choice.bindings.includes(binding);
+            const tag = filed ? t(locale, "publishAlreadyFiled") : providerTag(destination.provider);
+            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}` }, [
               el("input", {
                 type: "checkbox",
-                checked: filed || choice.bindings.includes(binding),
+                checked,
                 disabled: filed || submitting,
                 onchange: () => handlers.onToggleBinding(item.id, binding)
               }),
               destination.label || binding,
-              filed ? el("span", { class: "sl-field-note" }, t(locale, "publishAlreadyFiled")) : null
+              tag ? el("span", { class: "sl-dest-tag" }, tag) : null
             ]);
-          })
+          }))
         ])
       : null;
 

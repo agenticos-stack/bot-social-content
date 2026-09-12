@@ -302,6 +302,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
 .sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
 .sl-pc-body > p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
+/* Quiet grouping labels, same register as .sl-preview-kicker below. */
+.sl-pc-field { display: grid; gap: 8px; }
+.sl-pc-field-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); font-weight: 700; }
+.sl-dest { display: grid; gap: 7px; }
+.sl-dest-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: 10px; font-size: 12.5px; cursor: pointer; }
+.sl-dest-row:hover { background: var(--sl-surface-2); }
+.sl-dest-row-selected { border-color: var(--sl-accent-strong); background: var(--sl-accent-soft); }
+.sl-dest-row input { accent-color: var(--sl-accent-strong); width: 15px; height: 15px; flex-shrink: 0; }
+.sl-dest-tag { margin-left: auto; color: var(--sl-muted); font-size: 10px; }
+/* Pill segments, the active one filled in ink -- not radio dots. The input
+   stays for keyboard/screen-reader semantics; it is visually hidden, not
+   display:none, so it keeps its place in the tab order. */
+.sl-timing { display: flex; gap: 7px; flex-wrap: wrap; }
+.sl-seg { position: relative; display: inline-flex; align-items: center; height: var(--sl-h-compact); padding: 0 12px; border-radius: 999px; border: 1px solid var(--sl-line-strong); font-size: 11.5px; background: var(--sl-surface); cursor: pointer; }
+.sl-seg input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.sl-seg:has(input:focus-visible) { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
+.sl-seg-on { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
 .sl-approval-card { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-card); padding: 16px; }
 .sl-approval-expired { border-color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 8%, var(--sl-surface)); }
