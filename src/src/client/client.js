@@ -1383,7 +1383,15 @@ function App() {
     // composer and protected-literal preview), one place to ship (this
     // card). Only `.id` reaches openBatchDrawer; it re-fetches the batch
     // itself.
-    onEditCaption: () => openBatchDrawer({ id: wizard.batch.id }),
+    //
+    // `itemId` is unused today: `wizard.batch.id` is correct for ANY item
+    // on this screen, because the wizard is only ever entered from one
+    // real batch, so every item on it shares that one id. This holds only
+    // while that is true -- the day the wizard can hold a selection spanning
+    // several batches (design-plans/architecture-publish-wizard-multi-batch-1.md),
+    // this must resolve the clicked item's OWN batch id instead, or it will
+    // open the wrong drawer for an item from a different batch.
+    onEditCaption: (itemId) => openBatchDrawer({ id: wizard.batch.id }),
     onBack: async () => {
       const target = WIZARD_BACK_TARGET[wizard.step];
       // "select" has no wizard view of its own — going back from Publish
