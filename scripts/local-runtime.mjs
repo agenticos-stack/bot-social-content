@@ -14,6 +14,10 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
       async seedLocal() {
         return this.ctx.storage.transactionSync(() => {
         if (this.storage.getConfig()) return {seeded:0};
+        // Explicit 0, not omitted: omitted would take the product default
+        // (40_000) and bill a real org. Zero means spend nothing. The
+        // preview must say so at startup — a silent 0 looks like a grant
+        // that failed, not a budget that was never set.
         this.storage.setConfig(normalizeConfig({ cadence: 'daily', fetchBudgetCredits: 0 }));
         this.storage.setSources([{binding:'LOCAL_SAMPLE',label:'Local sample (not connected)',provider:'instagram'}]);
         this.storage.setDestinations([{binding:'LOCAL_DRAFT',label:'Local draft only (not connected)',provider:'instagram'}]);
@@ -56,6 +60,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
   const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
+  console.warn('Social Content preview seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],
     allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });
 }

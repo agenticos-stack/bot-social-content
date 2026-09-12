@@ -266,6 +266,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       };
       const watchers=watchSource(scheduleReload);
       if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
+      console.warn('preview seed: fetchBudgetCredits is 0 — a metered scan fails closed until you set a budget in Settings.');
       // `local` is read through a getter: a reload replaces the binding, and a
       // holder of this object must reach the CURRENT isolate, not the one that
       // existed when it was handed over.
