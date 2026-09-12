@@ -319,6 +319,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-seg input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .sl-seg:has(input:focus-visible) { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-seg-on { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
+/* The hairline separates the decision from the act of sending it; the
+   button is the last child, so it takes the same push-to-end rule as
+   every other footer here. */
+.sl-submit-row { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--sl-line); padding-top: 16px; }
+.sl-submit-row > *:last-child { margin-left: auto; }
+.sl-submit-hint { font-size: 11px; color: var(--sl-muted); }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
 /* One quiet block, on the card it describes, not a screen before it. */
 .sl-approval-note { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border: 1px solid var(--sl-line-strong); border-radius: 10px; background: var(--sl-accent-soft); font-size: 11.5px; line-height: 1.55; color: var(--sl-ink); }

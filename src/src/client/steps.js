@@ -856,18 +856,23 @@ export function renderPublish(root, state, ctx) {
         renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
         renderApprovalNote(),
         refusal,
+        // A hairline, a reassurance on the left, submit on the right --
+        // the item's own submit is this card's one primary.
         destinations.length
-          ? el(
-              "button",
-              {
-                type: "button",
-                class: "sl-primary",
-                disabled: !enabled,
-                title: enabled ? "" : t(locale, "submitBlocked"),
-                onclick: () => handlers.onSubmitItem(item.id, false)
-              },
-              submitting ? t(locale, "saving") : t(locale, "submitForReview")
-            )
+          ? el("div", { class: "sl-submit-row" }, [
+              el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
+              el(
+                "button",
+                {
+                  type: "button",
+                  class: "sl-primary",
+                  disabled: !enabled,
+                  title: enabled ? "" : t(locale, "submitBlocked"),
+                  onclick: () => handlers.onSubmitItem(item.id, false)
+                },
+                submitting ? t(locale, "saving") : t(locale, "submitForReview")
+              )
+            ])
           : null
         ])
       ])
