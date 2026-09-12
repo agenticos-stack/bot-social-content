@@ -381,4 +381,146 @@ describe("poster_required: an open source never ships someone else's photo", () 
     expect(created).toHaveLength(1);
     expect(submitted.warnings?.map((w: { code: string }) => w.code)).toContain("poster_not_shipped");
   });
+
+  /*
+   * With the rights concept removed (migration 11), `poster_required` is the
+   * only guard left between a watched account's photo and our own page — so
+   * every path that leaves `posterShipped` false with poster bytes present
+   * (the door refusing the upload, an upload URL the publisher cannot fetch,
+   * the upload throwing) must refuse rather than fall through to the source
+   * photo.
+   */
+
+  /** Just enough PNG for savePoster: the signature, an IHDR header, and the template's 1080x1080 in the IHDR width/height fields. */
+  function posterPngBytes() {
+    const bytes = new Uint8Array(24);
+    bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(16, 1080);
+    view.setUint32(20, 1080);
+    return bytes;
+  }
+
+  /** The open-source setup above with a drafted layout, ready for poster bytes. */
+  async function openSourceDraft(gadget: Gadget) {
+    // The provenance the scan recorded: metered fetch, not a connector binding.
+    gadget.storage.addOpenSource({
+      binding: "open:IG_WATCH",
+      displayName: "Watched Brand",
+      platform: "instagram",
+      accountKey: "watched.brand"
+    });
+    gadget.storage.upsertItem({
+      id: "instagram:open:IG_WATCH:p9",
+      sourceBinding: "open:IG_WATCH",
+      sourceLabel: "Watched Brand",
+      provider: "instagram",
+      providerItemId: "p9",
+      permalink: "https://www.instagram.com/p/p9/",
+      publishedAt: "2026-09-06T00:00:00.000Z",
+      text: "Another company's photo",
+      media: [{ url: "https://cdn.example.com/theirs.jpg", kind: "image" }],
+      metrics: {},
+      contentHash: "their-hash",
+      firstSeenAt: "2026-09-06T00:00:00.000Z",
+      lastSeenAt: "2026-09-06T00:00:00.000Z"
+    });
+    const batch = await gadget.createBatch({ itemIds: ["instagram:open:IG_WATCH:p9"] });
+    const item = batch.items[0];
+    const saved = await gadget.saveRevision({
+      batchItemId: item.id,
+      expectedRevision: 0,
+      caption: "第一稿內容文字",
+      posterLayout: { template: "1080x1080", headline: "大標題", background: { kind: "solid", value: "#000000" }, textColor: "#ffffff", align: "left" }
+    });
+    return { item, revision: saved.revision };
+  }
+
+  it("refuses when the poster upload is refused by the door", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      social: {
+        ...mockSocial(created).social,
+        uploadMedia: async () => ({ refused: true, code: "media_rejected", message: "The media door refused." })
+      }
+    });
+    const { item, revision } = await openSourceDraft(gadget);
+    // The bytes must actually land — a setup failure cannot masquerade as this refusal.
+    const posted = await gadget.savePoster({
+      batchItemId: item.id,
+      expectedRevision: revision,
+      template: "1080x1080",
+      png: posterPngBytes()
+    });
+    expect(posted).toMatchObject({ ok: true, revision: revision + 1 });
+
+    const refused = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: posted.revision,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(refused).toMatchObject({ ok: false, code: "poster_required" });
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("refuses when the poster upload returns a url the publisher cannot fetch", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      social: {
+        ...mockSocial(created).social,
+        // https and non-localhost, but the org-auth generated-media path — not publisher-addressable.
+        uploadMedia: async () => ({ assetId: "asset-1", url: "https://cdn.example.com/v1/media/job-1/assets/0" })
+      }
+    });
+    const { item, revision } = await openSourceDraft(gadget);
+    const posted = await gadget.savePoster({
+      batchItemId: item.id,
+      expectedRevision: revision,
+      template: "1080x1080",
+      png: posterPngBytes()
+    });
+    expect(posted).toMatchObject({ ok: true, revision: revision + 1 });
+
+    const refused = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: posted.revision,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(refused).toMatchObject({ ok: false, code: "poster_required" });
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("refuses when the poster upload throws", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      social: {
+        ...mockSocial(created).social,
+        uploadMedia: async () => {
+          throw new Error("upload exploded");
+        }
+      }
+    });
+    const { item, revision } = await openSourceDraft(gadget);
+    const posted = await gadget.savePoster({
+      batchItemId: item.id,
+      expectedRevision: revision,
+      template: "1080x1080",
+      png: posterPngBytes()
+    });
+    expect(posted).toMatchObject({ ok: true, revision: revision + 1 });
+
+    const refused = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: posted.revision,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(refused).toMatchObject({ ok: false, code: "poster_required" });
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
 });
