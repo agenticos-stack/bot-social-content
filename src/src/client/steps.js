@@ -771,7 +771,10 @@ export function renderPublish(root, state, ctx) {
         return el("div", { class: "sl-target-row" }, [
           el("div", { class: "sl-who" }, [
             el("strong", null, destinationLabel(pub.destinationBinding)),
-            el("span", null, t(locale, "drawerRevision", { n: pub.revision }))
+            // Revision 0 is not a version an owner has -- it means nothing
+            // has been saved yet. "Version 0" reads like a debug line; say
+            // what it means instead. 1 and up keep "Version {n}".
+            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "inboxNoSavedRevision"))
           ]),
           stateBadge(locale, outcome),
           target?.receiptUrl
