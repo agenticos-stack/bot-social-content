@@ -890,13 +890,14 @@ export function renderPublish(root, state, ctx) {
     ]);
   });
 
-  // Not `.sl-primary` — the item's own submit is this screen's one primary
-  // action; this button only navigates.
-  const footer = el("footer", { class: "sl-selection" }, [
-    el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
-    ])
+  // In normal document flow, not the floating .sl-selection dock -- that
+  // dock is for a live selection's own transient action (the Sources
+  // tray), not persistent navigation tied to no selection at all. Quiet
+  // and secondary: the real action on this screen is a card's own submit
+  // row, not this pair.
+  const footer = el("div", { class: "sl-page-nav" }, [
+    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
+    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
   ]);
 
   replace(root, [

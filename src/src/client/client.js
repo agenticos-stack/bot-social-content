@@ -223,12 +223,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    shorter than the canvas the dock parked at the end of the content with dead
    space beneath it, instead of above the bottom edge. The canvas is its own
    iframe, so the viewport this pins to is the gadget's, not the page's. The
-   bottom padding on .sl-app is what lets the last row scroll clear of it. */
+   bottom padding on .sl-app is what lets the last row scroll clear of it.
+
+   Reserved for a live SELECTION's own transient action -- it exists
+   because the owner selected something, it summarises that selection,
+   and the action it carries consumes it (the Sources tray is the
+   reference use). It is not a generic screen footer: the Publish step's
+   plain Back/View-summary navigation used to live here, tied to no
+   selection, floating over a card whose own submit row was the screen's
+   actual action -- moved to .sl-page-nav (below) instead. Reach for
+   .sl-page-nav for ordinary end-of-page navigation. */
 .sl-selection { position: fixed; bottom: clamp(10px, 2vh, 18px); left: 50%; translate: -50% 0; z-index: 5; width: fit-content; max-width: calc(100% - 32px); padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
 .sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 /* The footer container owns alignment, not the buttons in it: whichever
    action is last in a footer row is the one pushed to the far end. */
 .sl-selection-inner > *:last-child { margin-left: auto; }
+/* Ordinary in-flow end-of-page navigation -- quiet, secondary, not tied to
+   a selection and not fixed over the content. */
+.sl-page-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.sl-page-nav > *:last-child { margin-left: auto; }
 .sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
