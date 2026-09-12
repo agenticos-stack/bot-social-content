@@ -295,13 +295,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    below 760px (poster first), two at and above it. */
 .sl-pc-grid { display: grid; }
 @media (min-width: 760px) { .sl-pc-grid { grid-template-columns: 264px 1fr; } }
-.sl-pc-media { background: var(--sl-surface-2); display: grid; place-items: center; padding: 18px; gap: 10px; text-align: center; border-bottom: 1px solid var(--sl-line); }
+/* align-content: start, not the grid default (stretch/center) -- a grid
+   column stretches to the row's height by default, and with a tall
+   decision column beside it this became ~700px of grey with the slot
+   floating dead centre. The column's job is only to hold the slot at the
+   top; it does not grow to match it. The tint lives on the slot itself
+   (below), not this column, so it ends where the poster ends instead of
+   running the height of the card. */
+.sl-pc-media { display: grid; justify-items: center; align-content: start; padding: 18px; gap: 10px; text-align: center; border-bottom: 1px solid var(--sl-line); }
 @media (min-width: 760px) { .sl-pc-media { border-bottom: 0; border-right: 1px solid var(--sl-line); } }
-/* The reserved slot, not the (stretched, full-column-height) surface
-   around it: this is what actually carries the aspect-ratio, so the
-   poster/placeholder keeps the shape it ships in regardless of how tall
-   the decision column beside it grows. */
-.sl-pc-media-slot { width: 100%; display: grid; place-items: center; }
+/* The reserved slot, not the (top-aligned, but still full-column-height)
+   surface around it: this is what actually carries the aspect-ratio and
+   the secondary-surface tint, so the poster/placeholder keeps the shape
+   it ships in -- and the grey stops exactly where the poster does --
+   regardless of how tall the decision column beside it grows. */
+.sl-pc-media-slot { width: 100%; display: grid; place-items: center; background: var(--sl-surface-2); border-radius: var(--sl-radius-control); }
 /* The slot already reserves the exact ratio the template draws at (see
    steps.js's mediaAspect), so the canvas fills it edge to edge rather than
    capping its own height the way a variable-ratio source frame has to
