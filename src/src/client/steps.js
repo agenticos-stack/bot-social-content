@@ -861,7 +861,14 @@ export function renderPublish(root, state, ctx) {
           ])
         ]),
         el("div", { class: "sl-pc-body" }, [
-        el("p", null, draft.caption || item.caption || ""),
+        // Finished copy, not a second place to change it -- the drawer is
+        // where the caption is edited (composer, protected-literal
+        // preview); this card is where it is seen as it will ship and
+        // decided on. A quiet way back, not another primary.
+        el("div", { class: "sl-pc-caption" }, [
+          el("p", null, draft.caption || item.caption || ""),
+          el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onEditCaption(item.id) }, t(locale, "editCaption"))
+        ]),
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
         picker,
         renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),

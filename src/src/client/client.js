@@ -330,7 +330,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-pc-canvas { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
 .sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
-.sl-pc-body > p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
+.sl-pc-caption { display: grid; gap: 8px; align-items: start; }
+.sl-pc-caption p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
+.sl-pc-caption .sl-cta { justify-self: start; }
 /* Quiet grouping labels, same register as .sl-preview-kicker below. */
 .sl-pc-field { display: grid; gap: 8px; }
 .sl-pc-field-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); font-weight: 700; }
@@ -1376,6 +1378,12 @@ function App() {
       }
     },
     onOpenSettings: () => collectionHandlers.onOpenSettings(),
+    // The publish card shows the caption as finished copy, not a second
+    // place to change it -- one editing surface (the drawer, with its
+    // composer and protected-literal preview), one place to ship (this
+    // card). Only `.id` reaches openBatchDrawer; it re-fetches the batch
+    // itself.
+    onEditCaption: () => openBatchDrawer({ id: wizard.batch.id }),
     onBack: async () => {
       const target = WIZARD_BACK_TARGET[wizard.step];
       // "select" has no wizard view of its own — going back from Publish
