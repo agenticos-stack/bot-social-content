@@ -277,18 +277,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-error, .sl-wizard-error { margin: 0 0 10px; padding: 9px 12px; border: 1px solid var(--sl-danger); border-radius: var(--sl-radius-row); background: color-mix(in srgb, var(--sl-danger) 10%, var(--sl-surface)); color: var(--sl-danger); font-size: 11px; }
 .sl-poster-preview { display: grid; place-items: center; }
 .sl-poster-canvas { max-width: 100%; max-height: 220px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); }
-.sl-review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 18px; align-items: start; }
+/* One card per item, full width -- a two-column card has too much of its
+   own internal structure to also share a row with a sibling. */
+.sl-review-grid { display: grid; gap: 16px; margin-bottom: 18px; }
 .sl-preview-card { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-preview-card header { padding: 10px 13px; border-bottom: 1px solid var(--sl-line); font-size: 11px; font-weight: 650; }
-.sl-pc-media { background: var(--sl-surface-2); display: grid; place-items: center; padding: 14px; text-align: center; }
+/* Poster on the secondary surface, everything that decides publication on
+   the primary one -- so the decisions read as the active half. One column
+   below 760px (poster first), two at and above it. */
+.sl-pc-grid { display: grid; }
+@media (min-width: 760px) { .sl-pc-grid { grid-template-columns: 264px 1fr; align-items: stretch; } }
+.sl-pc-media { background: var(--sl-surface-2); display: grid; place-items: center; padding: 18px; gap: 10px; text-align: center; border-bottom: 1px solid var(--sl-line); }
+@media (min-width: 760px) { .sl-pc-media { border-bottom: 0; border-right: 1px solid var(--sl-line); } }
 /* The poster canvas is drawn at the template's real pixel size (up to
    1080x1350), so it is capped by a LENGTH, not a percentage -- see
    preview-media.js's FRAME_MAX for why a percentage max-height on a centred
    grid item cannot be trusted here. */
 .sl-pc-canvas { display: block; max-width: 100%; height: auto; max-height: min(360px, 46dvh); border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
-.sl-pc-body { padding: 13px; display: grid; gap: 10px; }
-.sl-pc-body > p { margin: 0; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; }
+.sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
+.sl-pc-body > p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
 .sl-approval-card { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-card); padding: 16px; }
 .sl-approval-expired { border-color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 8%, var(--sl-surface)); }

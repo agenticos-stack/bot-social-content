@@ -812,11 +812,18 @@ export function renderPublish(root, state, ctx) {
     // and acting on it.
     return el("div", { class: "sl-preview-card" }, [
       el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
-      // Never the id: an id is not a label, and a missing one is dropped
-      // rather than printed. Falls back to the caption's own first line,
-      // then to a human "no poster yet" line -- never the item's id.
-      el("div", { class: "sl-pc-media" }, [poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))]),
-      el("div", { class: "sl-pc-body" }, [
+      el("div", { class: "sl-pc-grid" }, [
+        // The poster on the secondary surface -- the half that shows what
+        // exists, not what to decide. Two columns at 760px and up; stacked
+        // below it, poster first.
+        el("div", { class: "sl-pc-media" }, [
+          // Never the id: an id is not a label, and a missing one is
+          // dropped rather than printed. Falls back to the caption's own
+          // first line, then to a human "no poster yet" line -- never the
+          // item's id.
+          poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))
+        ]),
+        el("div", { class: "sl-pc-body" }, [
         el("p", null, draft.caption || item.caption || ""),
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
         picker,
@@ -835,6 +842,7 @@ export function renderPublish(root, state, ctx) {
               submitting ? t(locale, "saving") : t(locale, "submitForReview")
             )
           : null
+        ])
       ])
     ]);
   });
