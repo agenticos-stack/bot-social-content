@@ -42,6 +42,7 @@ import {
   createWizardState,
   goToStep as goToWizardStep,
   isRefusal,
+  publicationStateSummary,
   refusalMessage,
   renderPublish,
   renderResult,
@@ -385,6 +386,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-stage-state { display: grid; place-items: center; gap: 8px; text-align: center; padding: 26px 12px; }
 .sl-stage-state p { margin: 0; color: #9d968a; font-size: 12.5px; line-height: 1.55; max-width: 34ch; }
 .sl-stage-state strong { color: #f3f0e9; font-size: 13.5px; }
+/* A genuinely empty post is a quiet fact, not a loading state or a refusal
+   -- it keeps the stage's own footprint (below) but drops the dark ground,
+   the two other states earn. */
+.sl-stage.sl-stage-empty { background: var(--sl-surface-2); border-style: dashed; border-radius: var(--sl-radius-card); }
+.sl-stage-empty-note { padding: 22px; text-align: center; max-width: 30ch; }
+.sl-stage-empty-note strong { display: block; color: var(--sl-ink); font-size: 12px; font-weight: 650; margin-bottom: 4px; }
+.sl-stage-empty-note p { margin: 0; color: var(--sl-muted); font-size: 11.5px; line-height: 1.55; }
 .sl-stage-skeleton { width: 108px; height: 136px; background: linear-gradient(100deg, #24211a 30%, #3a3427 50%, #24211a 70%) 0 0 / 300% 100%; animation: sl-shimmer 1.5s linear infinite; }
 @keyframes sl-shimmer { to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-stage-skeleton { animation: none; } }
@@ -874,7 +882,7 @@ function App() {
         ])
       : null;
     const body = el("div", { class: "sl-preview-scroll" }, [
-      el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
+      el("p", { class: "sl-field-note" }, t(locale, batch.items.length === 1 ? "inboxItemCountOne" : "inboxItemCount", { n: batch.items.length })),
       regenerateRow,
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
@@ -892,7 +900,7 @@ function App() {
         // including `bound` ones (recorded destinations, never sent).
         item.publications?.length
           ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
-              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
+              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${publicationStateSummary(locale, pub.state)}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
           : null,
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]); })

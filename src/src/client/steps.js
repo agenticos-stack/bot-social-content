@@ -646,6 +646,28 @@ function posterCanvas(locale, item) {
   return canvas;
 }
 
+/**
+ * A publication's state as the batch drawer's own summary line says it --
+ * `<destination> · <state>` -- never the raw mechanism name (defect 4: a
+ * `bound` row leaked verbatim there). Distinct from `stateBadge`'s
+ * one-word pill labels below: "Chosen" reads fine on a small badge but
+ * vague as the tail of a sentence, so `bound` gets its own fuller phrase
+ * here.
+ */
+export function publicationStateSummary(locale, state) {
+  const key = {
+    scheduled: "stateScheduled",
+    published: "statePublished",
+    failed_safe: "stateFailed",
+    failed: "stateFailed",
+    unknown: "stateUnknown",
+    bound: "drawerPublicationBound",
+    review_requested: "stateInReview",
+    superseded: "stateSuperseded"
+  }[state] || "stateUnknown";
+  return t(locale, key);
+}
+
 function stateBadge(locale, outcome) {
   const key = {
     scheduled: "stateScheduled",
@@ -790,7 +812,10 @@ export function renderPublish(root, state, ctx) {
     // and acting on it.
     return el("div", { class: "sl-preview-card" }, [
       el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
-      el("div", { class: "sl-pc-media" }, [poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || item.id)]),
+      // Never the id: an id is not a label, and a missing one is dropped
+      // rather than printed. Falls back to the caption's own first line,
+      // then to a human "no poster yet" line -- never the item's id.
+      el("div", { class: "sl-pc-media" }, [poster || el("span", { class: "sl-pc-media-empty" }, fallbackLine || t(locale, "posterPending"))]),
       el("div", { class: "sl-pc-body" }, [
         el("p", null, draft.caption || item.caption || ""),
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,

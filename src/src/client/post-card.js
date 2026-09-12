@@ -84,7 +84,10 @@ export function renderPostCard(locale, card, covers) {
       ])),
       el("span", { class: "sl-post-body" }, [
         el("strong", null, card.title || ""),
-        el("p", null, card.body || ""),
+        // Callers dedupe a body that would only repeat the title (defect
+        // 5) by passing "" -- an empty <p> would still hold its own fixed
+        // height, so it is dropped rather than rendered blank.
+        card.body ? el("p", null, card.body) : null,
         card.chip ? el("span", { class: `sl-state-chip ${card.chip.cls || ""}` }, card.chip.label) : null,
         card.meta ?? null
       ])

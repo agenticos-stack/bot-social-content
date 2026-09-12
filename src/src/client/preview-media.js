@@ -106,9 +106,18 @@ export function createMediaStage(rpc, item, locale) {
     ]);
   }
 
+  /*
+   * Quiet, not absent. A genuinely image-less post used to get the same
+   * dark full-height slab as a fetch in progress or a refusal — the loudest
+   * thing in the drawer, for the one state that is neither loading nor
+   * wrong. The stage keeps its footprint (min-height, aspect ratio) so the
+   * caption below it does not jump as the owner moves between posts; only
+   * the treatment changes, to a small muted note on the ordinary surface.
+   */
   function showEmpty() {
+    stage.classList.add("sl-stage-empty");
     replace(surface, [
-      el("div", { class: "sl-stage-state" }, [
+      el("div", { class: "sl-stage-empty-note" }, [
         el("strong", null, t(locale, "drawerMediaNoneTitle")),
         el("p", null, t(locale, "drawerMediaNoneBody"))
       ])
