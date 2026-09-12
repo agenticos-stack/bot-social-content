@@ -34,6 +34,7 @@ import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
+import { detectProtectedLiterals } from "../../model.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
   applyPublishState,
@@ -261,7 +262,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-dual-pane header { padding: 9px 13px; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; display: flex; justify-content: space-between; align-items: center; }
 .sl-dual-body { padding: 14px; }
 .sl-src-text { margin: 0; font-size: 12.5px; line-height: 1.85; }
-.sl-lit { background: var(--sl-accent-soft); border-radius: 4px; padding: 1px 4px; font-weight: 600; }
+.sl-lit { background: var(--sl-accent-soft); border-bottom: 1px solid var(--sl-accent-strong); border-radius: 4px; padding: 1px 4px; font-weight: 600; color: inherit; }
 .sl-legend { margin: 10px 0 0; color: var(--sl-muted); font-size: 9.5px; }
 .sl-zh-edit { width: 100%; min-height: 130px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; font-size: 12.5px; line-height: 1.85; resize: vertical; }
 .sl-revision-badge { font: 9.5px var(--sl-font); color: var(--sl-muted); }
@@ -481,6 +482,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
 .sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
 .sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
+/* What the composer below it must not lose, marked read-only -- a
+   textarea cannot carry inline marks of its own. */
+.sl-drawer-caption-preview { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
 .sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
 .sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
 .sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
@@ -872,6 +876,27 @@ function App() {
      * `saveRevisions` call — the same shape the agent uses, so the platform
      * shows one approval for the batch either way.
      */
+    /*
+     * What must survive a rewrite, marked where the owner is looking at the
+     * caption — not a fact the owner has to already know to check for. A
+     * textarea cannot carry inline marks, so an editable item gets this as
+     * a small read-only preview above its composer, shown only when there
+     * is something protected to show (nothing to mark is nothing to add).
+     */
+    const highlightedCaption = (text) => {
+      const value = text || "";
+      const spans = detectProtectedLiterals(value, policy).sort((a, b) => a.start - b.start);
+      if (!spans.length) return null;
+      const frag = document.createDocumentFragment();
+      let cursor = 0;
+      for (const span of spans) {
+        if (span.start > cursor) frag.appendChild(document.createTextNode(value.slice(cursor, span.start)));
+        frag.appendChild(el("mark", { class: "sl-lit" }, value.slice(span.start, span.end)));
+        cursor = Math.max(cursor, span.end);
+      }
+      if (cursor < value.length) frag.appendChild(document.createTextNode(value.slice(cursor)));
+      return frag;
+    };
     const composers = new Map(); // batchItemId -> { textarea, note, item }
     const captionEditor = (item) => {
       if (!isEditableItem(item)) return null;
@@ -931,9 +956,15 @@ function App() {
         return el("section", { class: "sl-drawer-section" }, [
         stage(item),
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
-        isEditableItem(item)
-          ? captionEditor(item)
-          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        (() => {
+          const marked = item.caption ? highlightedCaption(item.caption) : null;
+          return isEditableItem(item)
+            ? el("div", null, [
+                marked ? el("p", { class: "sl-drawer-caption-preview" }, [marked]) : null,
+                captionEditor(item)
+              ])
+            : el("p", { class: "sl-field-note" }, item.caption ? [marked || item.caption] : t(locale, "inboxNoSource"));
+        })(),
         posterPreview(item),
         batch.generation === "requested"
           ? el("p", { class: "sl-field-note" }, t(locale, "drawerQueuedNote"))
