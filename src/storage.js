@@ -17,9 +17,14 @@
 // base64 text, so a 1 MiB preview does not inflate to 1.33 MiB of TEXT and
 // press against that ceiling for no reason.
 
-import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
+import {
+  itemPresentation,
+  ledgerFromProtectedOverrides,
+  normalizeLedger,
+  PHASE_FILTERS
+} from "./model.js";
 
-const CURRENT_SCHEMA_VERSION = 11;
+const CURRENT_SCHEMA_VERSION = 12;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -383,6 +388,22 @@ const MIGRATIONS = {
   // (this change shipped while it was open) still get the remap.
   11(sql) {
     sql.exec("UPDATE batch_items SET state = 'drafting' WHERE state = 'held_rights'");
+  },
+
+  /*
+   * Post-audit §9.D: the durable drafting ask becomes per-ITEM, so a
+   * regeneration request can name one post instead of silently re-arming its
+   * whole batch. `batches.generation` stays as the roll-up ("something in
+   * this batch wants drafting"); `batch_items.generation` is the
+   * authoritative mark an item's `queued`/`regenerating` phase reads.
+   * Backfill marks the draftable items of already-requested batches — filed
+   * items were never the ask's work.
+   */
+  12(sql) {
+    sql.exec("ALTER TABLE batch_items ADD COLUMN generation TEXT");
+    sql.exec(`UPDATE batch_items SET generation = 'requested'
+      WHERE active = 1 AND state IN ('drafting','expired')
+        AND batch_id IN (SELECT id FROM batches WHERE generation = 'requested')`);
   }
 };
 
@@ -947,15 +968,38 @@ export class Storage {
   /** The owner dismissed the Content-tab ask — durable, unlike a reload. */
   clearGeneration(batchId) {
     this.sql.exec("UPDATE batches SET generation = NULL WHERE id = ?", batchId);
+    this.sql.exec("UPDATE batch_items SET generation = NULL WHERE batch_id = ?", batchId);
+  }
+
+  /** A saved revision answered this item's ask — its own mark clears, and the batch roll-up follows. */
+  clearItemGeneration(batchItemId) {
+    this.sql.exec("UPDATE batch_items SET generation = NULL WHERE id = ?", batchItemId);
   }
 
   /**
-   * The owner asked for this batch to be drafted again — the same durable
-   * mark createBatch writes, re-armed. Existing drafts stay; the agent's
-   * next turn sees `generation: "requested"` and saves a new revision.
+   * The owner asked for this batch (or specific items in it) to be drafted —
+   * the same durable mark createBatch writes, re-armed. `itemIds` scopes the
+   * ask to exactly those rows; omitted, every still-draftable item carries
+   * it. Existing drafts stay; the agent's next turn sees the mark and saves
+   * a new revision.
    */
-  setGeneration(batchId) {
+  setGeneration(batchId, itemIds = null) {
     this.sql.exec("UPDATE batches SET generation = 'requested' WHERE id = ?", batchId);
+    if (Array.isArray(itemIds) && itemIds.length) {
+      const marks = itemIds.map(() => "?").join(",");
+      this.sql.exec(
+        `UPDATE batch_items SET generation = 'requested', updated_at = ? WHERE batch_id = ? AND id IN (${marks})`,
+        nowIso(),
+        batchId,
+        ...itemIds
+      );
+      return;
+    }
+    this.sql.exec(
+      "UPDATE batch_items SET generation = 'requested', updated_at = ? WHERE batch_id = ? AND active = 1 AND state IN ('drafting','expired')",
+      nowIso(),
+      batchId
+    );
   }
 
   /**
@@ -964,7 +1008,7 @@ export class Storage {
    */
   clearGenerationIfAllDrafted(batchId) {
     const pending = Number(rows(this.sql.exec(
-      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND current_revision = 0", batchId
+      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND generation = 'requested'", batchId
     ))[0]?.n ?? 0);
     if (pending === 0) this.clearGeneration(batchId);
   }
@@ -1006,10 +1050,6 @@ export class Storage {
     const rowsFound = rows(this.sql.exec(
       `SELECT b.id, b.created_at, b.status, b.generation,
          COUNT(bi.id) AS item_count,
-         SUM(CASE WHEN bi.state IN ('drafting','expired') THEN 1 ELSE 0 END) AS draft_count,
-         SUM(CASE WHEN bi.state IN ('submitted','awaiting_approval') THEN 1 ELSE 0 END) AS review_count,
-         SUM(CASE WHEN bi.state = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_count,
-         SUM(CASE WHEN bi.state IN ('failed','unknown','held') THEN 1 ELSE 0 END) AS attention_count,
          MIN(bi.updated_at) AS first_updated_at,
          MAX(bi.updated_at) AS last_updated_at,
          GROUP_CONCAT(DISTINCT bi.item_id) AS source_item_ids,
@@ -1038,13 +1078,17 @@ export class Storage {
      * Per-item projection for the Content grid — the card there is a POST
      * (cover + snapshot + state chip), not a batch header. One extra query
      * over the page's batch ids, grouped in memory; a batch card keeps its
-     * `preview` for callers that only need the representative.
+     * `preview` for callers that only need the representative. `phase` is
+     * the shared `itemPresentation` roll-up — the same policy the drawer
+     * and Publish read — so a filed/published item can never fall through
+     * to "drafting" here (§9.A).
      */
     const itemsByBatch = new Map();
     if (page.length) {
       const batchIds = page.map((row) => row.id);
       const itemRows = rows(this.sql.exec(
         `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.current_revision,
+           bi.generation AS item_generation, bi.targets_json,
            COALESCE(origin.source_label, source.source_label, source.provider) AS source_label,
            source.provider AS provider, source.source_binding AS source_binding,
            SUBSTR(source.text, 1, 160) AS source_text,
@@ -1059,13 +1103,45 @@ export class Storage {
          ORDER BY bi.id`,
         ...batchIds
       ));
+      const pubRows = rows(this.sql.exec(
+        `SELECT p.batch_item_id, p.id, p.destination_binding, p.revision, p.state,
+           p.post_id, p.version, p.updated_at
+         FROM publications p
+         JOIN batch_items bi ON bi.id = p.batch_item_id
+         WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
+         ORDER BY p.created_at, p.id`,
+        ...batchIds
+      ));
+      const pubsByItem = new Map();
+      for (const pub of pubRows) {
+        const list = pubsByItem.get(pub.batch_item_id) ?? [];
+        list.push(hydratePublication(pub));
+        pubsByItem.set(pub.batch_item_id, list);
+      }
       for (const row of itemRows) {
+        let targets = null;
+        try {
+          targets = row.targets_json ? JSON.parse(row.targets_json) : null;
+        } catch {
+          targets = null;
+        }
+        const { phase, deliveries } = itemPresentation({
+          state: row.state,
+          revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          generation: row.item_generation ?? null,
+          publications: pubsByItem.get(row.batch_item_id) ?? [],
+          targets: targets ?? []
+        });
         const list = itemsByBatch.get(row.batch_id) ?? [];
         list.push({
           batchItemId: row.batch_item_id,
+          batchId: row.batch_id,
           itemId: row.item_id,
           state: row.state,
           revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          generation: row.item_generation ?? null,
+          phase,
+          deliveries,
           sourceLabel: row.source_label ?? null,
           provider: row.provider ?? null,
           sourceBinding: row.source_binding ?? null,
@@ -1076,41 +1152,95 @@ export class Storage {
         itemsByBatch.set(row.batch_id, list);
       }
     }
+    const totals = this.facetItemPhaseTotals();
     return {
-      batches: page.map((row) => ({
-        id: row.id,
-        createdAt: row.created_at,
-        status: row.status,
-        generation: row.generation ?? null,
-        itemCount: Number(row.item_count ?? 0),
-        draftCount: Number(row.draft_count ?? 0),
-        reviewCount: Number(row.review_count ?? 0),
-        scheduledCount: Number(row.scheduled_count ?? 0),
-        attentionCount: Number(row.attention_count ?? 0),
-        firstUpdatedAt: row.first_updated_at ?? null,
-        lastUpdatedAt: row.last_updated_at ?? null,
-        sourceItemIds: row.source_item_ids ? String(row.source_item_ids).split(",") : [],
-        preview: row.preview_item_id ? {
-          batchItemId: row.preview_item_id,
-          sourceLabel: row.preview_source_label ?? null,
-          sourceText: row.preview_source_text ?? null,
-          caption: row.preview_caption ?? null,
-          revision: row.preview_revision == null ? null : Number(row.preview_revision),
-          hasMediaReference: Boolean(row.preview_has_media)
-        } : null,
-        items: itemsByBatch.get(row.id) ?? []
-      })),
+      batches: page.map((row) => {
+        const items = itemsByBatch.get(row.id) ?? [];
+        const count = (filter) => items.filter((item) => (PHASE_FILTERS[filter] ?? []).includes(item.phase)).length;
+        return {
+          id: row.id,
+          createdAt: row.created_at,
+          status: row.status,
+          generation: row.generation ?? null,
+          itemCount: Number(row.item_count ?? 0),
+          draftCount: count("drafts"),
+          reviewCount: count("review"),
+          scheduledCount: count("scheduled"),
+          attentionCount: count("attention"),
+          firstUpdatedAt: row.first_updated_at ?? null,
+          lastUpdatedAt: row.last_updated_at ?? null,
+          sourceItemIds: row.source_item_ids ? String(row.source_item_ids).split(",") : [],
+          preview: row.preview_item_id ? {
+            batchItemId: row.preview_item_id,
+            sourceLabel: row.preview_source_label ?? null,
+            sourceText: row.preview_source_text ?? null,
+            caption: row.preview_caption ?? null,
+            revision: row.preview_revision == null ? null : Number(row.preview_revision),
+            hasMediaReference: Boolean(row.preview_has_media)
+          } : null,
+          items
+        };
+      }),
       nextCursor: rowsFound.length > bounded && last ? `${last.created_at}|${last.id}` : null,
       totals: {
         batches: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batches"))[0]?.n ?? 0),
         new: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM items LEFT JOIN seen ON seen.item_id = items.id WHERE seen.item_id IS NULL"))[0]?.n ?? 0),
         items: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1"))[0]?.n ?? 0),
-        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','expired')"))[0]?.n ?? 0),
-        review: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('submitted','awaiting_approval')"))[0]?.n ?? 0),
-        scheduled: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state = 'scheduled'"))[0]?.n ?? 0),
-        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('failed','unknown','held')"))[0]?.n ?? 0)
+        drafts: totals.drafts,
+        review: totals.review,
+        scheduled: totals.scheduled,
+        attention: totals.attention
       }
     };
+  }
+
+  /**
+   * Phase counts over EVERY active batch item, not just the page — the
+   * Content filter chips' totals must survive a limited page. Two flat
+   * reads and the shared `itemPresentation` roll-up; the row state alone
+   * cannot answer this (a `review_requested` item whose current revision
+   * already published is "published", not review work).
+   */
+  facetItemPhaseTotals() {
+    const itemRows = rows(this.sql.exec(
+      `SELECT bi.id, bi.state, bi.current_revision, bi.generation, bi.targets_json
+       FROM batch_items bi WHERE bi.active = 1`
+    ));
+    const pubRows = rows(this.sql.exec(
+      `SELECT p.batch_item_id, p.id, p.destination_binding, p.revision, p.state,
+         p.post_id, p.version, p.updated_at
+       FROM publications p JOIN batch_items bi ON bi.id = p.batch_item_id
+       WHERE bi.active = 1`
+    ));
+    const pubsByItem = new Map();
+    for (const pub of pubRows) {
+      const list = pubsByItem.get(pub.batch_item_id) ?? [];
+      list.push(hydratePublication(pub));
+      pubsByItem.set(pub.batch_item_id, list);
+    }
+    const totals = { drafts: 0, review: 0, scheduled: 0, attention: 0 };
+    for (const row of itemRows) {
+      let targets = null;
+      try {
+        targets = row.targets_json ? JSON.parse(row.targets_json) : null;
+      } catch {
+        targets = null;
+      }
+      const { phase } = itemPresentation({
+        state: row.state,
+        revision: row.current_revision == null ? 0 : Number(row.current_revision),
+        generation: row.generation ?? null,
+        publications: pubsByItem.get(row.id) ?? [],
+        targets: targets ?? []
+      });
+      for (const [filter, phases] of Object.entries(PHASE_FILTERS)) {
+        if (phases.includes(phase)) {
+          totals[filter] += 1;
+          break;
+        }
+      }
+    }
+    return totals;
   }
 
   countBatches() {
@@ -1166,13 +1296,14 @@ export class Storage {
   createBatchItem(row) {
     this.sql.exec(
       `INSERT INTO batch_items (
-        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, generation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
       row.id,
       row.batchId,
       row.itemId,
       JSON.stringify(row.destinationBindings ?? []),
       row.state,
+      row.generation ?? null,
       nowIso(),
       nowIso()
     );
@@ -1719,6 +1850,7 @@ function hydrateBatchItem(row) {
     postId: row.post_id ?? null,
     version: row.version ?? null,
     targets: row.targets_json ? JSON.parse(row.targets_json) : null,
+    generation: row.generation ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

@@ -37,10 +37,13 @@ disclaimers, claims. You are handed the values; do not infer what is
 protected from prose.
 
 What you may NOT do is draft unattended. `createBatch` marks a batch
-`generation: "requested"` — draft only batches carrying that mark, only
-the items the owner selected into them, and only when the owner (or a
-brief naming the batch) actually asked. New scanned content arriving on
-its own is not a drafting ask; never draft a batch nobody requested.
+`generation: "requested"` and each of its items the same way — draft only
+batches carrying that mark, and within them ONLY the items whose own
+`generation` is `"requested"`. An unmarked item in a requested batch is a
+post the owner did not ask you to re-draft; leave its revision untouched.
+Draft only when the owner (or a brief naming the batch) actually asked. New
+scanned content arriving on its own is not a drafting ask; never draft a
+batch nobody requested.
 
 ## When a scan asked for the drafting, not a person
 

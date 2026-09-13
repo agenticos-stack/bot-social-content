@@ -1155,6 +1155,140 @@ export function revisionCas(current, expected) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. Item presentation policy (post-audit §9.A)
+// ---------------------------------------------------------------------------
+
+/**
+ * One shared roll-up for cards, filters, counts, drawer and actions.
+ *
+ * - `queued` / `regenerating`: generation was requested but no acknowledged
+ *   output yet (or a newer re-draft is pending). Never claimed from the
+ *   batch-level flag alone — the per-item mark is authoritative.
+ * - `draft`: an acknowledged revision the owner can still edit.
+ * - `in_review` / `scheduled` / `published`: from live (non-superseded,
+ *   non-failed) publications at the *current* revision plus their canonical
+ *   readback targets. A superseded rev-2 hold can never override a live rev-3
+ *   publication.
+ * - `attention`: a live filing reported failed/held/unknown, or the item row
+ *   itself is in one of those states with nothing filed.
+ */
+export const ITEM_PHASES = Object.freeze([
+  "queued",
+  "regenerating",
+  "draft",
+  "in_review",
+  "scheduled",
+  "published",
+  "attention"
+]);
+
+const ATTENTION_OUTCOMES = new Set(["failed", "failed_safe", "held", "unknown"]);
+const FILING_ITEM_STATES = new Set(["submitted", "awaiting_approval", "review_requested"]);
+const EDITABLE_ITEM_STATES = new Set(["drafting", "expired"]);
+
+/**
+ * Deliveries = live publications plus their freshest canonical outcome.
+ * `targets` rows carry optional provenance stamps (`publicationId`,
+ * `publicationRevision`, `publicationVersion`) written by the server; when a
+ * stamp exists it must match, otherwise the destination binding is the match.
+ * Superseded/failed publications stay in `publications` for history but never
+ * produce a delivery row.
+ */
+export function liveDeliveries(publications = [], targets = []) {
+  const live = (Array.isArray(publications) ? publications : []).filter(
+    (pub) => pub && pub.state !== "superseded" && pub.state !== "failed"
+  );
+  return live.map((pub) => {
+    if (pub.state === "bound") {
+      return {
+        publicationId: pub.id,
+        destinationBinding: pub.destinationBinding,
+        outcome: "bound",
+        detail: null,
+        guidance: null,
+        receiptUrl: null,
+        postId: null,
+        version: null,
+        revision: pub.revision,
+        filedAt: pub.updatedAt ?? null
+      };
+    }
+    const candidates = (Array.isArray(targets) ? targets : []).filter(
+      (entry) => entry && entry.destinationBinding === pub.destinationBinding
+    );
+    const target =
+      candidates.find((entry) => entry.publicationId && entry.publicationId === pub.id) ??
+      candidates.find(
+        (entry) => entry.publicationVersion && pub.version && entry.publicationVersion === pub.version
+      ) ??
+      candidates.find(
+        (entry) => entry.publicationRevision != null && pub.revision != null && entry.publicationRevision === pub.revision
+      ) ??
+      // Legacy rows carry no provenance stamp at all — bind by destination.
+      candidates.find(
+        (entry) => !entry.publicationId && !entry.publicationVersion && entry.publicationRevision == null
+      ) ??
+      null;
+    return {
+      publicationId: pub.id,
+      destinationBinding: pub.destinationBinding,
+      outcome: target?.outcome ?? pub.state,
+      detail: target?.detail ?? null,
+      guidance: target?.guidance ?? null,
+      receiptUrl: target?.receiptUrl ?? null,
+      postId: pub.postId ?? null,
+      version: pub.version ?? target?.publicationVersion ?? null,
+      revision: pub.revision,
+      filedAt: pub.updatedAt ?? null
+    };
+  });
+}
+
+/**
+ * Roll a batch item up to { phase, deliveries }.
+ *
+ * `generation` is the item's own durable request mark (not the batch flag).
+ * `revision` is `current_revision`; a filing whose revision is behind it
+ * describes a superseded version and only appears in the deliveries list.
+ */
+export function itemPresentation({ state, revision = 0, generation = null, publications = [], targets = [] } = {}) {
+  const deliveries = liveDeliveries(publications, targets);
+  const filed = deliveries.filter((entry) => entry.outcome !== "bound");
+  const current = filed.filter((entry) => entry.revision != null && entry.revision >= revision);
+
+  let phase;
+  if (current.some((entry) => ATTENTION_OUTCOMES.has(entry.outcome))) {
+    phase = "attention";
+  } else if (current.length > 0 && current.every((entry) => entry.outcome === "published")) {
+    phase = "published";
+  } else if (current.some((entry) => entry.outcome === "scheduled")) {
+    phase = "scheduled";
+  } else if (current.length > 0) {
+    phase = "in_review";
+  } else if (FILING_ITEM_STATES.has(state)) {
+    phase = "in_review";
+  } else if (state === "scheduled") {
+    phase = "scheduled";
+  } else if (ATTENTION_OUTCOMES.has(state)) {
+    phase = "attention";
+  } else if (EDITABLE_ITEM_STATES.has(state)) {
+    phase = generation === "requested" ? (revision > 0 ? "regenerating" : "queued") : "draft";
+  } else {
+    // Unknown state: never dress it up as a draft.
+    phase = "attention";
+  }
+  return { phase, deliveries };
+}
+
+/** Which inbox filter a phase belongs to; `all`/`new` handled by the caller. */
+export const PHASE_FILTERS = Object.freeze({
+  drafts: Object.freeze(["queued", "regenerating", "draft"]),
+  review: Object.freeze(["in_review"]),
+  scheduled: Object.freeze(["scheduled"]),
+  attention: Object.freeze(["attention"])
+});
+
+// ---------------------------------------------------------------------------
 // The model's own English / zh-HK (書面語) strings.
 // ---------------------------------------------------------------------------
 

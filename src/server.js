@@ -87,6 +87,7 @@ import {
   normalizeLedger,
   applyProtectedOverridesToLedger,
   draftOrigin,
+  itemPresentation,
 
   posterPngConstraints,
   validatePosterLayout,
@@ -1511,7 +1512,11 @@ export class Gadget extends DurableObject {
       // only. What a caller still sends is recorded as `bound` publications
       // instead — a default the submit picker reads, not a send (TASK-005).
       destinationBindings: [],
-      state: "drafting"
+      state: "drafting",
+      // Per-item durable ask (schema 12): the batch mark is the roll-up; this
+      // is what an item's queued phase reads and what scoped regeneration
+      // marks without touching its siblings.
+      generation: "requested"
     });
     for (const binding of destinationBindings) {
       this.storage.boundPublication(batchItemId, binding);
@@ -1575,14 +1580,33 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
     const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
+    const publications = this.storage.publicationsFor(batchItem.id);
+    const targets = batchItem.targets ?? [];
+    // §9.A — one presentation policy everywhere. The phase reads live
+    // publications plus their canonical outcomes at the CURRENT revision; a
+    // superseded filing can no longer make a published post read as held.
+    const { phase, deliveries } = itemPresentation({
+      state: batchItem.state,
+      revision: batchItem.currentRevision,
+      generation: batchItem.generation,
+      publications,
+      targets
+    });
     return {
       id: batchItem.id,
+      batchId: batchItem.batchId,
+      itemId: batchItem.itemId,
+      active: batchItem.active,
       sourceItem,
       protectedSpans,
       destinationBindings,
       // TASK-009: where it went — one row per destination this item was sent
       // to (or is pointed at, in the `bound` state).
-      publications: this.storage.publicationsFor(batchItem.id),
+      publications,
+      targets,
+      phase,
+      deliveries,
+      generation: batchItem.generation ?? null,
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
@@ -1635,21 +1659,35 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * The owner pressed Regenerate: re-arm the batch's durable generation
-   * mark so the agent's next turn re-drafts it. Refuses when the batch is
-   * unknown or has nothing left to draft (all items submitted).
+   * The owner pressed Regenerate: re-arm the durable generation mark so the
+   * agent's next turn re-drafts it. `batchItemIds` scopes the ask to exactly
+   * those posts (§9.D — one post's re-draft must not silently regenerate its
+   * siblings); omitted, every still-draftable item is marked, as before.
+   * Refuses when the batch is unknown or the named items have nothing left
+   * to draft (already submitted).
    */
-  requestGeneration(batchId) {
+  requestGeneration(batchId, batchItemIds = undefined) {
     return this.enqueueMutation(() => {
       const batch = this.storage.getBatch(String(batchId));
       if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
-      const draftable = this.storage.listBatchItems(batch.id).some((item) =>
-        ["drafting", "expired"].includes(item.state));
-      if (!draftable) {
-        return { ok: false, code: "nothing_to_draft", message: "Every item in this batch has already been submitted." };
+      const items = this.storage.listBatchItems(batch.id);
+      const scoped = Array.isArray(batchItemIds)
+        ? new Set(batchItemIds.filter((id) => typeof id === "string" && id).slice(0, 50))
+        : null;
+      const draftable = items.filter(
+        (item) => item.active && ["drafting", "expired"].includes(item.state) && (!scoped || scoped.has(item.id))
+      );
+      if (!draftable.length) {
+        return {
+          ok: false,
+          code: "nothing_to_draft",
+          message: scoped
+            ? "None of the selected posts can be drafted again — each is already filed."
+            : "Every item in this batch has already been submitted."
+        };
       }
-      this.storage.setGeneration(batch.id);
-      return { ok: true };
+      this.storage.setGeneration(batch.id, draftable.map((item) => item.id));
+      return { ok: true, requested: draftable.map((item) => item.id) };
     });
   }
 
@@ -1829,6 +1867,9 @@ export class Gadget extends DurableObject {
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    // The saved revision IS the answer to this item's drafting ask — its own
+    // mark clears; the batch roll-up clears once nothing remains marked.
+    this.storage.clearItemGeneration(batchItemId);
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision, issues: validation.issues };
@@ -1923,6 +1964,8 @@ export class Gadget extends DurableObject {
 
     this.storage.savePoster(batchItemId, result.revision, template, bytes);
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    this.storage.clearItemGeneration(batchItemId);
+    this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision };
   }
@@ -2301,7 +2344,19 @@ export class Gadget extends DurableObject {
         replaceIds
       });
       filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
-      mergedTargets.push(...normalizeTargets(this.toWorkspaceBindings(draft.targets), [binding]));
+      /*
+       * Provenance stamp (§9.A): the cached target row says WHICH filing it
+       * describes, so a later superseded revision's stale "held" can never
+       * be read back as this revision's outcome.
+       */
+      mergedTargets.push(
+        ...normalizeTargets(this.toWorkspaceBindings(draft.targets), [binding]).map((target) => ({
+          ...target,
+          publicationId,
+          publicationRevision: expectedRevision,
+          publicationVersion: draft.versionId
+        }))
+      );
       lastFiled = draft;
     }
 
@@ -2318,6 +2373,27 @@ export class Gadget extends DurableObject {
       return { ok: false, code: first.code, message: first.message, failures };
     }
 
+    /*
+     * Rebuild the item's cached target rows: the fresh stamped rows for what
+     * was just filed, plus any still-live cached rows for destinations this
+     * filing did not touch. A cached row whose publication no longer exists
+     * (superseded by this very filing) drops out — keeping it is exactly how
+     * an old "held" used to shadow a newer published version.
+     */
+    const filedBindings = new Set(filed.map((entry) => entry.destinationBinding));
+    const livePubs = this.storage
+      .publicationsFor(batchItemId)
+      .filter((publication) => publication.state !== "superseded" && publication.state !== "failed");
+    const livePubIds = new Set(livePubs.map((publication) => publication.id));
+    const livePubBindings = new Set(livePubs.map((publication) => publication.destinationBinding));
+    const retainedTargets = (batchItem.targets ?? []).filter(
+      (target) =>
+        target &&
+        !filedBindings.has(target.destinationBinding) &&
+        ((target.publicationId && livePubIds.has(target.publicationId)) ||
+          (!target.publicationId && livePubBindings.has(target.destinationBinding)))
+    );
+    const nextTargets = [...retainedTargets, ...mergedTargets];
     this.storage.updateBatchItem(batchItemId, {
       state: "review_requested",
       approval_id: null,
@@ -2325,7 +2401,7 @@ export class Gadget extends DurableObject {
       content_hash: lastFiled.contentHash,
       post_id: lastFiled.postId,
       version: lastFiled.versionId,
-      targets_json: JSON.stringify(mergedTargets.length ? mergedTargets : null)
+      targets_json: JSON.stringify(nextTargets.length ? nextTargets : null)
     });
     await this.broadcast({ type: "review_requested", batchItemId, versionId: lastFiled.versionId });
     return {
@@ -2352,19 +2428,57 @@ export class Gadget extends DurableObject {
     if (!batchItem) return { publications: [], targets: [] };
 
     const publications = [];
+    const freshByPublication = new Map();
     for (const publication of this.storage.publicationsFor(batchItemId)) {
       // A `bound` row was never sent — there is no `versionId` to poll.
       let targets = [];
       if (publication.version) {
         const fresh = await socialReadStatus(this.env, publication.version);
         const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-        targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null);
+        targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null).map(
+          (target) => ({
+            ...target,
+            publicationId: publication.id,
+            publicationRevision: publication.revision,
+            publicationVersion: publication.version
+          })
+        );
         if (freshTargets) {
-          // The pair's own outcome rows are the item's canonical targets.
-          this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
+          freshByPublication.set(publication.id, targets);
         }
       }
       publications.push({ ...publication, targets });
+    }
+
+    /*
+     * One write for the whole item, not one per publication — the old loop
+     * overwrote targets_json with each row's own read, so only the LAST
+     * publication's destination survived. Cached rows for publications the
+     * door said nothing about (or that have no version to poll) stay, while
+     * rows stamped for a publication that no longer exists drop out.
+     */
+    const liveIds = new Set(
+      publications
+        .filter((publication) => publication.state !== "superseded" && publication.state !== "failed")
+        .map((publication) => publication.id)
+    );
+    if (freshByPublication.size) {
+      const retained = (batchItem.targets ?? []).filter(
+        (target) => target && (target.publicationId ? liveIds.has(target.publicationId) : true)
+      );
+      // Only a LIVE publication's fresh read belongs in the item's current
+      // outcome cache — a superseded row is polled for history, not state.
+      const freshRows = publications
+        .filter((publication) => liveIds.has(publication.id))
+        .flatMap((publication) => freshByPublication.get(publication.id) ?? []);
+      const freshBindings = new Set(freshRows.map((target) => target.destinationBinding));
+      const merged = [
+        ...retained.filter((target) => !freshBindings.has(target.destinationBinding)),
+        ...freshRows
+      ];
+      this.storage.updateBatchItem(batchItemId, {
+        targets_json: JSON.stringify(merged.length ? merged : null)
+      });
     }
 
     return { publications, targets: publications.flatMap((publication) => publication.targets) };

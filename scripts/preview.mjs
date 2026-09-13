@@ -335,7 +335,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
             const response=await local.handle(new Request(frontendOrigin+'/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method:'getBatch',args:[input.batchId]})}));
             const batch=(await response.json()).value;
             if(!response.ok||batch?.generation!=='requested')throw new Error('This batch has no pending generation request.');
-            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then prepare captions and text poster layouts and save the revisions. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions below.\n\n${archive.files['agent.md']}`},credential);
+            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then prepare captions and text poster layouts for each item marked generation "requested" and save the revisions. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions below.\n\n${archive.files['agent.md']}`},credential);
           }
         },
         dispose:async()=>{
@@ -411,7 +411,7 @@ const server = createServer(async (request, response) => {
     response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src data:; img-src blob: data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`);
     response.setHeader('Content-Type','text/html; charset=utf-8');
     const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE, ENCODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
-    response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
+    response.end(`<!doctype html><html lang="${url.searchParams.get("locale") === "zh-HK" ? "zh-HK" : "en"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
   }
   if (connected && url.pathname.startsWith('/api/')) {
     try {

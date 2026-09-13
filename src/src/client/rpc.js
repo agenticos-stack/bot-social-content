@@ -27,7 +27,9 @@ export function createRpc(gadget) {
     getMedia: (itemId, mediaId, options) => gadget.getMedia(itemId, mediaId, options),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
-    requestGeneration: (batchId) => gadget.requestGeneration(batchId),
+    // `itemIds` scopes a re-draft to the named posts; omitted means the
+    // legacy batch-wide request (still used by createBatch's first run).
+    requestGeneration: (batchId, itemIds) => gadget.requestGeneration(batchId, itemIds),
     listBatches: () => gadget.listBatches(),
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),
