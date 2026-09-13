@@ -85,8 +85,9 @@ export const FETCH_DOOR_KEY = "metered_fetch";
  */
 export function doorGrantStatus(env) {
   const status = {};
+  const consent = env && typeof env === "object" && env.__consent && typeof env.__consent === "object" ? env.__consent : null;
   for (const key of FIXED_DOOR_KEYS) {
-    status[key] = Boolean(env && typeof env === "object" && env[key]);
+    status[key] = consent ? consent[key] === true : Boolean(env && typeof env === "object" && env[key]);
   }
   return status;
 }

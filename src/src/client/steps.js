@@ -467,34 +467,48 @@ function renderOpenSources(locale, state, handlers) {
     }
   });
 
-  const rows = (state.openSources || []).map((source) =>
-    el("div", { class: "sl-open-source" }, [
-      el("span", { class: "sl-open-source-name" }, source.displayName || source.binding),
-      source.lastServedBy
-        ? el(
-            "span",
-            { class: "sl-open-source-meta" },
-            t(locale, "openSourceServedBy", {
-              provider: source.lastServedBy,
-              credits: String(source.lastCostCredits ?? 0)
-            })
+  const fetchGranted = state.fetchGranted !== false;
+  const rows = fetchGranted
+    ? (state.openSources || []).map((source) =>
+        el("div", { class: "sl-open-source" }, [
+          el("span", { class: "sl-open-source-name" }, source.displayName || source.binding),
+          source.lastServedBy
+            ? el(
+                "span",
+                { class: "sl-open-source-meta" },
+                t(locale, "openSourceServedBy", {
+                  provider: source.lastServedBy,
+                  credits: String(source.lastCostCredits ?? 0)
+                })
+              )
+            : null,
+          el(
+            "button",
+            {
+              type: "button",
+              class: "sl-open-source-remove",
+              disabled: state.openBusy,
+              "aria-label": t(locale, "openSourceRemove", { value: source.displayName || source.binding }),
+              onclick: () => handlers.onRemoveOpenSource(source.binding)
+            },
+            "×"
           )
-        : null,
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-open-source-remove",
-          disabled: state.openBusy,
-          "aria-label": t(locale, "openSourceRemove", { value: source.displayName || source.binding }),
-          onclick: () => handlers.onRemoveOpenSource(source.binding)
-        },
-        "×"
+        ])
       )
-    ])
-  );
+    : [];
 
   return el("div", { class: "sl-open-source-field" }, [
+    fetchGranted
+      ? null
+      : el("div", { class: "sl-fetch-permission", role: "status" }, [
+          el("p", { class: "sl-field-note" }, t(locale, "fetchNeedsPermission")),
+          el(
+            "button",
+            { type: "button", class: "sl-secondary", onclick: () => handlers.onGrantFetch?.() },
+            t(locale, "fetchGrant")
+          ),
+          el("p", { class: "sl-field-note" }, t(locale, "fetchGrantNext"))
+        ]),
     rows.length ? el("div", { class: "sl-open-source-list" }, rows) : null,
     input,
     // The refusal the server gave, in the owner's own words, beside the field

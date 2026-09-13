@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
-import { assertStorageSchemaDeclaration, buildPackage, sha256 } from "../scripts/build.mjs";
+import { assertPackedImports, assertStorageSchemaDeclaration, buildPackage, sha256 } from "../scripts/build.mjs";
 import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
@@ -55,6 +55,15 @@ test("repeated builds preserve bytes, complete definition, and member checksums"
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("a packed module importing an unpacked one fails the build, not the gadget", () => {
+  assert.throws(
+    () => assertPackedImports({ "server.js": 'import { a } from "./doors.js";\nimport { b } from "./grant-request.js";', "doors.js": "" }),
+    /server\.js imports \.\/grant-request\.js/
+  );
+  assert.throws(() => assertPackedImports({ "server.js": 'const m = await import("./late.js");' }), /late\.js/);
+  assert.doesNotThrow(() => assertPackedImports({ "server.js": 'import { a } from "./doors.js";', "doors.js": "", "client.js": 'import x from "./not-packed.js";' }));
 });
 
 test("host size limits reject before writing any release files", async () => {

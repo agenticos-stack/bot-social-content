@@ -38,6 +38,27 @@ export function assertStorageSchemaDeclaration(manifest, current = CURRENT_SCHEM
   return declared;
 }
 
+/**
+ * Every relative module a packed file imports must itself be packed.
+ *
+ * The archive is flat and the platform loads exactly its members, so a module
+ * added under `src/` but missing from `manifest.json` builds, passes every
+ * unit test that imports it from disk, and then fails at load with `No such
+ * module` the first time the gadget starts. That shipped once (grant-request.js).
+ * A lexical scan is enough here: a static `from "./x.js"` or `import("./x.js")`
+ * is the only way these modules reach each other.
+ */
+export function assertPackedImports(files) {
+  const missing = [];
+  for (const [name, text] of Object.entries(files)) {
+    if (!name.endsWith(".js") || name === "client.js") continue;
+    for (const match of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s*)["']\.\/([^"']+)["']/gm)) {
+      if (!Object.hasOwn(files, match[1])) missing.push(`${name} imports ./${match[1]}`);
+    }
+  }
+  if (missing.length) throw new Error(`Archive is missing imported modules; add them to manifest.json: ${missing.join("; ")}.`);
+}
+
 export async function buildPackage({ outputDir = new URL("dist/", packageRoot), maxBytes } = {}) {
   const manifestText = await readFile(new URL("manifest.json", packageRoot), "utf8");
   const manifest = JSON.parse(manifestText);
@@ -55,6 +76,7 @@ export async function buildPackage({ outputDir = new URL("dist/", packageRoot), 
           ? manifestText
           : await readFile(new URL(`src/${name}`, packageRoot), "utf8");
   }
+  assertPackedImports(files);
   const metadata = { ...manifest.metadata, gadgetDefinition: checked.definition };
   const bytes = Buffer.from(await writeBlueprintArchive({ metadata, files }));
   if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error(`Archive is ${bytes.length} bytes; host limit is ${maxBytes}.`);
