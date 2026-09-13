@@ -106,7 +106,9 @@ import {
   scheduleStateFrom,
   wallClockHHMM
 } from "./config.js";
+import { consentAllowsFetch } from "./grant-request.js";
 import {
+  FETCH_DOOR_KEY,
   FIXED_DOOR_KEYS as FIXED_DOOR_KEY_LIST,
   doorGrantStatus,
   fetchMedia,
@@ -616,6 +618,16 @@ export class Gadget extends DurableObject {
       };
     }
 
+    if (!consentAllowsFetch(this.env, FETCH_DOOR_KEY)) {
+      return {
+        ok: false,
+        code: "fetch_not_granted",
+        requirementKey: FETCH_DOOR_KEY,
+        message:
+          "Public account fetching is not granted for this workspace. Grant it to watch public accounts."
+      };
+    }
+
     const binding = openSourceBinding(resolved.platform, resolved.accountKey);
     const { added, source } = this.storage.addOpenSource({
       binding,
@@ -801,6 +813,7 @@ export class Gadget extends DurableObject {
     let unchangedCount = 0;
     let failedSafeCount = 0;
     let unknownCount = 0;
+    let noAnswerCount = 0;
 
     for (const source of sources) {
       const result = await this.scanOneSource(source);
@@ -810,6 +823,7 @@ export class Gadget extends DurableObject {
       unchangedCount += result.unchanged;
       if (result.outcome === "failed_safe") failedSafeCount += 1;
       if (result.outcome === "unknown") unknownCount += 1;
+      if (result.outcome === "no_answer") noAnswerCount += 1;
     }
 
     this.storage.finishScanRun(runId, {
@@ -860,6 +874,7 @@ export class Gadget extends DurableObject {
       unchanged: unchangedCount,
       failedSafe: failedSafeCount,
       unknown: unknownCount,
+      noAnswer: noAnswerCount,
       perSource,
       ...(workRequest ? { workRequest } : {})
     };
