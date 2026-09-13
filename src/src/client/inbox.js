@@ -1,7 +1,7 @@
 // Card-first inbox projections. This module deliberately keeps source rows
 // and localization batches separate: one source may have many historical
 // batches, and inspecting a batch must never create another one.
-import { el } from "./dom.js";
+import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
 
@@ -125,6 +125,7 @@ function itemChip(locale, batch, item) {
  */
 function itemCard(locale, batch, item, ctx, covers) {
   const snapshot = item.caption ?? item.sourceText ?? "";
+  const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   return renderPostCard(locale, {
     key: item.batchItemId,
     onOpen: () => ctx.handlers.onInspectBatch(batch),
@@ -133,14 +134,44 @@ function itemCard(locale, batch, item, ctx, covers) {
     glyph: providerGlyph({ provider: item.provider, sourceBinding: item.sourceBinding }, ctx.sources),
     glyphKey: null,
     kicker: item.sourceLabel || t(locale, "drawerSavedWork"),
-    title: snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource"),
-    body: snapshot,
+    title,
+    // A one-line snapshot IS the title, in full -- printing it again below
+    // as the body was defect 5. Only the part the title truncated or the
+    // later lines it dropped belong here.
+    body: snapshot === title ? "" : snapshot,
     chip: itemChip(locale, batch, item),
-    meta: el("span", { class: "sl-meta" }, [
-      el("span", null, item.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
-      el("span", null, (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"))
-    ])
+    // Chip leading, a muted relative timestamp trailing -- replaces the
+    // old two-line "draft/source · revision N" meta block, which read as
+    // mechanism detail the drawer (behind Inspect) already carries.
+    when: batch.generation === "requested"
+      ? t(locale, "stateQueued")
+      : batch.lastUpdatedAt
+        ? t(locale, "cardEditedAgo", { time: relativeLabel(locale, batch.lastUpdatedAt) })
+        : null
   }, covers);
+}
+
+/** A batch summary that arrived before its items projection (or an empty batch) still gets a card — the batch row itself, same post shape, no cover. */
+function summaryCard(locale, batch, handlers) {
+  const previewText = batch.preview?.caption ?? batch.preview?.sourceText ?? "";
+  const previewTitle = previewText.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
+  return renderPostCard(locale, {
+    key: batch.id,
+    onOpen: () => handlers.onInspectBatch(batch),
+    ariaLabel: t(locale, "inboxInspect"),
+    cover: null,
+    glyph: "•",
+    kicker: batch.preview?.sourceLabel || t(locale, "drawerSavedWork"),
+    title: previewTitle,
+    // Same shape as itemCard's dedupe: a one-line preview is the title, in
+    // full -- printing it again as the body was defect 5.
+    body: previewText === previewTitle ? "" : previewText,
+    chip: null,
+    meta: el("span", { class: "sl-meta" }, [
+      el("span", null, batch.preview?.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
+      el("span", null, Number.isInteger(batch.preview?.revision) ? t(locale, "drawerRevision", { n: batch.preview.revision }) : t(locale, "inboxNoSavedRevision"))
+    ])
+  });
 }
 
 export function renderInbox(root, state, ctx) {
@@ -157,21 +188,7 @@ export function renderInbox(root, state, ctx) {
     // gets a card — the batch row itself, same post shape, no cover.
     return items.length
       ? items.map((item) => itemCard(locale, batch, item, ctx, covers))
-      : [renderPostCard(locale, {
-          key: batch.id,
-          onOpen: () => handlers.onInspectBatch(batch),
-          ariaLabel: t(locale, "inboxInspect"),
-          cover: null,
-          glyph: "•",
-          kicker: batch.preview?.sourceLabel || t(locale, "drawerSavedWork"),
-          title: (batch.preview?.caption ?? batch.preview?.sourceText ?? "").split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource"),
-          body: batch.preview?.caption ?? batch.preview?.sourceText ?? "",
-          chip: null,
-          meta: el("span", { class: "sl-meta" }, [
-            el("span", null, batch.preview?.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
-            el("span", null, Number.isInteger(batch.preview?.revision) ? t(locale, "drawerRevision", { n: batch.preview.revision }) : t(locale, "inboxNoSavedRevision"))
-          ])
-        }, covers)];
+      : [summaryCard(locale, batch, handlers)];
   });
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
     el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),

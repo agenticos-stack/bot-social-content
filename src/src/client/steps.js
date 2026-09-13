@@ -1,15 +1,23 @@
-// Social Localization client — the Localize / Review / Publish / Result
-// steps (TASK-203), plus the first-run setup screen this gadget owns
-// (TASK-302). Pure state/selectors are exported separately from the render
-// functions so tests/social-localization-client.test.ts can assert step
-// transitions and validation gating without a DOM.
+// Social Localization client — the Localize / Publish / Result steps
+// (TASK-203), plus the first-run setup screen this gadget owns (TASK-302).
+// Pure state/selectors are exported separately from the render functions so
+// tests/social-localization-client.test.ts can assert step transitions and
+// validation gating without a DOM.
+//
+// Publish used to be preceded by a separate Review step that repeated what
+// the batch drawer already showed and rendered the poster as a text span
+// instead of the image that actually ships. That step is gone: Publish's own
+// cards now carry the poster, caption, destinations, timing and submit
+// together, so there is one screen with the real preview on it, not a
+// summary screen followed by the screen with the controls.
 
 import { detectProtectedLiterals, validateRevisionDraft } from "../../model.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { isEditableItem } from "./inbox.js";
+import { computePosterLayout, drawPoster } from "./poster.js";
 
-export const STEPS = Object.freeze(["select", "review", "publish", "result"]);
+export const STEPS = Object.freeze(["select", "publish"]);
 
 const POSTER_TEMPLATES = Object.freeze(["1080x1350", "1080x1080"]);
 const DEFAULT_BACKGROUND = "#1c1c1e";
@@ -98,7 +106,7 @@ export function setBatch(state, batch) {
       intent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" }
     };
   }
-  return { ...state, step: "review", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
+  return { ...state, step: "publish", batch, activeItemId: batch.items[0].id, drafts, publishChoices, acknowledged: Object.fromEntries(batch.items.map((item) => [item.id, drafts[item.id]])), savingByItem: {}, conflicts: {}, publishByItem: {}, publishErrors: {}, submittingByItem: {} };
 }
 
 export function recordDraftConflict(state, id, savedItem) {
@@ -601,60 +609,78 @@ export function renderSetup(root, draft, ctx) {
  */
 function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
   const change = (patch, redraw = true) => handlers.onPublishIntent(itemId, patch, redraw);
-  const field = (key, control) => el("label", { class: "sl-field" }, [t(locale, key), control]);
-  return el("fieldset", { class: "sl-setup-section", disabled }, [
-    el("legend", null, t(locale, "publicationTiming")),
-    ...[["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
-      el("label", { class: "sl-radio" }, [el("input", { type: "radio", name: `publicationMode-${itemId}`, checked: intent.publishMode === mode,
-        onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }), t(locale, key)])),
+  // Subordinate to .sl-pc-field-label's section register (below it, not a
+  // second shout): small, muted, sentence case. Its own class -- the
+  // shared .sl-field is the setup form's own label+input wiring and does
+  // not style a bare text child the way this needs.
+  const field = (key, control) => el("label", { class: "sl-pc-subfield" }, [
+    el("span", { class: "sl-pc-subfield-label" }, t(locale, key)),
+    control
+  ]);
+  return el("div", { class: "sl-pc-field" }, [
+    el("span", { class: "sl-pc-field-label" }, t(locale, "publicationTiming")),
+    el("div", { class: "sl-timing", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
+      [["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
+        el("label", { class: `sl-seg${intent.publishMode === mode ? " sl-seg-on" : ""}` }, [
+          el("input", { type: "radio", name: `publicationMode-${itemId}`, checked: intent.publishMode === mode, disabled,
+            onchange: () => change({ publishMode: mode, publishLocalTime: null, timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null, utcOffsetMinutes: null }) }),
+          t(locale, key)
+        ]))),
+    // UTC offset removed: no owner fills that in correctly, and the
+    // mode-change handler above already keeps utcOffsetMinutes null --
+    // the door's contract (and its own ambiguous-time resolution) is
+    // unchanged. The hint lives here, not below the whole control: it is
+    // about a chosen time specifically, not about "Keep as draft".
     ...(intent.publishMode === "schedule" ? [
       field("publicationLocalTime", el("input", { type: "datetime-local", value: intent.publishLocalTime || "", oninput: e => change({ publishLocalTime: e.currentTarget.value }, false) })),
       field("publicationTimezone", el("input", { type: "text", value: intent.timezone || "", oninput: e => change({ timezone: e.currentTarget.value }, false) })),
-      field("publicationOffset", el("input", { type: "number", min: -840, max: 840, value: intent.utcOffsetMinutes ?? "", oninput: e => change({ utcOffsetMinutes: e.currentTarget.value === "" ? null : Number(e.currentTarget.value) }, false) }))
-    ] : []),
-    el("p", { class: "sl-field-note" }, t(locale, "publicationHint"))
+      el("p", { class: "sl-field-note" }, t(locale, "publicationHint"))
+    ] : [])
   ]);
 }
 
 
-export function renderReview(root, state, ctx) {
-  const { locale, handlers } = ctx;
-  const batch = state.batch;
-  if (!batch) return replace(root, []);
+/**
+ * The poster as it will actually publish — drawn locally with the same
+ * layout math the batch drawer and `savePoster` both use (poster.js), never
+ * a text stand-in. A gadget canvas is an opaque origin: an `<img>` can only
+ * show bytes it already holds (`blob:`/`data:`), and a plain `<canvas>`
+ * sidesteps that fetch entirely by drawing the same pixels the drawer draws.
+ * Returns `null` when the item has no poster layout yet, so the caller can
+ * fall back to an identifying line instead of an empty box.
+ */
+function posterCanvas(locale, item) {
+  const layout = item.posterLayout;
+  if (!layout?.template) return null;
+  const canvas = el("canvas", { class: "sl-pc-canvas", "aria-label": t(locale, "posterTitle") });
+  const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
+  canvas.width = computed.width;
+  canvas.height = computed.height;
+  const ctx2d = canvas.getContext("2d");
+  if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
+  return canvas;
+}
 
-  // One card per DRAFT — the destination is chosen on the next step, so a
-  // card headed by a destination would be asserting a decision not yet made.
-  const cards = batch.items.map((item) => {
-    const draft = state.drafts[item.id] ?? {};
-    return el("div", { class: "sl-preview-card" }, [
-      el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
-      el("div", { class: "sl-pc-media" }, [el("span", null, draft.headline || "")]),
-      el("div", { class: "sl-pc-body" }, [el("p", null, draft.caption || item.caption || "")])
-    ]);
-  });
-
-  const approval = batch.approval || null;
-  const expired = isApprovalExpired(approval);
-  const approvalCard = el("div", { class: `sl-approval-card${expired ? " sl-approval-expired" : ""}` }, [
-    el("h3", null, t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle")),
-    el("p", null, t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody")),
-    approval?.contentHash ? el("span", { class: "sl-hash" }, t(locale, "contentHash", { hash: approval.contentHash })) : null
-  ]);
-
-  const footer = el("footer", { class: "sl-selection" }, [
-    el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back")),
-      el("button", { type: "button", class: "sl-secondary", style: "margin-left:auto", onclick: () => handlers.onContinue() }, t(locale, "continueToPublish"))
-    ])
-  ]);
-
-  replace(root, [
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "reviewTitle")), el("p", null, t(locale, "reviewDesc"))]),
-    renderWizardError(state),
-    el("div", { class: "sl-review-grid" }, cards),
-    approvalCard,
-    footer
-  ]);
+/**
+ * A publication's state as the batch drawer's own summary line says it --
+ * `<destination> · <state>` -- never the raw mechanism name (defect 4: a
+ * `bound` row leaked verbatim there). Distinct from `stateBadge`'s
+ * one-word pill labels below: "Chosen" reads fine on a small badge but
+ * vague as the tail of a sentence, so `bound` gets its own fuller phrase
+ * here.
+ */
+export function publicationStateSummary(locale, state) {
+  const key = {
+    scheduled: "stateScheduled",
+    published: "statePublished",
+    failed_safe: "stateFailed",
+    failed: "stateFailed",
+    unknown: "stateUnknown",
+    bound: "drawerPublicationBound",
+    review_requested: "stateInReview",
+    superseded: "stateSuperseded"
+  }[state] || "stateUnknown";
+  return t(locale, key);
 }
 
 function stateBadge(locale, outcome) {
@@ -702,7 +728,29 @@ export function renderPublish(root, state, ctx) {
     ])
   ]);
 
+  /*
+   * The batch's own approval fact -- one per batch, not per item -- but it
+   * belongs on the card it describes, not a separate screen the owner has
+   * to click through before reaching the cards `renderReview` used to be.
+   * One quiet note, built fresh for each item's own card.
+   */
+  const approval = batch.approval || null;
+  const expired = isApprovalExpired(approval);
+  const approvalLead = t(locale, expired ? "approvalExpiredTitle" : approval ? "approvalReadyTitle" : "approvalPendingTitle");
+  const approvalRest = t(locale, expired ? "approvalExpiredBody" : approval ? "approvalReadyBody" : "approvalPendingBody");
+  function renderApprovalNote() {
+    return el("div", { class: `sl-approval-note${expired ? " sl-approval-expired" : ""}` }, [
+      el("span", { class: "sl-approval-mark", "aria-hidden": "true" }, "◆"),
+      el("span", null, [
+        el("strong", null, approvalLead + (/[.!?]$/.test(approvalLead) ? "" : ".") + " "),
+        approvalRest,
+        approval?.contentHash ? el("span", { class: "sl-hash" }, " " + t(locale, "contentHash", { hash: approval.contentHash })) : null
+      ])
+    ]);
+  }
+
   const itemCards = batch.items.map((item) => {
+    const draft = state.drafts[item.id] ?? {};
     const publishState = state.publishByItem[item.id];
     const publications = publishState?.publications ?? item.publications ?? [];
     // A pair already filed at the current revision is shown, not re-offered —
@@ -719,7 +767,13 @@ export function renderPublish(root, state, ctx) {
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
     const enabled = submitItemEnabled(state, item.id, policy);
-    const heading = (state.drafts[item.id]?.caption || item.caption || item.sourceItem?.text || "").split("\n")[0].slice(0, 80);
+    const poster = posterCanvas(locale, item);
+    // The slot keeps the ratio it ships in whether or not a poster exists
+    // yet, so the caption beside it does not jump as the owner moves
+    // between posts. 1080x1080 is the only square template; every other
+    // template (including "no template chosen yet") is the portrait shape
+    // most posts actually use.
+    const mediaAspect = item.posterLayout?.template === "1080x1080" ? "1 / 1" : "4 / 5";
 
     const pubRows = publications
       .filter((pub) => pub.state !== "superseded")
@@ -728,7 +782,10 @@ export function renderPublish(root, state, ctx) {
         return el("div", { class: "sl-target-row" }, [
           el("div", { class: "sl-who" }, [
             el("strong", null, destinationLabel(pub.destinationBinding)),
-            el("span", null, t(locale, "drawerRevision", { n: pub.revision }))
+            // Revision 0 is not a version an owner has -- it means nothing
+            // has been saved yet. "Version 0" reads like a debug line; say
+            // what it means instead. 1 and up keep "Version {n}".
+            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "inboxNoSavedRevision"))
           ]),
           stateBadge(locale, outcome),
           target?.receiptUrl
@@ -746,23 +803,30 @@ export function renderPublish(root, state, ctx) {
         ]);
       });
 
+    // REQ-016's own rule (post-card.js's providerGlyph) applies here too:
+    // the two-case fallback is precedent already established there, not a
+    // new provider table -- a trailing tag naming the provider type, never
+    // a data source of its own.
+    const providerTag = (provider) => provider === "instagram" ? t(locale, "providerInstagram") : provider === "facebook" ? t(locale, "providerFacebook") : null;
     const picker = destinations.length
-      ? el("fieldset", { class: "sl-setup-section", disabled: submitting }, [
-          el("legend", null, t(locale, "publishPickDestinations")),
-          ...destinations.map((destination) => {
+      ? el("div", { class: "sl-pc-field" }, [
+          el("span", { class: "sl-pc-field-label" }, t(locale, "publishPickDestinations")),
+          el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "publishPickDestinations") }, destinations.map((destination) => {
             const binding = destination.destinationBinding ?? destination.binding;
             const filed = filedPairs.has(binding);
-            return el("label", { class: "sl-radio" }, [
+            const checked = filed || choice.bindings.includes(binding);
+            const tag = filed ? t(locale, "publishAlreadyFiled") : providerTag(destination.provider);
+            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}` }, [
               el("input", {
                 type: "checkbox",
-                checked: filed || choice.bindings.includes(binding),
+                checked,
                 disabled: filed || submitting,
                 onchange: () => handlers.onToggleBinding(item.id, binding)
               }),
               destination.label || binding,
-              filed ? el("span", { class: "sl-field-note" }, t(locale, "publishAlreadyFiled")) : null
+              tag ? el("span", { class: "sl-dest-tag" }, tag) : null
             ]);
-          })
+          }))
         ])
       : null;
 
@@ -777,80 +841,76 @@ export function renderPublish(root, state, ctx) {
         ])
       : null;
 
-    return el("section", { class: "sl-drawer-section" }, [
-      el("h3", null, heading || item.id),
-      pubRows.length ? el("div", null, pubRows) : null,
-      picker,
-      renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
-      refusal,
-      destinations.length
-        ? el(
-            "button",
-            {
-              type: "button",
-              class: "sl-primary",
-              disabled: !enabled,
-              title: enabled ? "" : t(locale, "submitBlocked"),
-              onclick: () => handlers.onSubmitItem(item.id, false)
-            },
-            submitting ? t(locale, "saving") : t(locale, "submitForReview")
-          )
-        : null
+    // ONE card: the poster as it will ship, the caption beside it, then
+    // every control that decides where and when it ships, ending in this
+    // item's own submit — no separate screen between looking at the draft
+    // and acting on it.
+    return el("div", { class: "sl-preview-card" }, [
+      el("header", null, [el("strong", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource"))]),
+      el("div", { class: "sl-pc-grid" }, [
+        // The poster on the secondary surface -- the half that shows what
+        // exists, not what to decide. Two columns at 760px and up; stacked
+        // below it, poster first.
+        el("div", { class: "sl-pc-media" }, [
+          el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${mediaAspect}` }, [
+            // Never the id, and never the caption again either: the
+            // header above already carries the item's identity, and the
+            // body paragraph below already carries the caption. This slot
+            // says exactly one thing when there is no poster to show.
+            poster || el("span", { class: "sl-pc-media-empty" }, t(locale, "posterPending"))
+          ])
+        ]),
+        el("div", { class: "sl-pc-body" }, [
+        // Finished copy, not a second place to change it -- the drawer is
+        // where the caption is edited (composer, protected-literal
+        // preview); this card is where it is seen as it will ship and
+        // decided on. A quiet way back, not another primary.
+        el("div", { class: "sl-pc-caption" }, [
+          el("p", null, draft.caption || item.caption || ""),
+          el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onEditCaption(item.id) }, t(locale, "editCaption"))
+        ]),
+        pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
+        picker,
+        renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
+        renderApprovalNote(),
+        refusal,
+        // A hairline, a reassurance on the left, submit on the right --
+        // the item's own submit is this card's one primary.
+        destinations.length
+          ? el("div", { class: "sl-submit-row" }, [
+              el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
+              el(
+                "button",
+                {
+                  type: "button",
+                  class: "sl-primary",
+                  disabled: !enabled,
+                  title: enabled ? "" : t(locale, "submitBlocked"),
+                  onclick: () => handlers.onSubmitItem(item.id, false)
+                },
+                submitting ? t(locale, "saving") : t(locale, "submitForReview")
+              )
+            ])
+          : null
+        ])
+      ])
     ]);
   });
 
-  const footer = el("footer", { class: "sl-selection" }, [
-    el("div", { class: "sl-selection-inner" }, [
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "backToReview")),
-      el("button", { type: "button", class: "sl-primary", style: "margin-left:auto", onclick: () => handlers.onViewSummary() }, t(locale, "viewSummary"))
-    ])
+  // In normal document flow, not the floating .sl-selection dock -- that
+  // dock is for a live selection's own transient action (the Sources
+  // tray), not persistent navigation tied to no selection at all. Quiet
+  // and secondary: the real action on this screen is a card's own submit
+  // row, not this pair.
+  const footer = el("div", { class: "sl-page-nav" }, [
+    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onBack() }, t(locale, "back"))
   ]);
 
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
     renderWizardError(state),
-    destinations.length ? el("div", null, itemCards) : emptyDestinations,
+    destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
     footer
-  ]);
-}
-
-export function renderResult(root, state, ctx) {
-  const { locale, handlers, summary } = ctx;
-  const batch = state.batch;
-  if (!batch) return replace(root, []);
-
-  const destinations = Array.isArray(summary?.destinations) ? summary.destinations : [];
-  const destinationLabel = (binding) =>
-    destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
-
-  const items = batch.items.map((item) => {
-    const publishState = state.publishByItem[item.id];
-    const publications = publishState?.publications ?? item.publications ?? [];
-    const rows = publications
-      .filter((pub) => pub.state !== "superseded")
-      .map((pub) =>
-        el("span", { class: "sl-outcome" }, [
-          el("span", null, destinationLabel(pub.destinationBinding)),
-          stateBadge(locale, publicationOutcome(pub).outcome)
-        ])
-      );
-    return el("div", { class: "sl-result-item" }, [
-      el("strong", null, item.sourceItem?.text ? item.sourceItem.text.split("\n")[0].slice(0, 60) : item.id),
-      el("div", { class: "sl-outcomes" }, rows.length ? rows : [el("span", { class: "sl-field-note" }, t(locale, "resultNotSent"))])
-    ]);
-  });
-
-  const exportRow = el("div", { class: "sl-export-row" }, [
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onExport("json") }, t(locale, "exportJson")),
-    el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onExport("html") }, t(locale, "exportHtml"))
-  ]);
-
-  replace(root, [
-    el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "resultTitle"))]),
-    el("div", { class: "sl-result-summary" }, items),
-    el("p", { class: "sl-result-note" }, t(locale, "resultNote")),
-    exportRow,
-    el("button", { type: "button", class: "sl-primary", onclick: () => handlers.onStartAnother() }, t(locale, "startAnother"))
   ]);
 }
 
