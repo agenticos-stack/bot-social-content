@@ -29,13 +29,20 @@ const fixture = {
     return {
       configured: new URL(location.href).searchParams.get("setup") !== "1",
       sources: [{ binding: "IG_MAIN", provider: "instagram", glyphKey: "instagram", label: "Example Studio", lastOutcome: "confirmed" }],
-      destinations: [{ destinationBinding: "IG_MAIN", provider: "instagram", label: "Example Studio" }], config: {}
+      // ?nodest=1 renders the zero-destination publish step: draft cards
+      // visible under the notice, sends disabled until one exists (#1960).
+      destinations: new URL(location.href).searchParams.get("nodest") === "1"
+        ? []
+        : [{ destinationBinding: "IG_MAIN", provider: "instagram", label: "Example Studio" }],
+      config: {}
     };
   },
   async listItems({ filter, query = "" }) { return { items: items.filter((item) => (filter === "all" || !item.seen) && item.text.toLowerCase().includes(query.toLowerCase())), nextCursor: null }; },
   async setSelection(id, selected) { items.find((item) => item.id === id).selected = selected; shareSelection(); },
   async clearSelection() { for (const item of items) item.selected = false; shareSelection(); },
   async markSeen(ids) { for (const item of items) if (ids.includes(item.id)) item.seen = true; },
+  // The publish step asks every item for its filings; the fixture has none.
+  async readPublishState() { return { publications: [], targets: [] }; },
   async subscribe() { return {}; }
 };
 const previewBatch = new URL(location.href).searchParams.get("draft") === "1" ? {

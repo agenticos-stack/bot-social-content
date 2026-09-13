@@ -1332,6 +1332,12 @@ function App() {
       const item = wizard.batch?.items.find((entry) => entry.id === id);
       if (!item || wizard.submittingByItem?.[id]) return;
       const choice = wizard.publishChoices?.[id] ?? {};
+      // The picker's answer is what the summary offers — a binding seeded
+      // from a since-revoked destination is not a choice (#1960).
+      const knownBindings = new Set(
+        (Array.isArray(summary?.destinations) ? summary.destinations : [])
+          .map((entry) => entry.destinationBinding ?? entry.binding)
+      );
       wizard = setPublishError(wizard, id, null);
       wizard = setSubmitting(wizard, id, true);
       renderCurrentView();
@@ -1339,7 +1345,7 @@ function App() {
         const result = await rpc.submitForReview({
           batchItemId: id,
           expectedRevision: item.revision ?? 0,
-          destinationBindings: choice.bindings ?? [],
+          destinationBindings: (choice.bindings ?? []).filter((binding) => knownBindings.has(binding)),
           intent: choice.intent,
           createNewVersion
         });
