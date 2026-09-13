@@ -2015,6 +2015,21 @@ export class Gadget extends DurableObject {
         message: "Choose a destination account before submitting for review."
       };
     }
+    /*
+     * Publishing authority, checked where it is used. Draft-first setup does
+     * not demand the Social Hub door up front (`definition.ts`), so a
+     * submission without it is refused by value — naming the one grant that
+     * fixes it — before any publication row is written or door is called.
+     * Read from consent, not from a surviving binding stub.
+     */
+    if (!doorGrantStatus(this.env).social) {
+      return {
+        ok: false,
+        code: "publisher_not_granted",
+        requirementKey: "social",
+        message: "Grant the Social Hub publisher before submitting for review."
+      };
+    }
 
     const caption = revision.caption ?? "";
     // Timing comes with the submission now; the stored revision's own intent

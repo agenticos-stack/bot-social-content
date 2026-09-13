@@ -147,6 +147,35 @@ describe("TEST-002: one active localization per post while it is drafting", () =
   });
 });
 
+describe("draft first: publishing authority is checked at submission", () => {
+  it("refuses publisher_not_granted when a destination is chosen but the Social Hub door is not granted", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    const { item } = await draft(gadget);
+
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: ["IG_DEST"] });
+    expect(refused).toMatchObject({ ok: false, code: "publisher_not_granted", requirementKey: "social" });
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("reads consent rather than a surviving binding stub, and calls no door", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created), __consent: { social: false } });
+    const { item } = await draft(gadget);
+
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: ["IG_DEST"] });
+    expect(refused).toMatchObject({ ok: false, code: "publisher_not_granted" });
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("still asks for a destination first when neither is set", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    const { item } = await draft(gadget);
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: [] });
+    expect(refused).toMatchObject({ ok: false, code: "batch_needs_destinations" });
+  });
+});
+
 describe("TEST-004/005/012: the pair rule lives at submit", () => {
   it("refuses a submit with no destination, and writes no publication", async () => {
     const created: unknown[] = [];

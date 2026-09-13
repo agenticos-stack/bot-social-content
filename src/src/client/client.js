@@ -1410,6 +1410,14 @@ function App() {
       wizard = setWizardError(wizard, null);
       renderCurrentView();
     },
+    /**
+     * Publishing authority is the owner's to give, in the host's own dialog
+     * (`gadget:grant-door`). The canvas only asks; once the host grants it,
+     * the canvas is remounted and the owner submits again.
+     */
+    onGrantPublishing: () => {
+      window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "social" }, "*");
+    },
     onRetry: async (itemId, destinationBinding) => {
       // A failed pair re-files through the same per-item submit, scoped to
       // the one destination that failed.
@@ -1512,7 +1520,7 @@ function App() {
    * page has owned both, with revoke and stop, all along.
    */
   async function runSetup(options = {}) {
-    const editing = options.editing === true;
+    let editing = options.editing === true;
     let draft = editing ? draftFromConfig(summary?.config) : createSetupDraft();
     let saving = false;
     let savedDraft = editing ? JSON.stringify(draft) : null;
@@ -1697,6 +1705,11 @@ function App() {
           draft = draftFromConfig(summary.config);
           savedDraft = JSON.stringify(draft);
           notice = t(locale, "setupSaved");
+          // The first save is what makes the gadget configured, and the
+          // way back to the posts is only drawn while `editing`. Without
+          // this, an owner who saved a new setup stayed on the form with
+          // nothing to press but reload.
+          if (summary?.configured) editing = true;
           saving = false;
           draw();
         } catch (thrown) {

@@ -49,6 +49,8 @@ import {
   isApprovalExpired,
   setBatch,
   resumeBatch,
+  renderPublish,
+  setPublishError,
   recordDraftConflict,
   resolveDraftConflict,
   submitEnabled,
@@ -912,6 +914,13 @@ describe("bundled client.js smoke test", () => {
       expect(findAll(document.body, (element) => hasClass(element, "sl-setup-error"))).toHaveLength(0);
       expect(findSetupForm(document)).toBeTruthy();
       expect(document.body.textContent).toContain("Settings saved. Monitoring was not changed.");
+
+      // Staying is for explicit activation, not a dead end: once the first
+      // save makes the gadget configured, the way back to the posts is drawn.
+      // Before, it rendered only when the form was re-opened from Settings,
+      // so a new owner had nothing to press but reload.
+      const back = findAll(document.body, (element) => element.tagName === "BUTTON" && element.textContent === "Cancel");
+      expect(back).toHaveLength(1);
     });
 
     it("surfaces a failed setConfig inline (no alert) instead of silently resetting", async () => {
@@ -1152,3 +1161,62 @@ describe("a card's cover comes from cached bytes", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// steps.js — draft first: publishing authority is asked for at submit
+// ---------------------------------------------------------------------------
+
+describe("the publish step, when publishing authority is missing", () => {
+  it("says so in the owner's language and asks the host for the Social Hub publisher", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    const batch = {
+      id: "b1",
+      items: [
+        {
+          id: "bi1",
+          revision: 1,
+          caption: "第一稿內容文字",
+          state: "drafting",
+          destinationBindings: [],
+          publications: [],
+          posterLayout: null,
+          sourceItem: { sourceLabel: "@essentialfoodsofficial", provider: "instagram" }
+        }
+      ]
+    };
+    let state = resumeBatch(createWizardState(), batch as never);
+    state = setPublishError(state, "bi1", {
+      code: "publisher_not_granted",
+      message: "Grant the Social Hub publisher before submitting for review."
+    });
+    const handlers = new Proxy(
+      { onGrantPublishing: (id: string) => calls.push(`grant:${id}`) } as Record<string, unknown>,
+      { get: (target, key: string) => (key in target ? target[key] : () => {}) }
+    );
+    renderPublish(root, state, {
+      locale: "en",
+      handlers,
+      policy: normalizeConfig({ cadence: "daily" }),
+      summary: { destinations: [{ destinationBinding: "IG_FAVCRM", label: "@favcrm.io", provider: "instagram" }] }
+    });
+
+    const alert = findAll(root, (node) => node.getAttribute?.("role") === "alert")[0];
+    expect(alert?.textContent).toContain(t("en", "publisherNotGrantedBody"));
+    expect(alert?.textContent).not.toContain("Grant the Social Hub publisher before submitting for review.");
+
+    const grant = findAll(root, (node) => node.tagName === "BUTTON" && (node.textContent ?? "").includes(t("en", "publisherGrantAction")))[0];
+    expect(grant).toBeTruthy();
+    await grant.dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["grant:bi1"]);
+  });
+
+  it("has the refusal and its action in every locale", () => {
+    for (const locale of LOCALES) {
+      for (const key of ["publisherNotGrantedTitle", "publisherNotGrantedBody", "publisherGrantAction"]) {
+        expect({ locale, key, present: Boolean((STRINGS as Record<string, Record<string, string>>)[locale]?.[key]) }).toEqual({ locale, key, present: true });
+      }
+    }
+  });
+});
