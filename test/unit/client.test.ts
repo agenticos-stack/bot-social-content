@@ -914,6 +914,13 @@ describe("bundled client.js smoke test", () => {
       expect(findAll(document.body, (element) => hasClass(element, "sl-setup-error"))).toHaveLength(0);
       expect(findSetupForm(document)).toBeTruthy();
       expect(document.body.textContent).toContain("Settings saved. Monitoring was not changed.");
+
+      // Staying is for explicit activation, not a dead end: once the first
+      // save makes the gadget configured, the way back to the posts is drawn.
+      // Before, it rendered only when the form was re-opened from Settings,
+      // so a new owner had nothing to press but reload.
+      const back = findAll(document.body, (element) => element.tagName === "BUTTON" && element.textContent === "Cancel");
+      expect(back).toHaveLength(1);
     });
 
     it("surfaces a failed setConfig inline (no alert) instead of silently resetting", async () => {
