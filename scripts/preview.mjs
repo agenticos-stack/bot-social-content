@@ -57,7 +57,8 @@ async function readSourceFiles() {
   const files={};
   for(const name of manifest.files){
     if(!/^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$/.test(name) || Object.hasOwn(files,name))throw new Error('Invalid source file.');
-    files[name]=name==='client.js'?await buildClient():await readFile(new URL('../src/'+name,import.meta.url),'utf8');
+    // manifest.json ships in the archive (its storageSchemaVersion) but lives at the package root, not src/.
+    files[name]=name==='client.js'?await buildClient():name==='manifest.json'?await readFile(new URL('../manifest.json',import.meta.url),'utf8'):await readFile(new URL('../src/'+name,import.meta.url),'utf8');
   }
   return files;
 }
