@@ -107,6 +107,7 @@ import {
   wallClockHHMM
 } from "./config.js";
 import {
+  FETCH_DOOR_KEY,
   FIXED_DOOR_KEYS as FIXED_DOOR_KEY_LIST,
   doorGrantStatus,
   fetchMedia,
@@ -613,6 +614,16 @@ export class Gadget extends DurableObject {
         ok: false,
         code: "unsupported_platform",
         message: `Public accounts cannot be watched on ${resolved.platform} yet.`
+      };
+    }
+
+    if (!this.env?.[FETCH_DOOR_KEY]) {
+      return {
+        ok: false,
+        code: "fetch_not_granted",
+        requirementKey: FETCH_DOOR_KEY,
+        message:
+          "Public account fetching is not granted for this workspace. Grant it to watch public accounts."
       };
     }
 

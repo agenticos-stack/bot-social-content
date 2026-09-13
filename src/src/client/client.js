@@ -30,6 +30,7 @@ import {
 } from "./collection.js";
 import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
+import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
@@ -1157,9 +1158,10 @@ function App() {
     },
     onRefresh: async () => {
       try {
-        await rpc.refresh();
+        const result = await rpc.refresh();
         await loadCollection(collectionState.filter);
-        announce(t(locale, "refreshedTitle"), "");
+        const outcome = classifyRefreshOutcome(result);
+        announce(t(locale, outcome.titleKey), outcome.detail);
       } catch (error) {
         console.error(error);
         announce(t(locale, "refreshFailedTitle"), error instanceof Error ? error.message : "");
@@ -1550,6 +1552,7 @@ function App() {
         openError,
         grantsBusy,
         grantsNote,
+        fetchGranted: Boolean(summary?.doors?.metered_fetch),
         handlers: setupHandlers
       });
     const setupHandlers = {
@@ -1570,7 +1573,10 @@ function App() {
         try {
           const result = await rpc.addOpenSource(link);
           if (!result || result.ok !== true) {
-            openError = (result && result.message) || t(locale, "genericError");
+            openError =
+              result?.code === "fetch_not_granted"
+                ? t(locale, "fetchNeedsPermission")
+                : (result && result.message) || t(locale, "genericError");
           } else {
             await refreshSummary();
             openSources = (summary?.sources || []).filter((source) => source.origin === "open");
@@ -1608,6 +1614,10 @@ function App() {
        * additive re-derive; what it added (or that it added nothing) is said
        * beside the button.
        */
+      onGrantFetch: () => {
+        window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "metered_fetch" }, "*");
+      },
+
       onRefreshGrants: async () => {
         if (grantsBusy) return;
         grantsBusy = true;
