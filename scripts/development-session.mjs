@@ -39,6 +39,11 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
       // cookie or token rather than the one from `start()`.
       return runtime.agent.handle(input, identity.devToken ?? identity.cookie);
     },
+    async grant(request, input){
+      const {runtime,identity}=await acquire(request,false);
+      if(typeof runtime.grant !== 'function')throw new Error('Granting doors is unavailable in this development session.');
+      return runtime.grant(input, identity.devToken ?? identity.cookie);
+    },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };
 }

@@ -292,6 +292,23 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           await localReady;
           return local.handle(request);
         },
+        /*
+         * The owner said yes in the host dialog. Record it on the platform,
+         * then swap the isolate onto the new door spec the same way
+         * `refreshGrants` does, so the canvas the host reloads next sees the
+         * door in `env`. A grant that landed but could not be loaded says so,
+         * rather than reading as a refusal.
+         */
+        grant:async(input,credential)=>{
+          const granted=await agent.grantDoor(input,credential);
+          reloading=reloading.then(refreshDoors,refreshDoors);
+          try { await reloading; }
+          catch(error){
+            reloading=Promise.resolve();
+            throw new Error(`The door was granted, but the local runtime could not load it: ${error instanceof Error?error.message:error}`);
+          }
+          return granted;
+        },
         agent:{
           get info(){return agent.info;},
           handle:async(input,credential)=>{
@@ -357,6 +374,9 @@ const priorSignalListeners = new Map(signals.map(signal => [signal, new Set(proc
 const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
   stateDirectory: await prepareLocalState(),
   origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
+// Only the seeded runtime has a budget to report. Connected mode seeds nothing,
+// so it keeps whatever budget the owner saved and says nothing here.
+if (runtime) console.warn('preview seed: fetchBudgetCredits is 0 — a metered scan fails closed until you set a budget in Settings.');
 // Pinned Miniflare 4.20260702.0 installs immediate process.exit signal hooks.
 // This foreground HTTP host owns graceful shutdown instead. Remove only the
 // known hooks installed by this runtime, never pre-existing process listeners.

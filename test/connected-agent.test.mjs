@@ -36,8 +36,12 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
   const requests = [];
 
   function fetchImpl(url, options) {
-    requests.push({ url, method: options?.method, headers: options?.headers });
+    requests.push({ url, method: options?.method, headers: options?.headers, body: options?.body });
     const target = new URL(url);
+    if (target.pathname === '/v2/workspaces/ws_1/door-grants' && options.method === 'POST') {
+      const { requirementKey } = JSON.parse(options.body);
+      return Promise.resolve(jsonResponse(201, { data: { grant: { requirementKey }, persistedToAgent: false } }));
+    }
     if (target.pathname === '/v2/workspaces' && options.method === 'POST') {
       workspaceCreated = true;
       return Promise.resolve(jsonResponse(200, { data: { workspaceId: 'ws_1' } }));
@@ -352,3 +356,42 @@ test('reload refuses a digest that is not one, rather than registering it', asyn
   });
 });
 
+
+test('grants only a declared door, with the owner scope sent explicitly and the current cookie', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const before = transport.requests.length;
+    await assert.rejects(agent.grantDoor({ requirementKey: 'email', persistToAgent: false }, 'session=alice'), /not one this gadget declared/);
+    await assert.rejects(agent.grantDoor({ requirementKey: 'metered_fetch' }, 'session=alice'), /conversation only/);
+    assert.equal(transport.requests.length, before, 'a refused grant never reaches the API');
+
+    const result = await agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'session=rotated');
+    assert.deepEqual(result, { requirementKey: 'metered_fetch', persistedToAgent: false });
+    const sent = transport.requests.at(-1);
+    assert.equal(new URL(sent.url).pathname, '/v2/workspaces/ws_1/door-grants');
+    assert.equal(sent.headers.cookie, 'session=rotated');
+    assert.equal(sent.headers.origin, frontendOrigin);
+    assert.deepEqual(JSON.parse(sent.body), { requirementKey: 'metered_fetch', persistToAgent: false });
+    agent.close();
+  });
+});
+
+test('a gadget-dev token cannot grant a door', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin: prodApi, devToken: 'dev_token_secret', workspaceId: prodWorkspace, stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const before = transport.requests.length;
+    await assert.rejects(agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'dev_token_secret'), /Studio/);
+    assert.equal(transport.requests.length, before);
+    agent.close();
+  });
+});

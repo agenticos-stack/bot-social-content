@@ -287,11 +287,42 @@ export async function createConnectedAgent({
     };
   }
 
+  /**
+   * Record the owner's yes to one door this source declared, for this
+   * conversation.
+   *
+   * The canvas only ASKS (`gadget:grant-door`); the owner answered in the
+   * host's own dialog before this runs. `persistToAgent` is required and
+   * sent explicitly, because the API reads an omitted flag as "also save it
+   * for the assistant" for an organization-scoped door, and the dialog's
+   * default is this conversation only.
+   *
+   * A gadget-dev token is refused rather than forwarded: the token belongs to
+   * whoever runs the host, and consent to a door is the owner's to give in
+   * Studio, not something a developer credential should be able to mint.
+   */
+  async function grantDoor(input, currentCookie) {
+    if (remote) throw new Error('Grant this door in Studio for the development conversation. A gadget development token cannot give consent.');
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
+      throw new Error('That door is not one this gadget declared.');
+    if (typeof input?.persistToAgent !== 'boolean') throw new Error('Say whether this grant is for this conversation only.');
+    await ensureConnected(currentCookie);
+    const result = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(workspaceId)}/door-grants`, {
+      frontendOrigin, cookie: currentCookie, method: 'POST', body: { requirementKey, persistToAgent: input.persistToAgent }, fetchImpl
+    });
+    return {
+      requirementKey: result?.data?.grant?.requirementKey ?? requirementKey,
+      persistedToAgent: result?.data?.persistedToAgent === true
+    };
+  }
+
   return {
     get info() {
       return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
     },
     doors,
+    grantDoor,
     handle,
     /**
      * Point the live session at new source.

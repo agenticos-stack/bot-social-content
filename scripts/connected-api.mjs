@@ -9,12 +9,14 @@ const localRoutes = new Map([
   ['/api/dev/session', ['POST']],
   ['/api/dev/rpc', ['POST']],
   ['/api/dev/agent', ['POST']],
+  ['/api/dev/grant', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
 const remoteRoutes = new Map([
   ['/api/dev/session', ['POST']],
   ['/api/dev/rpc', ['POST']],
-  ['/api/dev/agent', ['POST']]
+  ['/api/dev/agent', ['POST']],
+  ['/api/dev/grant', ['POST']]
 ]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
 export function redactCredentials(value) {
@@ -57,8 +59,20 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
     }
     const starting = url.pathname === '/api/dev/session';
     const agent = url.pathname === '/api/dev/agent';
-    if (starting || url.pathname === '/api/dev/rpc' || agent) {
+    const grant = url.pathname === '/api/dev/grant';
+    if (starting || url.pathname === '/api/dev/rpc' || agent || grant) {
       if (!development) return fail(503,'Local source runtime is not configured.');
+      if(grant){
+        // The owner's answer from the host dialog, nothing more: which door,
+        // and whether it also applies to the assistant. Anything else in the
+        // body is refused rather than forwarded.
+        let input;
+        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
+        if(keys!=='persistToAgent,requirementKey' || typeof input.requirementKey!=='string' || typeof input.persistToAgent!=='boolean')return fail(400,'A door and a scope are required.');
+        try{return Response.json({data:await development.grant(request,input)},{headers:{'cache-control':'no-store'}});}
+        catch(error){return fail(409,error instanceof Error?error.message:'That door could not be granted.');}
+      }
       if(agent){
         let input;
         try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }

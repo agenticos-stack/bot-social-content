@@ -56,3 +56,20 @@ test('remote platform BFF admits production API origins and never proxies cookie
   assert.equal((await handle(new Request(frontendOrigin+'/api/auth/dev-sign-in',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,404);
   assert.equal((await handle(new Request(frontendOrigin+'/api/dev/session',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,200);
 });
+test('connected BFF forwards only the owner answer to a door grant',async()=>{
+  const inputs=[];
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async(_request,value)=>{inputs.push(value);return {requirementKey:'metered_fetch',persistedToAgent:false};}},fetcher:()=>assert.fail('grant must go through the development host')});
+  const request=body=>new Request(frontendOrigin+'/api/dev/grant',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await handle(request({requirementKey:'metered_fetch'}))).status,400);
+  assert.equal((await handle(request({requirementKey:'metered_fetch',persistToAgent:'no'}))).status,400);
+  assert.equal((await handle(request({requirementKey:'metered_fetch',persistToAgent:false,resolvedId:'x'}))).status,400);
+  assert.equal(inputs.length,0);
+  const response=await handle(request({requirementKey:'metered_fetch',persistToAgent:false}));
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{data:{requirementKey:'metered_fetch',persistedToAgent:false}});
+  assert.deepEqual(inputs,[{requirementKey:'metered_fetch',persistToAgent:false}]);
+  const refused=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async()=>{throw new Error('That door is not one this gadget declared.');}}});
+  const failed=await refused(request({requirementKey:'email',persistToAgent:false}));
+  assert.equal(failed.status,409);
+  assert.equal((await failed.json()).error.message,'That door is not one this gadget declared.');
+});

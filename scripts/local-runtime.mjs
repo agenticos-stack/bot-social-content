@@ -61,7 +61,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
   const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
-  if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Set a budget in Settings to use metered fetching.');
+  if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors,
     maxRequestBytes: LOCAL_RPC_MAX_BYTES,
     seed: seedFixtures ? [{method:'seedLocal',args:[]}] : [],
