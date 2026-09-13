@@ -8,5 +8,5 @@
     "author": { "type": "user", "name": "AgenticOS Platform", "id": "platform@agenticos.hk" },
     "version": 1
   },
-  "files": ["client.js", "server.js", "storage.js", "config.js", "doors.js", "model.js", "agent.md", "README.md"]
+  "files": ["client.js", "server.js", "storage.js", "config.js", "doors.js", "grant-request.js", "model.js", "agent.md", "README.md"]
 }
