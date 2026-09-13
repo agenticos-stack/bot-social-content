@@ -312,16 +312,23 @@ export async function createConnectedAgent({
    * for the assistant" for an organization-scoped door, and the dialog's
    * default is this conversation only.
    *
-   * A gadget-dev token is refused rather than forwarded: the token belongs to
-   * whoever runs the host, and consent to a door is the owner's to give in
-   * Studio, not something a developer credential should be able to mint.
+   * Remote mode grants over the socket: there is no cookie to reach the REST
+   * route with, and a gadget-dev conversation has no assistant to persist to
+   * anyway, so the grant is conversation-only either way. The dev token binds
+   * the member who minted it — `grantedBy` records them, the same attribution
+   * a Studio grant gets — and the platform re-verifies their membership on
+   * every socket ticket.
    */
   async function grantDoor(input, currentCookie) {
-    if (remote) throw new Error('Grant this door in Studio for the development conversation. A gadget development token cannot give consent.');
     const requirementKey = input?.requirementKey;
     if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
       throw new Error('That door is not one this gadget declared.');
     if (typeof input?.persistToAgent !== 'boolean') throw new Error('Say whether this grant is for this conversation only.');
+    if (remote) {
+      await ensureConnected(devToken);
+      const result = await session.stub.grantDevelopmentDoor(requirementKey);
+      return { requirementKey: result?.requirementKey ?? requirementKey, persistedToAgent: false };
+    }
     await ensureConnected(currentCookie);
     const result = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(workspaceId)}/door-grants`, {
       frontendOrigin, cookie: currentCookie, method: 'POST', body: { requirementKey, persistToAgent: input.persistToAgent }, fetchImpl
@@ -343,14 +350,21 @@ export async function createConnectedAgent({
    * The owner's choice of one existing account for a declared family. The
    * platform checks the account, the family's size and consent; this only
    * refuses what it can already see is wrong.
+   *
+   * The socket is the ONLY surface this can go through: the REST grant route
+   * finds a family through the conversation's installed gadgets, and a
+   * development gadget is attached nowhere — so Studio could never grant it.
+   * That holds in remote mode exactly as in local: the dev token binds the
+   * member who minted it, the grant lands under `grantedBy: <that member>`,
+   * and the same member could grant this account to this conversation from
+   * Studio were a family grant reachable there at all.
    */
   async function grantConnection(input) {
-    if (remote) throw new Error('Grant connections for the development conversation in Studio. A gadget development token cannot give consent.');
     const requirementKey = input?.requirementKey;
     if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey && row?.kind === 'connector_resource'))
       throw new Error('That connection family is not one this gadget declared.');
     if (typeof input?.resolvedId !== 'string' || !input.resolvedId) throw new Error('Choose an account to connect.');
-    await ensureConnected(cookie);
+    await ensureConnected(remote ? devToken : cookie);
     const result = await session.stub.grantDevelopmentConnection({ requirementKey, resolvedId: input.resolvedId });
     if (!result?.ok) throw new Error(result?.message || 'That connection could not be granted.');
     return { requirementKey: result.requirementKey, env: result.env, label: result.label ?? null };
