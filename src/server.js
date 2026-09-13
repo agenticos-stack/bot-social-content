@@ -2229,7 +2229,7 @@ export class Gadget extends DurableObject {
         replaceIds
       });
       filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
-      mergedTargets.push(...normalizeTargets(draft.targets, [binding]));
+      mergedTargets.push(...normalizeTargets(this.toWorkspaceBindings(draft.targets), [binding]));
       lastFiled = draft;
     }
 
@@ -2286,7 +2286,7 @@ export class Gadget extends DurableObject {
       if (publication.version) {
         const fresh = await socialReadStatus(this.env, publication.version);
         const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-        targets = normalizeTargets(freshTargets, [publication.destinationBinding], null);
+        targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null);
         if (freshTargets) {
           // The pair's own outcome rows are the item's canonical targets.
           this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
@@ -2296,6 +2296,28 @@ export class Gadget extends DurableObject {
     }
 
     return { publications, targets: publications.flatMap((publication) => publication.targets) };
+  }
+
+  /**
+   * The door keys its target rows by the resource binding id it published to
+   * (`crb_…`), while this workspace files publications under the env name the
+   * owner picked. `resolvedId` is the bridge already stored on each
+   * destination row — without this translation every returned outcome reads
+   * as "unknown" forever, and `draft.targets` at submit time file a row keyed
+   * to an id nobody else in this workspace uses.
+   */
+  toWorkspaceBindings(entries) {
+    const resolvedToBinding = new Map();
+    for (const row of this.storage.listDestinations()) {
+      const resolvedId = readString(row.describe?.resolvedId);
+      if (resolvedId) resolvedToBinding.set(resolvedId, row.binding);
+    }
+    if (!resolvedToBinding.size) return Array.isArray(entries) ? entries : [];
+    return (Array.isArray(entries) ? entries : []).map((entry) => {
+      const key = entry?.destinationBinding ?? entry?.binding;
+      const workspace = typeof key === "string" ? resolvedToBinding.get(key) : undefined;
+      return workspace ? { ...entry, destinationBinding: workspace } : entry;
+    });
   }
 
   // -----------------------------------------------------------------------

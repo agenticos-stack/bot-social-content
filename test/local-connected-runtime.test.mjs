@@ -30,7 +30,9 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
       submitted.push(args[0]);return {postId:'test-post-'+submitted.length,versionId:'test-version-'+submitted.length,contentHash:'test-hash'};
     }
     if(key==='social' && method==='submitForReview')return {refused:true,code:'submission_required',authority:'send'};
-    if(key==='social' && method==='readStatus')return {state:'review_requested',targets:[]};
+    // The door keys targets by the resource binding id it published to, not
+    // the env name the workspace filed under — the readback must map it.
+    if(key==='social' && method==='readStatus')return {state:'review_requested',targets:[{destinationBinding:'crb_test_destination',label:'Test destination',outcome:'scheduled',detail:'scheduled'}]};
     throw new Error('Unexpected fixture door '+key+'.'+method);
   }};
   const runtime=await createSocialRuntime({files,sdkSource:process.env.BOT_SDK_SOURCE,origins:[origin],doors,seedFixtures:false});
@@ -45,6 +47,10 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
     const empty=await call('summary');
     assert.equal(empty.configured,false);assert.equal(empty.counts.total,0);assert.deepEqual(empty.destinations,[]);
     assert.equal((await call('saveSetup',[{cadence:'daily',fetchBudgetCredits:1000}])).configured,true);
+    // The owner-connected destination registers at setup — with the door's
+    // describe(), and its resolvedId, stored on the row for later readback.
+    const grants=await call('refreshGrants');
+    assert.equal(grants.summary.destinations[0]?.binding,'TEST_DESTINATION');
     assert.equal((await call('addOpenSource',['https://www.instagram.com/test_reference/'])).ok,true);
     const scan=await call('refresh');assert.equal(scan.new,2);assert.equal(scan.failedSafe,0);
     const items=(await call('listItems',[{filter:'all'}])).items;
@@ -63,6 +69,9 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
       const filed=await call('submitForReview',[{batchItemId:item.id,expectedRevision:poster.revision,destinationBindings:['TEST_DESTINATION'],intent:intents[index]}]);
       assert.equal(filed.state,'review_requested',JSON.stringify(filed));
       assert.equal(filed.submitted.length,1);
+      const publish=await call('readPublishState',[item.id]);
+      assert.equal(publish.targets[0]?.destinationBinding,'TEST_DESTINATION');
+      assert.equal(publish.targets[0]?.outcome,'scheduled');
       assert.deepEqual(uploads[index],Buffer.from(png));
       assert.equal(submitted[index].schedule.publishMode,intents[index].publishMode);
       // The env name is the local handle; createDraft is addressed by the
