@@ -89,3 +89,18 @@ test('door grants receive the current request cookie and require a started sessi
   assert.deepEqual(seen,[[input,'session=rotated']]);
   await session.dispose();
 });
+
+test('connection calls reach the started runtime only',async()=>{
+  const seen=[];
+  const session=createDevelopmentSessions({appKey:'test-app',origin:'http://social.localhost:18000',
+    authenticate:async request=>({userId:'u1',orgId:'o1',cookie:request.headers.get('cookie')}),
+    createRuntime:async()=>({token:'host-only',agent:{info:{connected:true}},
+      connections:async input=>{seen.push(input);return {families:[]};},
+      handle:async()=>Response.json({ok:true}),dispose:async()=>{}})});
+  const request=()=>new Request('http://social.localhost:18000/api/dev/connections',{method:'POST',headers:{cookie:'session=a'}});
+  await assert.rejects(session.connections(request(),{operation:'list'}),/Start/);
+  await session.start(request());
+  assert.deepEqual(await session.connections(request(),{operation:'list'}),{families:[]});
+  assert.deepEqual(seen,[{operation:'list'}]);
+  await session.dispose();
+});

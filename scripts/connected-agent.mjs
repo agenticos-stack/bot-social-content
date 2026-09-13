@@ -285,7 +285,10 @@ export async function createConnectedAgent({
     const spec = {};
     for (const door of Array.isArray(granted) ? granted : []) {
       if (!door?.granted) continue;
-      const names = methodsByDoor?.[door.envKey];
+      // A connector family member is named by the owner's choice of account,
+      // so the source cannot list it in advance; its methods are the
+      // connector door's, as the platform reports them.
+      const names = methodsByDoor?.[door.envKey] ?? (typeof door.family === 'string' && Array.isArray(door.methods) ? door.methods : undefined);
       if (!Array.isArray(names) || names.length === 0) continue;
       spec[door.envKey] = names;
     }
@@ -329,7 +332,33 @@ export async function createConnectedAgent({
     };
   }
 
+  /** Each connector family this source declared, what it holds, and what the owner could add. */
+  async function connectionChoices() {
+    await ensureConnected(remote ? devToken : cookie);
+    const families = await session.stub.developmentConnectionChoices();
+    return Array.isArray(families) ? families : [];
+  }
+
+  /**
+   * The owner's choice of one existing account for a declared family. The
+   * platform checks the account, the family's size and consent; this only
+   * refuses what it can already see is wrong.
+   */
+  async function grantConnection(input) {
+    if (remote) throw new Error('Grant connections for the development conversation in Studio. A gadget development token cannot give consent.');
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey && row?.kind === 'connector_resource'))
+      throw new Error('That connection family is not one this gadget declared.');
+    if (typeof input?.resolvedId !== 'string' || !input.resolvedId) throw new Error('Choose an account to connect.');
+    await ensureConnected(cookie);
+    const result = await session.stub.grantDevelopmentConnection({ requirementKey, resolvedId: input.resolvedId });
+    if (!result?.ok) throw new Error(result?.message || 'That connection could not be granted.');
+    return { requirementKey: result.requirementKey, env: result.env, label: result.label ?? null };
+  }
+
   return {
+    connectionChoices,
+    grantConnection,
     get info() {
       return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
     },

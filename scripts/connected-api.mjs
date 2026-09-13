@@ -10,13 +10,15 @@ const localRoutes = new Map([
   ['/api/dev/rpc', ['POST']],
   ['/api/dev/agent', ['POST']],
   ['/api/dev/grant', ['POST']],
+  ['/api/dev/connections', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
 const remoteRoutes = new Map([
   ['/api/dev/session', ['POST']],
   ['/api/dev/rpc', ['POST']],
   ['/api/dev/agent', ['POST']],
-  ['/api/dev/grant', ['POST']]
+  ['/api/dev/grant', ['POST']],
+  ['/api/dev/connections', ['POST']]
 ]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
 export function redactCredentials(value) {
@@ -60,8 +62,21 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
     const starting = url.pathname === '/api/dev/session';
     const agent = url.pathname === '/api/dev/agent';
     const grant = url.pathname === '/api/dev/grant';
-    if (starting || url.pathname === '/api/dev/rpc' || agent || grant) {
+    const connections = url.pathname === '/api/dev/connections';
+    if (starting || url.pathname === '/api/dev/rpc' || agent || grant || connections) {
       if (!development) return fail(503,'Local source runtime is not configured.');
+      if(connections){
+        // Either "what could I connect" or one choice of account for one
+        // declared family. Anything else in the body is refused.
+        let input;
+        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
+        const list=keys==='operation' && input.operation==='list';
+        const choose=keys==='operation,requirementKey,resolvedId' && input.operation==='grant' && typeof input.requirementKey==='string' && typeof input.resolvedId==='string';
+        if(!list && !choose)return fail(400,'List connections, or name a family and an account.');
+        try{return Response.json({data:await development.connections(request,input)},{headers:{'cache-control':'no-store'}});}
+        catch(error){return fail(409,error instanceof Error?error.message:'Connections are unavailable.');}
+      }
       if(grant){
         // The owner's answer from the host dialog, nothing more: which door,
         // and whether it also applies to the assistant. Anything else in the

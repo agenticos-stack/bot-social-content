@@ -299,6 +299,23 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
          * door in `env`. A grant that landed but could not be loaded says so,
          * rather than reading as a refusal.
          */
+        /*
+         * The owner's view of connector families, and their choice of an
+         * existing account for one. A grant swaps the isolate onto the new
+         * door spec, like a door grant, so `env.<ACCOUNT>` exists before the
+         * canvas asks for new connections.
+         */
+        connections:async(input)=>{
+          if(input.operation==='list')return {families:await agent.connectionChoices()};
+          const granted=await agent.grantConnection(input);
+          reloading=reloading.then(refreshDoors,refreshDoors);
+          try { await reloading; }
+          catch(error){
+            reloading=Promise.resolve();
+            throw new Error(`The account was connected, but the local runtime could not load it: ${error instanceof Error?error.message:error}`);
+          }
+          return {granted};
+        },
         grant:async(input,credential)=>{
           const granted=await agent.grantDoor(input,credential);
           reloading=reloading.then(refreshDoors,refreshDoors);

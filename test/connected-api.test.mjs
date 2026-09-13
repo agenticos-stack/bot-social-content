@@ -73,3 +73,14 @@ test('connected BFF forwards only the owner answer to a door grant',async()=>{
   assert.equal(failed.status,409);
   assert.equal((await failed.json()).error.message,'That door is not one this gadget declared.');
 });
+test('connected BFF admits only a connection listing or one account choice',async()=>{
+  const inputs=[];
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{connections:async(_request,value)=>{inputs.push(value);return value.operation==='list'?{families:[]}:{granted:{requirementKey:'destination:IG_FAVCRM'}};}},fetcher:()=>assert.fail('connections go through the development host')});
+  const request=body=>new Request(frontendOrigin+'/api/dev/connections',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:JSON.stringify(body)});
+  for(const bad of [{},{operation:'revoke'},{operation:'list',requirementKey:'destination'},{operation:'grant',requirementKey:'destination'},{operation:'grant',requirementKey:'destination',resolvedId:7},{operation:'grant',requirementKey:'destination',resolvedId:'crb_1',resolvedLabel:'x'}])
+    assert.equal((await handle(request(bad))).status,400);
+  assert.equal(inputs.length,0);
+  assert.deepEqual(await (await handle(request({operation:'list'}))).json(),{data:{families:[]}});
+  assert.equal((await handle(request({operation:'grant',requirementKey:'destination',resolvedId:'crb_1'}))).status,200);
+  assert.deepEqual(inputs,[{operation:'list'},{operation:'grant',requirementKey:'destination',resolvedId:'crb_1'}]);
+});

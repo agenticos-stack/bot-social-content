@@ -83,6 +83,65 @@
       grantError=error instanceof Error?error.message:'That permission was not granted.';
     }
   }
+  /*
+   * Connector families (`source`, `destination`) are granted one existing
+   * account at a time, chosen by name. The platform lists what this
+   * organization has and what the family already holds; the host only shows
+   * it and sends the owner's choice.
+   */
+  let connectionsDialog=$state();
+  let families=$state([]);
+  let connectionsStatus=$state('idle');
+  let connectionsError=$state('');
+  let connectingFamily=$state('');
+  let selection=$state({});
+  let connectionsRequest=0;
+  async function postConnections(body){
+    const response=await fetch('/api/dev/connections',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const result=await response.json().catch(()=>null);
+    if(!response.ok)throw new Error(result?.error?.message || 'Connections are unavailable.');
+    return result?.data;
+  }
+  async function loadConnections(){
+    const request=++connectionsRequest;
+    connectionsStatus='loading';connectionsError='';
+    try{
+      const data=await postConnections({operation:'list'});
+      if(request!==connectionsRequest)return;
+      families=Array.isArray(data?.families)?data.families:[];
+      connectionsStatus='ready';
+    }catch(error){
+      if(request!==connectionsRequest)return;
+      connectionsStatus='failed';
+      connectionsError=error instanceof Error?error.message:'Connections are unavailable.';
+    }
+  }
+  function openConnections(){
+    selection={};connectingFamily='';
+    if(!connectionsDialog.open)connectionsDialog.showModal();
+    void loadConnections();
+  }
+  function closeConnections(){
+    if(connectingFamily)return;
+    connectionsRequest++;
+    connectionsDialog?.close();
+  }
+  async function connectAccount(requirementKey){
+    const resolvedId=selection[requirementKey];
+    if(!resolvedId || connectingFamily)return;
+    connectingFamily=requirementKey;connectionsError='';
+    try{
+      await postConnections({operation:'grant',requirementKey,resolvedId});
+      selection={...selection,[requirementKey]:''};
+      frameGeneration++;
+      await loadConnections();
+    }catch(error){
+      connectionsError=error instanceof Error?error.message:'That account could not be connected.';
+    }finally{connectingFamily='';}
+  }
+  function canAdd(family){
+    return family.choices.length>0 && (family.max===null || family.members.length<family.max);
+  }
   onDestroy(()=>{port?.close();controller?.abort();});
   $effect(()=>{revision;port?.postMessage({event:{type:'drafts_changed'}});});
 </script>
@@ -100,6 +159,8 @@
   tightens, tighten with it.
 -->
 <svelte:window onmessage={receiveGrant} />
+<div class="canvas-host">
+<div class="host-bar"><span>Local source</span><button type="button" onclick={openConnections}>Connections</button></div>
 {#key frameGeneration}
 <iframe
   bind:this={frame}
@@ -109,6 +170,42 @@
   onload={connect}
 ></iframe>
 {/key}
+</div>
+<dialog bind:this={connectionsDialog} class="grant connections" aria-labelledby="connections-title" oncancel={event=>{event.preventDefault();closeConnections();}}>
+  <h2 id="connections-title">Connections</h2>
+  <p>Accounts this conversation may use. Connecting one grants it here only.</p>
+  {#if connectionsStatus==='loading' && families.length===0}<p role="status">Loading connections…</p>{/if}
+  {#if connectionsError}<p role="alert">{connectionsError}</p>{/if}
+  {#if connectionsStatus==='failed'}<div class="actions"><button type="button" onclick={loadConnections}>Try again</button></div>{/if}
+  {#each families as family (family.requirementKey)}
+    <section class="family" aria-labelledby={`family-${family.requirementKey}`}>
+      <h3 id={`family-${family.requirementKey}`}>{family.label}</h3>
+      {#if family.members.length}
+        <ul>{#each family.members as member (member.requirementKey)}<li>{member.label ?? 'Connected account'}</li>{/each}</ul>
+      {:else}
+        <p>No account connected yet.</p>
+      {/if}
+      {#if canAdd(family)}
+        <label for={`choice-${family.requirementKey}`}>Add an account</label>
+        <div class="choose">
+          <select id={`choice-${family.requirementKey}`} bind:value={selection[family.requirementKey]} disabled={Boolean(connectingFamily)}>
+            <option value="">Choose an account</option>
+            {#each family.choices as choice (choice.id)}<option value={choice.id}>{choice.label} · {choice.provider}</option>{/each}
+          </select>
+          <button type="button" class="primary" disabled={Boolean(connectingFamily) || !selection[family.requirementKey]} onclick={()=>connectAccount(family.requirementKey)}>{connectingFamily===family.requirementKey ? 'Connecting…' : 'Connect'}</button>
+        </div>
+      {:else if family.choices.length===0}
+        <p class="hint">No other account in this organization is available to connect.</p>
+      {:else}
+        <p class="hint">This holds as many accounts as it allows.</p>
+      {/if}
+    </section>
+  {:else}
+    {#if connectionsStatus==='ready'}<p>This source declares no accounts to connect.</p>{/if}
+  {/each}
+  {#if families.some(family=>family.members.length)}<p class="hint">Then use “Check for new connections” in the canvas settings to add them to setup.</p>{/if}
+  <div class="actions"><button type="button" onclick={closeConnections} disabled={Boolean(connectingFamily)}>Close</button></div>
+</dialog>
 <dialog bind:this={dialog} class="grant" aria-labelledby="grant-title" oncancel={event=>{event.preventDefault();cancelGrant();}}>
   {#if grantRequest}
     <h2 id="grant-title">Grant {grantRequest.label.toLowerCase()}?</h2>
@@ -122,7 +219,19 @@
   {/if}
 </dialog>
 <style>
-  iframe{display:block;width:100%;height:100%;min-height:0;border:0;background:var(--color-panel)}
+  .canvas-host{display:flex;flex-direction:column;width:100%;height:100%;min-height:0}
+  .host-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;border-bottom:1px solid var(--color-panel-subtle);background:var(--color-panel);font-size:12px;color:var(--color-ink-soft)}
+  .host-bar button{min-height:30px;padding:4px 10px;font-size:12px}
+  iframe{display:block;width:100%;flex:1;min-height:0;border:0;background:var(--color-panel)}
+  .connections{width:min(calc(100% - 32px),480px)}
+  .family{border-top:1px solid var(--color-panel-subtle);padding-top:12px;margin-top:12px}
+  h3{font-size:14px;margin:0 0 6px}
+  ul{margin:4px 0 8px;padding-inline-start:18px;font-size:13px}
+  label{display:block;font-size:12px;margin:8px 0 4px}
+  .choose{display:flex;gap:8px;flex-wrap:wrap}
+  select{flex:1;min-width:0;font:inherit;font-size:13px;min-height:36px;padding:6px 8px;border:1px solid var(--color-line-strong);border-radius:7px;background:var(--color-panel);color:var(--color-ink)}
+  .hint{font-size:12px}
+  @media(pointer:coarse){select,.host-bar button{min-height:44px}}
   .grant{width:min(calc(100% - 32px),400px);padding:24px;border:1px solid var(--color-line-strong);border-radius:var(--bot-radius-card,14px);background:var(--color-panel);color:var(--color-ink)}
   .grant::backdrop{background:rgb(0 0 0 / .35)}
   h2{font-family:var(--font-brand);font-size:18px;line-height:1.3;margin:0 0 8px}
