@@ -49,8 +49,11 @@ export function sourceLabel(locale, item) {
  *   kicker         string          source label over the cover
  *   title          string          first line / heading
  *   body           string          snapshot text
- *   meta           Node | null     trailing meta line
+ *   meta           Node | null     trailing meta line (Sources variant --
+ *                            no chip); ignored when `chip` is set
  *   chip           { label, cls } | null  — state chip (Content variant)
+ *   when           string | null   muted timestamp trailing the chip
+ *                            (Content variant only, e.g. "edited 2m ago")
  *   badge          string | null   corner badge (e.g. duplicate)
  *   selectable     boolean         renders the Sources selection checkbox
  *   selected       boolean         checkbox state + selected styling
@@ -84,9 +87,20 @@ export function renderPostCard(locale, card, covers) {
       ])),
       el("span", { class: "sl-post-body" }, [
         el("strong", null, card.title || ""),
-        el("p", null, card.body || ""),
-        card.chip ? el("span", { class: `sl-state-chip ${card.chip.cls || ""}` }, card.chip.label) : null,
-        card.meta ?? null
+        // Callers dedupe a body that would only repeat the title (defect
+        // 5) by passing "" -- an empty <p> would still hold its own fixed
+        // height, so it is dropped rather than rendered blank.
+        card.body ? el("p", null, card.body) : null,
+        // The Content variant's chip and its trailing timestamp share one
+        // row (defect-adjacent to 5: two separate lines said less than one
+        // together); the Sources variant has no chip and keeps its own
+        // meta line untouched.
+        card.chip
+          ? el("span", { class: "sl-card-foot" }, [
+              el("span", { class: `sl-state-chip ${card.chip.cls || ""}` }, card.chip.label),
+              card.when ? el("span", { class: "sl-card-when" }, card.when) : null
+            ])
+          : card.meta ?? null
       ])
     ]
   );

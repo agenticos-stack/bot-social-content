@@ -34,6 +34,7 @@ import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
+import { detectProtectedLiterals } from "../../model.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
 import {
   applyPublishState,
@@ -42,10 +43,9 @@ import {
   createWizardState,
   goToStep as goToWizardStep,
   isRefusal,
+  publicationStateSummary,
   refusalMessage,
   renderPublish,
-  renderResult,
-  renderReview,
   renderSetup,
   resumeBatch,
   setPublishError,
@@ -56,7 +56,7 @@ import {
   togglePublishBinding
 } from "./steps.js";
 
-const WIZARD_BACK_TARGET = { review: "select", publish: "review", result: "publish" };
+const WIZARD_BACK_TARGET = { publish: "select" };
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
@@ -87,18 +87,37 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
   --sl-radius-card: var(--studio-v2-radius-card, 14px);
   --sl-radius-control: var(--studio-v2-radius-control, 9px);
-  /* One height for every toolbar control, so the search field and the filter
-     buttons beside it cannot drift apart again. */
-  --sl-control-h: 40px;
-  /* One height for every toolbar control, so a search field and the filter
-     buttons beside it cannot drift apart. */
-  --sl-control-h: 40px;
+  /*
+   * THE control scale. Every button, input, chip and tab in this sheet sizes
+   * off one of these three -- nothing below declares a height of its own.
+   * --bot-control-height is bot-shell's own hook for .bot-button/.bot-input;
+   * it is pointed at the same scale instead of carrying a second number
+   * that can drift from it.
+   *
+   * (No backticks anywhere in this stylesheet: it is a template literal.)
+   */
+  --sl-h-control: 36px;
+  --sl-h-compact: 28px;
+  --sl-h-touch: 44px;
+  --bot-control-height: var(--sl-h-control);
   --sl-radius-row: var(--studio-v2-radius-row, 8px);
   --sl-focus: var(--gadget-focus, var(--sl-ink));
   --sl-font: var(--font-sans, system-ui, sans-serif);
 }
+/* Coarse pointers fold control and compact into the one touch size, so a
+   28px chip and a 36px input alike grow to 44px without a second override
+   anywhere else in this file. */
+@media (pointer: coarse) {
+  :root { --sl-h-control: var(--sl-h-touch); --sl-h-compact: var(--sl-h-touch); }
+}
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--sl-bg); color: var(--sl-ink); font: 13.5px/1.55 var(--sl-font); }
+/* The canvas root sits on the surface token (white), not the page's own
+   off-white --sl-bg -- ships in the gadget's own stylesheet so it applies
+   wherever the archive runs, not only in the preview host's chrome.
+   min-height keeps the surface filling the viewport even when .sl-app's
+   content is shorter, so there is no seam of --sl-bg below it. */
+#gadget-root { background: var(--sl-surface); min-height: 100dvh; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
@@ -108,7 +127,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-titleline { margin-bottom: 18px; }
 .sl-titleline h1 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .sl-main-nav { display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--sl-line); margin-bottom:20px; }
-.sl-main-nav > button { min-height:40px; padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
+.sl-main-nav > button { min-height:var(--sl-h-control); padding:8px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--sl-muted); font-weight:600; }
 .sl-main-nav > button[aria-pressed=true] { border-bottom-color:var(--sl-ink); color:var(--sl-ink); }
 .sl-main-actions { margin-left:auto; display:flex; gap:4px; }
 /*
@@ -120,25 +139,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  *
  * (No backticks anywhere in this stylesheet: it is a template literal.)
  */
-.sl-icon-action { width:34px; height:34px; border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
+.sl-icon-action { width:var(--sl-h-control); height:var(--sl-h-control); border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
 .sl-icon-action svg { width:18px; height:18px; display:block; }
 .sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
 .sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
-@media(pointer:coarse) { .sl-main-actions .sl-icon-action { width:44px; height:44px; } }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
 .sl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .sl-search { flex: 1 1 200px; }
-.sl-search-input { width: 100%; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-control-h); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
+.sl-search-input { width: 100%; height: var(--sl-h-control); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--sl-h-control); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-muted); font-size: 11px; white-space: nowrap; }
 .sl-filter-btn.sl-filter-active { background: var(--sl-selected); color: var(--sl-ink); font-weight: 650; }
 /* The count is a reading of the filter, not part of its name: it stays legible
    at a glance and stops "New" and "3" reading as one word. */
 .sl-filter-count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font: 600 9.5px/18px var(--sl-font); font-variant-numeric: tabular-nums; text-align: center; }
 .sl-filter-active .sl-filter-count { background: var(--sl-ink); color: var(--sl-surface); }
 .sl-sync-refresh { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--sl-muted); font-size: 10.5px; }
-.sl-sync-refresh button { height: 32px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
+.sl-sync-refresh button { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
 .sl-chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
-.sl-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 10.5px; }
+.sl-chip { display: inline-flex; align-items: center; gap: 6px; height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-chip-active { background: var(--sl-selected); font-weight: 650; }
 .sl-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sl-success); }
 .sl-chip-degraded { border-color: var(--sl-warning); color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 10%, var(--sl-surface)); }
@@ -147,22 +165,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-mobile-panes { display: none; }
 .sl-inbox { margin: 0 0 24px; padding: 0 0 20px; border-bottom: 1px solid var(--sl-line); background: var(--sl-surface); }
 .sl-inbox-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-.sl-inbox-tabs button { min-height: 34px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
+.sl-inbox-tabs button { min-height: var(--sl-h-compact); padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); white-space: nowrap; font-size: 12px; }
 .sl-inbox-tabs button.sl-filter-active { color: var(--sl-ink); border-bottom-color: var(--sl-ink); font-weight: 650; }
 .sl-inbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .sl-inbox-card { display: grid; gap: 6px; min-height: 142px; padding: 13px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); }
 .sl-inbox-card:focus-within, .sl-inbox-card:focus { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
 .sl-inbox-card-meta { display: flex; justify-content: space-between; color: var(--sl-muted); font-size: 9px; }
-.sl-inbox-card .sl-secondary { min-height: 34px; font-size: 10.5px; }
+.sl-inbox-card .sl-secondary.sl-secondary { min-height: var(--sl-h-compact); font-size: 10.5px; }
 .sl-state-chip { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border-radius: 999px; font: 600 8.5px var(--sl-font); letter-spacing: .03em; text-transform: uppercase; background: var(--sl-surface-2); color: var(--sl-muted); }
 .sl-chip-queued { background: var(--sl-selected, var(--sl-surface-2)); color: var(--sl-ink); }
 .sl-chip-attention { background: rgba(176,84,42,.12); color: var(--sl-warn, #a0522d); }
 .sl-chip-submitted, .sl-chip-scheduled { background: rgba(46,122,74,.12); color: var(--sl-ok, #2e7a4a); }
+/* Content card foot: chip leading, a muted timestamp trailing -- one row,
+   not the chip and a separate two-line meta block underneath it. */
+.sl-card-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.sl-card-foot .sl-state-chip { margin: 0; }
+.sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
 .sl-drawer-section { padding: 12px 0; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-regen-row { margin: 0 0 16px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
-.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: 26px; padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
+.sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: var(--sl-h-compact); padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
 .sl-drawer-section p { margin: 4px 0; font-size: 11px; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
@@ -175,11 +199,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-post-body { display: block; padding: 16px; }
 .sl-inbox-card.bot-card { padding: 16px; gap: 10px; }
 .sl-inbox-card p { margin: 4px 0; line-height: 1.65; }
-.sl-app { --bot-control-height: 34px; --sl-control-h: 36px; }
 .sl-app .bot-button.bot-button { font-size: 12px; padding: 6px 10px; }
-@media (pointer: coarse) { .sl-app { --bot-control-height: 44px; --sl-control-h: 44px; } .sl-inbox-tabs button { min-height: 44px; } }
 .sl-post-body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sl-post-body p { height: 34px; margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; }
+/* Two lines, ellipsised -- a fixed height cut a line off mid-glyph;
+   line-clamp stops at a whole line instead. */
+.sl-post-body p { margin: 4px 0 8px; color: var(--sl-muted); font-size: 10.5px; line-height: 1.55; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .sl-meta { display: flex; justify-content: space-between; font: 8.5px var(--sl-font); color: var(--sl-muted); }
 .sl-meta-unavail { color: var(--sl-warning); font-weight: 650; }
 .sl-duplicate-badge { display: block; padding: 6px 13px 10px; color: var(--sl-muted); font-size: 9.5px; }
@@ -198,16 +222,38 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    shorter than the canvas the dock parked at the end of the content with dead
    space beneath it, instead of above the bottom edge. The canvas is its own
    iframe, so the viewport this pins to is the gadget's, not the page's. The
-   bottom padding on .sl-app is what lets the last row scroll clear of it. */
+   bottom padding on .sl-app is what lets the last row scroll clear of it.
+
+   Reserved for a live SELECTION's own transient action -- it exists
+   because the owner selected something, it summarises that selection,
+   and the action it carries consumes it (the Sources tray is the
+   reference use). It is not a generic screen footer: the Publish step's
+   plain Back/View-summary navigation used to live here, tied to no
+   selection, floating over a card whose own submit row was the screen's
+   actual action -- moved to .sl-page-nav (below) instead. Reach for
+   .sl-page-nav for ordinary end-of-page navigation. */
 .sl-selection { position: fixed; bottom: clamp(10px, 2vh, 18px); left: 50%; translate: -50% 0; z-index: 5; width: fit-content; max-width: calc(100% - 32px); padding: 8px; border: 1px solid var(--sl-line); border-radius: calc(var(--sl-radius-card) + 4px); background: color-mix(in srgb, var(--sl-surface) 80%, transparent); backdrop-filter: blur(16px) saturate(180%); box-shadow: 0 1px 2px rgba(24,24,27,.04), 0 14px 30px -14px rgba(24,24,27,.3); }
 .sl-selection-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* The footer container owns alignment, not the buttons in it: whichever
+   action is last in a footer row is the one pushed to the far end. */
+.sl-selection-inner > *:last-child { margin-left: auto; }
+/* Ordinary in-flow end-of-page navigation -- quiet, secondary, not tied to
+   a selection and not fixed over the content. */
+.sl-page-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+/* :not(:only-child) -- with a lone Back button (Publish's own row, since the
+   Batch summary screen and its "View summary" partner were removed), this
+   must not push the one child to the far edge the way it correctly pushes a
+   second child in a row that still has one. */
+.sl-page-nav > *:last-child:not(:only-child) { margin-left: auto; }
 .sl-selected-copy { padding-inline: 8px 4px; }
 .sl-selected-copy strong { display: block; font-size: 11.5px; }
 .sl-selected-copy span { display: block; color: var(--sl-muted); font-size: 9.5px; }
-.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-control-h); padding: 0 10px; }
+.sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-h-control); padding: 0 10px; }
 .sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
-.sl-primary, .sl-secondary { min-height: 40px; padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
-.sl-primary { margin-left: auto; border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
+/* Appearance only -- alignment belongs to the footer container (see
+   .sl-selection-inner and .sl-preview-actions above/below), not this class. */
+.sl-primary, .sl-secondary { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+.sl-primary { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
 .sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
 /* A faded brand fill reads as a broken button. An unavailable action is inert,
    so it drops the brand entirely instead of wearing a washed-out version. */
@@ -224,16 +270,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
-.sl-setup-actions .sl-primary { margin-left: 0; }
 .sl-item-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
-.sl-item-tabs button { height: 32px; padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
+.sl-item-tabs button { height: var(--sl-h-compact); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
 .sl-item-tabs button[aria-selected="true"] { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
 .sl-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
 .sl-dual-pane { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
 .sl-dual-pane header { padding: 9px 13px; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; display: flex; justify-content: space-between; align-items: center; }
 .sl-dual-body { padding: 14px; }
 .sl-src-text { margin: 0; font-size: 12.5px; line-height: 1.85; }
-.sl-lit { background: var(--sl-accent-soft); border-radius: 4px; padding: 1px 4px; font-weight: 600; }
+.sl-lit { background: var(--sl-accent-soft); border-bottom: 1px solid var(--sl-accent-strong); border-radius: 4px; padding: 1px 4px; font-weight: 600; color: inherit; }
 .sl-legend { margin: 10px 0 0; color: var(--sl-muted); font-size: 9.5px; }
 .sl-zh-edit { width: 100%; min-height: 130px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; font-size: 12.5px; line-height: 1.85; resize: vertical; }
 .sl-revision-badge { font: 9.5px var(--sl-font); color: var(--sl-muted); }
@@ -256,17 +301,75 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-error, .sl-wizard-error { margin: 0 0 10px; padding: 9px 12px; border: 1px solid var(--sl-danger); border-radius: var(--sl-radius-row); background: color-mix(in srgb, var(--sl-danger) 10%, var(--sl-surface)); color: var(--sl-danger); font-size: 11px; }
 .sl-poster-preview { display: grid; place-items: center; }
 .sl-poster-canvas { max-width: 100%; max-height: 220px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); }
-.sl-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 18px; }
-.sl-preview-card { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
+/* One card per item, full width -- a two-column card has too much of its
+   own internal structure to also share a row with a sibling. */
+.sl-review-grid { display: grid; gap: 16px; margin-bottom: 18px; }
+.sl-preview-card { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-preview-card header { padding: 10px 13px; border-bottom: 1px solid var(--sl-line); font-size: 11px; font-weight: 650; }
-.sl-pc-media { aspect-ratio: 1/1; background: var(--sl-surface-2); display: grid; place-items: center; padding: 14px; text-align: center; }
-.sl-pc-body { padding: 11px 13px; }
-.sl-pc-body p { margin: 0; font-size: 11px; }
+/* Poster on the secondary surface, everything that decides publication on
+   the primary one -- so the decisions read as the active half. One column
+   below 760px (poster first), two at and above it. */
+.sl-pc-grid { display: grid; }
+@media (min-width: 760px) { .sl-pc-grid { grid-template-columns: 264px 1fr; } }
+/* align-content: start, not the grid default (stretch/center) -- a grid
+   column stretches to the row's height by default, and with a tall
+   decision column beside it this became ~700px of grey with the slot
+   floating dead centre. The column's job is only to hold the slot at the
+   top; it does not grow to match it. The tint lives on the slot itself
+   (below), not this column, so it ends where the poster ends instead of
+   running the height of the card. */
+.sl-pc-media { display: grid; justify-items: center; align-content: start; padding: 18px; gap: 10px; text-align: center; border-bottom: 1px solid var(--sl-line); }
+@media (min-width: 760px) { .sl-pc-media { border-bottom: 0; border-right: 1px solid var(--sl-line); } }
+/* The reserved slot, not the (top-aligned, but still full-column-height)
+   surface around it: this is what actually carries the aspect-ratio and
+   the secondary-surface tint, so the poster/placeholder keeps the shape
+   it ships in -- and the grey stops exactly where the poster does --
+   regardless of how tall the decision column beside it grows. */
+.sl-pc-media-slot { width: 100%; display: grid; place-items: center; background: var(--sl-surface-2); border-radius: var(--sl-radius-control); }
+/* The slot already reserves the exact ratio the template draws at (see
+   steps.js's mediaAspect), so the canvas fills it edge to edge rather than
+   capping its own height the way a variable-ratio source frame has to
+   (preview-media.js's FRAME_MAX) -- there is no mismatch here to guard. */
+.sl-pc-canvas { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
+.sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
+.sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
+.sl-pc-caption { display: grid; gap: 8px; align-items: start; }
+.sl-pc-caption p { margin: 0; font-size: 13.5px; line-height: 1.65; white-space: pre-wrap; }
+.sl-pc-caption .sl-cta { justify-self: start; }
+/* Quiet grouping labels, same register as .sl-preview-kicker below. */
+.sl-pc-field { display: grid; gap: 8px; }
+.sl-pc-field-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); font-weight: 700; }
+/* One step down from .sl-pc-field-label's section register -- sentence
+   case, no letter-spacing, no uppercase, so a field inside a section
+   reads as subordinate to it rather than a second section of its own. */
+.sl-pc-subfield { display: grid; gap: 4px; margin-top: 10px; }
+.sl-pc-subfield-label { font-size: 11px; color: var(--sl-muted); font-weight: 600; }
+.sl-pc-subfield input { height: var(--sl-h-control); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font: inherit; }
+.sl-dest { display: grid; gap: 7px; }
+.sl-dest-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: 10px; font-size: 12.5px; cursor: pointer; }
+.sl-dest-row:hover { background: var(--sl-surface-2); }
+.sl-dest-row-selected { border-color: var(--sl-accent-strong); background: var(--sl-accent-soft); }
+.sl-dest-row input { accent-color: var(--sl-accent-strong); width: 15px; height: 15px; flex-shrink: 0; }
+.sl-dest-tag { margin-left: auto; color: var(--sl-muted); font-size: 10px; }
+/* Pill segments, the active one filled in ink -- not radio dots. The input
+   stays for keyboard/screen-reader semantics; it is visually hidden, not
+   display:none, so it keeps its place in the tab order. */
+.sl-timing { display: flex; gap: 7px; flex-wrap: wrap; }
+.sl-seg { position: relative; display: inline-flex; align-items: center; height: var(--sl-h-compact); padding: 0 12px; border-radius: 999px; border: 1px solid var(--sl-line-strong); font-size: 11.5px; background: var(--sl-surface); cursor: pointer; }
+.sl-seg input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.sl-seg:has(input:focus-visible) { outline: 2px solid var(--sl-focus); outline-offset: 2px; }
+.sl-seg-on { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
+/* The hairline separates the decision from the act of sending it; the
+   button is the last child, so it takes the same push-to-end rule as
+   every other footer here. */
+.sl-submit-row { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--sl-line); padding-top: 16px; }
+.sl-submit-row > *:last-child { margin-left: auto; }
+.sl-submit-hint { font-size: 11px; color: var(--sl-muted); }
 .sl-bind-label { display: inline-flex; margin-top: 9px; padding: 4px 8px; border-radius: 999px; background: var(--sl-selected); color: var(--sl-muted); font: 9px var(--sl-font); }
-.sl-approval-card { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-card); padding: 16px; }
+/* One quiet block, on the card it describes, not a screen before it. */
+.sl-approval-note { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border: 1px solid var(--sl-line-strong); border-radius: 10px; background: var(--sl-accent-soft); font-size: 11.5px; line-height: 1.55; color: var(--sl-ink); }
+.sl-approval-mark { flex-shrink: 0; color: var(--sl-accent-strong); }
 .sl-approval-expired { border-color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 8%, var(--sl-surface)); }
-.sl-approval-card h3 { margin: 0 0 4px; font-size: 13px; }
-.sl-approval-card p { margin: 0 0 8px; color: var(--sl-muted); font-size: 11px; }
 .sl-hash { font: 10px var(--sl-font); color: var(--sl-muted); word-break: break-all; }
 .sl-target-row { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); margin-bottom: 8px; }
 .sl-who strong { display: block; font-size: 12px; }
@@ -276,15 +379,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-state-published { background: color-mix(in srgb, var(--sl-success) 16%, var(--sl-surface)); color: var(--sl-success); }
 .sl-state-failed_safe { background: color-mix(in srgb, var(--sl-danger) 12%, var(--sl-surface)); color: var(--sl-danger); }
 .sl-state-unknown { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); color: var(--sl-warning); }
-.sl-cta { height: 28px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
+.sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
 .sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
-.sl-result-summary { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); padding: 16px; margin-bottom: 12px; }
-.sl-result-item { padding: 10px 0; border-top: 1px solid var(--sl-line); }
-.sl-result-item:first-child { border-top: 0; padding-top: 0; }
-.sl-outcomes { display: flex; gap: 6px; margin-top: 6px; }
-.sl-outcome { display: inline-flex; align-items: center; gap: 6px; }
-.sl-result-note { margin: 0 0 16px; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-selected); font-size: 10.5px; }
 .sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
 .sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
@@ -359,6 +456,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-stage-state { display: grid; place-items: center; gap: 8px; text-align: center; padding: 26px 12px; }
 .sl-stage-state p { margin: 0; color: #9d968a; font-size: 12.5px; line-height: 1.55; max-width: 34ch; }
 .sl-stage-state strong { color: #f3f0e9; font-size: 13.5px; }
+/* A genuinely empty post is a quiet fact, not a loading state or a refusal
+   -- it keeps the stage's own footprint (below) but drops the dark ground,
+   the two other states earn. */
+.sl-stage.sl-stage-empty { background: var(--sl-surface-2); border-style: dashed; border-radius: var(--sl-radius-card); }
+.sl-stage-empty-note { padding: 22px; text-align: center; max-width: 30ch; }
+.sl-stage-empty-note strong { display: block; color: var(--sl-ink); font-size: 12px; font-weight: 650; margin-bottom: 4px; }
+.sl-stage-empty-note p { margin: 0; color: var(--sl-muted); font-size: 11.5px; line-height: 1.55; }
 .sl-stage-skeleton { width: 108px; height: 136px; background: linear-gradient(100deg, #24211a 30%, #3a3427 50%, #24211a 70%) 0 0 / 300% 100%; animation: sl-shimmer 1.5s linear infinite; }
 @keyframes sl-shimmer { to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-stage-skeleton { animation: none; } }
@@ -393,20 +497,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+/* One footer rule for both drawers -- the single-post preview and the batch
+   drawer each carry exactly one action now, so there is no second, opposing
+   system to keep in sync with this one. */
 .sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
-.sl-preview-actions button { flex: 1; min-height: 44px; white-space: normal; }
-/* The batch drawer's actions match the rest of the app: compact, right-aligned.
-   The doubled class out-specifies bot-shell's .bot-button.bot-button pin. */
-.sl-drawer-actions { justify-content: flex-end; }
-.sl-drawer-actions .sl-secondary.sl-secondary,
-.sl-drawer-actions .sl-primary.sl-primary { flex: 0 0 auto; min-height: 30px; padding: 0 12px; font-size: 10.5px; margin-left: 0; }
-.sl-drawer-actions .sl-drawer-regen { margin-right: auto; }
+.sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
 .sl-drawer-section .sl-stage { min-height: 220px; }
 .sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
 .sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
 .sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
+/* What the composer below it must not lose, marked read-only -- a
+   textarea cannot carry inline marks of its own. */
+.sl-drawer-caption-preview { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
 .sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
 .sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
 .sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
@@ -425,7 +529,6 @@ ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-preview-dialog { width: 100vw; height: 100dvh; margin: 0; border-left: 0; }
   .sl-preview-scroll { padding: 14px; }
   .sl-preview-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .sl-preview-actions button { min-height: 44px; }
   .sl-zh-edit, .sl-field input, .sl-field select { font-size: 16px; }
 }
 `;
@@ -799,6 +902,27 @@ function App() {
      * `saveRevisions` call — the same shape the agent uses, so the platform
      * shows one approval for the batch either way.
      */
+    /*
+     * What must survive a rewrite, marked where the owner is looking at the
+     * caption — not a fact the owner has to already know to check for. A
+     * textarea cannot carry inline marks, so an editable item gets this as
+     * a small read-only preview above its composer, shown only when there
+     * is something protected to show (nothing to mark is nothing to add).
+     */
+    const highlightedCaption = (text) => {
+      const value = text || "";
+      const spans = detectProtectedLiterals(value, policy).sort((a, b) => a.start - b.start);
+      if (!spans.length) return null;
+      const frag = document.createDocumentFragment();
+      let cursor = 0;
+      for (const span of spans) {
+        if (span.start > cursor) frag.appendChild(document.createTextNode(value.slice(cursor, span.start)));
+        frag.appendChild(el("mark", { class: "sl-lit" }, value.slice(span.start, span.end)));
+        cursor = Math.max(cursor, span.end);
+      }
+      if (cursor < value.length) frag.appendChild(document.createTextNode(value.slice(cursor)));
+      return frag;
+    };
     const composers = new Map(); // batchItemId -> { textarea, note, item }
     const captionEditor = (item) => {
       if (!isEditableItem(item)) return null;
@@ -825,15 +949,57 @@ function App() {
       stages.push(mediaStage);
       return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
     };
+    /*
+     * The drawer's job is "open this batch" — look at it, edit it, move on.
+     * Regenerate lives here in the body rather than the footer: it acts on
+     * the whole batch the same way the item-count line above it does, and
+     * the footer's one job now is to advance into Publish (TASK-203 merge).
+     */
+    const regenerateRow = editable
+      ? el("div", { class: "sl-drawer-regen-row" }, [
+          el("button", {
+            type: "button", class: "sl-secondary sl-drawer-regen",
+            onclick: async () => {
+              try {
+                const result = await rpc.requestGeneration(batch.id);
+                if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+              } catch (error) {
+                announce(error instanceof Error ? error.message : String(error), "");
+                return;
+              }
+              batchDialog.close();
+              announce(t(locale, "drawerRegenerateNote"), "");
+              inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+              renderCurrentView();
+            }
+          }, t(locale, "drawerRegenerate"))
+        ])
+      : null;
+    // Moved here from the removed Batch summary screen: the drawer is
+    // already scoped to one batch, which is what an export is of. Renders
+    // regardless of `editable` -- a submitted batch is still exportable.
+    // Unchanged handler (onExport, in wizardHandlers below).
+    const exportRow = el("div", { class: "sl-export-row" }, [
+      el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
+      el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
+    ]);
     const body = el("div", { class: "sl-preview-scroll" }, [
-      el("p", { class: "sl-field-note" }, t(locale, "inboxItemCount", { n: batch.items.length })),
+      el("p", { class: "sl-field-note" }, t(locale, batch.items.length === 1 ? "inboxItemCountOne" : "inboxItemCount", { n: batch.items.length })),
+      regenerateRow,
+      exportRow,
       ...batch.items.map((item) => {
         return el("section", { class: "sl-drawer-section" }, [
         stage(item),
         el("h3", null, item.sourceItem?.sourceLabel || item.sourceItem?.provider || t(locale, "paneSource")),
-        isEditableItem(item)
-          ? captionEditor(item)
-          : el("p", { class: "sl-field-note" }, item.caption || t(locale, "inboxNoSource")),
+        (() => {
+          const marked = item.caption ? highlightedCaption(item.caption) : null;
+          return isEditableItem(item)
+            ? el("div", null, [
+                marked ? el("p", { class: "sl-drawer-caption-preview" }, [marked]) : null,
+                captionEditor(item)
+              ])
+            : el("p", { class: "sl-field-note" }, item.caption ? [marked || item.caption] : t(locale, "inboxNoSource"));
+        })(),
         posterPreview(item),
         batch.generation === "requested"
           ? el("p", { class: "sl-field-note" }, t(locale, "drawerQueuedNote"))
@@ -843,7 +1009,7 @@ function App() {
         // including `bound` ones (recorded destinations, never sent).
         item.publications?.length
           ? el("ul", { class: "sl-field-note" }, item.publications.map((pub) =>
-              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${pub.state}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
+              el("li", null, `${destinationLabel(pub.destinationBinding)} · ${publicationStateSummary(locale, pub.state)}${pub.postId ? ` · post ${pub.postId}` : ""}`)))
           : null,
         item.state === "submitted" || item.state === "awaiting_approval" ? el("p", { class: "sl-field-note" }, t(locale, "drawerApprovalUnavailable")) : null
       ]); })
@@ -878,6 +1044,49 @@ function App() {
       }
       return allOk;
     };
+    /*
+     * One action: Continue to publish already saves every dirty caption
+     * (saveDirty(), below) before it does anything else, so a standalone
+     * "Save changes" button was the same action offered twice. Close lives
+     * in the header as the wrapped icon button, not repeated here as text.
+     */
+    const footer = editable
+      ? el("footer", { class: "sl-preview-actions" }, [
+          el("button", {
+            type: "button", class: "sl-primary",
+            onclick: async () => {
+              if (!(await saveDirty())) return;
+              // The poster's PNG exists only when the client renders it — and
+              // it must exist before submit, or the post ships source media.
+              for (const item of batch.items ?? []) {
+                if (!item.posterLayout || item.posterStored) continue;
+                try {
+                  const png = await renderPosterPng(item.posterLayout.template, {
+                    headline: item.posterLayout.headline, subline: item.posterLayout.subline,
+                    background: { value: item.posterLayout.background?.value },
+                    textColor: item.posterLayout.textColor, align: item.posterLayout.align
+                  });
+                  const stored = await rpc.savePoster({
+                    batchItemId: item.id, expectedRevision: item.revision ?? 0,
+                    template: item.posterLayout.template, png
+                  });
+                  if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
+                } catch (error) {
+                  announce(error instanceof Error ? error.message : String(error), "");
+                  return;
+                }
+              }
+              batchDialog.close();
+              wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
+              // The merged Publish step reads publication rows off
+              // wizard.publishByItem — fetch them on the way in rather than
+              // showing a picker for pairs that are already filed.
+              await refreshPublishState();
+              renderCurrentView();
+            }
+          }, t(locale, "continueToPublish"))
+        ])
+      : null;
     replace(batchDialog, [el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
         el("button", {
@@ -887,58 +1096,7 @@ function App() {
         }, icon("close"))
       ])]),
       body,
-      el("footer", { class: "sl-preview-actions sl-drawer-actions" }, [
-        editable ? el("button", {
-          type: "button", class: "sl-secondary sl-drawer-regen",
-          onclick: async () => {
-            try {
-              const result = await rpc.requestGeneration(batch.id);
-              if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
-            } catch (error) {
-              announce(error instanceof Error ? error.message : String(error), "");
-              return;
-            }
-            batchDialog.close();
-            announce(t(locale, "drawerRegenerateNote"), "");
-            inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
-            renderCurrentView();
-          }
-        }, t(locale, "drawerRegenerate")) : null,
-        el("button", { type: "button", class: "sl-secondary", onclick: () => batchDialog.close() }, t(locale, "drawerClose")),
-        editable ? el("button", {
-          type: "button", class: "sl-secondary",
-          onclick: async () => {
-            if (!(await saveDirty())) return;
-            // The poster's PNG exists only when the client renders it — and
-            // it must exist before submit, or the post ships source media.
-            for (const item of batch.items ?? []) {
-              if (!item.posterLayout || item.posterStored) continue;
-              try {
-                const png = await renderPosterPng(item.posterLayout.template, {
-                  headline: item.posterLayout.headline, subline: item.posterLayout.subline,
-                  background: { value: item.posterLayout.background?.value },
-                  textColor: item.posterLayout.textColor, align: item.posterLayout.align
-                });
-                const stored = await rpc.savePoster({
-                  batchItemId: item.id, expectedRevision: item.revision ?? 0,
-                  template: item.posterLayout.template, png
-                });
-                if (stored && stored.ok === false) { announce(refusalMessage(stored), ""); return; }
-              } catch (error) {
-                announce(error instanceof Error ? error.message : String(error), "");
-                return;
-              }
-            }
-            batchDialog.close();
-            wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
-            renderCurrentView();
-          }
-        }, t(locale, "continueToPublish")) : null,
-        editable ? el("button", {
-          type: "button", class: "sl-primary",
-          onclick: async () => { await saveDirty(); }
-        }, t(locale, "saveChanges")) : null
-      ])
+      footer
     ])]);
     if (!batchDialog.open) batchDialog.showModal();
     batchDialog.addEventListener("close", () => {
@@ -1149,7 +1307,7 @@ function App() {
     }
   }
 
-  // --- Wizard (review / publish / result) handlers ---------------------------
+  // --- Wizard (publish / result) handlers -------------------------------------
   const wizardHandlers = {
     // --- Publish step: the send decision is per item, made at submit -------
     onToggleBinding: (id, binding) => {
@@ -1226,21 +1384,28 @@ function App() {
       }
     },
     onOpenSettings: () => collectionHandlers.onOpenSettings(),
+    // The publish card shows the caption as finished copy, not a second
+    // place to change it -- one editing surface (the drawer, with its
+    // composer and protected-literal preview), one place to ship (this
+    // card). Only `.id` reaches openBatchDrawer; it re-fetches the batch
+    // itself.
+    //
+    // `itemId` is unused today: `wizard.batch.id` is correct for ANY item
+    // on this screen, because the wizard is only ever entered from one
+    // real batch, so every item on it shares that one id. This holds only
+    // while that is true -- the day the wizard can hold a selection spanning
+    // several batches (design-plans/architecture-publish-wizard-multi-batch-1.md),
+    // this must resolve the clicked item's OWN batch id instead, or it will
+    // open the wrong drawer for an item from a different batch.
+    onEditCaption: (itemId) => openBatchDrawer({ id: wizard.batch.id }),
     onBack: async () => {
       const target = WIZARD_BACK_TARGET[wizard.step];
-      // "select" has no wizard view of its own — going back from Review
+      // "select" has no wizard view of its own — going back from Publish
       // means leaving the batch and returning to the collection.
       wizard = target === "select" ? createWizardState() : target ? goToWizardStep(wizard, target) : wizard;
       // A refusal banner from the step being left does not belong on the
       // step navigated to.
       wizard = setWizardError(wizard, null);
-      renderCurrentView();
-    },
-    onContinue: async () => {
-      if (wizard.step === "review") {
-        wizard = goToWizardStep(wizard, "publish");
-        await refreshPublishState();
-      }
       renderCurrentView();
     },
     onRetry: async (itemId, destinationBinding) => {
@@ -1275,10 +1440,10 @@ function App() {
         console.error(error);
       }
     },
-    onViewSummary: () => {
-      wizard = goToWizardStep(wizard, "result");
-      renderCurrentView();
-    },
+    // Relocated into the batch drawer's body (openBatchDrawer, next to
+    // Regenerate) now that the Batch summary screen is gone -- the drawer
+    // is already scoped to one batch, which is what an export is of.
+    // Unchanged: same rpc call, same refusal handling.
     onExport: async (format) => {
       try {
         await rpc.exportAs(format);
@@ -1286,11 +1451,6 @@ function App() {
         console.error(error);
         announce(t(locale, "exportFailed"), "");
       }
-    },
-    onStartAnother: async () => {
-      wizard = createWizardState();
-      await loadCollection("new");
-      renderCurrentView();
     }
   };
 
@@ -1335,9 +1495,7 @@ function App() {
       replace(viewHost, [navigation, body]);
       return;
     }
-    if (wizard.step === "review") renderReview(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
-    else if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
-    else if (wizard.step === "result") renderResult(viewHost, wizard, { locale, summary, handlers: wizardHandlers });
+    if (wizard.step === "publish") renderPublish(viewHost, wizard, { locale, summary, policy, handlers: wizardHandlers });
   }
 
 

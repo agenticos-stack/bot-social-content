@@ -85,7 +85,7 @@ describe("saved card facts", () => {
     );
     expect(root.textContent).toContain("Original account");
     expect(root.textContent).toContain("Saved caption");
-    expect(root.textContent).toContain("Saved revision 7");
+    expect(root.textContent).toContain("Version 7");
     expect(root.textContent).not.toContain("Unsaved or newly fetched text");
   });
 
