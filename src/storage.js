@@ -394,6 +394,33 @@ function rows(cursor) {
   return cursor.toArray();
 }
 
+/**
+ * Whether a stored layout row and an appended revision's layout describe the
+ * same rendered poster. Compared on the fields the renderer reads —
+ * template, headline, subline, background kind+value, textColor, align — so
+ * an unrelated key carried on the object cannot orphan an honest image, and
+ * a change to anything visible cannot borrow one.
+ */
+function samePosterLayout(previousJson, nextLayout) {
+  if (!previousJson || !nextLayout || typeof nextLayout !== "object") return false;
+  let previous;
+  try {
+    previous = JSON.parse(previousJson);
+  } catch {
+    return false;
+  }
+  if (!previous || typeof previous !== "object") return false;
+  return (
+    previous.template === nextLayout.template &&
+    previous.headline === nextLayout.headline &&
+    previous.subline === nextLayout.subline &&
+    previous.textColor === nextLayout.textColor &&
+    previous.align === nextLayout.align &&
+    previous.background?.kind === nextLayout.background?.kind &&
+    previous.background?.value === nextLayout.background?.value
+  );
+}
+
 export class Storage {
   constructor(ctx) {
     this.ctx = ctx;
@@ -1397,6 +1424,35 @@ export class Storage {
         nowIso(),
         batchItemId
       );
+      /*
+       * A poster is pixels rendered for a LAYOUT, not for a caption. When the
+       * appended revision carries the same layout the stored poster was
+       * rendered from — the common case, a caption-only edit — the image is
+       * still exactly what was reviewed, so the row carries forward and
+       * `getPoster(item, currentRevision)` stays honest. A changed layout
+       * carries nothing: shipping pixels rendered for a different headline
+       * would silently mis-describe the revision.
+       */
+      const previousPoster = rows(
+        this.sql.exec("SELECT template, png, byte_length FROM posters WHERE batch_item_id = ? AND revision = ?", batchItemId, current)
+      )[0];
+      if (previousPoster) {
+        const previousLayout = rows(
+          this.sql.exec("SELECT poster_layout_json FROM revisions WHERE batch_item_id = ? AND revision = ?", batchItemId, current)
+        )[0];
+        if (samePosterLayout(previousLayout?.poster_layout_json, patch.posterLayout)) {
+          this.sql.exec(
+            `INSERT INTO posters (batch_item_id, revision, template, png, byte_length, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            batchItemId,
+            next,
+            previousPoster.template,
+            previousPoster.png,
+            previousPoster.byte_length,
+            nowIso()
+          );
+        }
+      }
       return { ok: true, revision: next };
     });
   }

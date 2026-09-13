@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { Gadget } from "../../src/server.js";
 import { normalizePublicationIntent } from "../../src/model.js";
@@ -256,6 +257,27 @@ describe("social archive revision metadata persistence", () => {
     expect((notImage as { issues?: { code: string }[] }).issues?.[0]?.code).toBe("poster_not_image");
   });
 
+  it("savePoster accepts a real encoder's JPEG and stores the bytes verbatim", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    // canvas.toBlob('image/jpeg') output captured from the connected run —
+    // decodable JFIF, not a synthetic header, so admission proves a real
+    // image passes, and storage must return byte-identical pixels.
+    const realJpeg = new Uint8Array(readFileSync(new URL("../fixtures/poster-1080x1350.jpg", import.meta.url)));
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+    const saved = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1350",
+      png: realJpeg
+    });
+    expect(saved).toMatchObject({ ok: true });
+    const stored = gadget.storage.getPoster("item-1", saved.revision);
+    expect(stored?.byteLength).toBe(realJpeg.byteLength);
+    expect(Uint8Array.from(stored?.bytes ?? [])).toEqual(realJpeg);
+  });
+
   it("a caption-only save carries posterLayout and confirmedClaims forward", async () => {
     const { ctx } = sqliteContext();
     const gadget = new Gadget(ctx as never, {} as never);
@@ -275,6 +297,66 @@ describe("social archive revision metadata persistence", () => {
       posterLayout: expect.objectContaining({ template: "1080x1080", headline: "Hello" }),
       confirmedClaims: ["award"]
     });
+  });
+
+  it("a caption edit after savePoster keeps the poster — the image belongs to the layout, not the caption", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const layout = {
+      template: "1080x1080",
+      headline: "Hello",
+      subline: "world",
+      background: { kind: "solid", value: "#000000" },
+      textColor: "#ffffff",
+      align: "left"
+    };
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", posterLayout: layout });
+    const poster = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(poster).toMatchObject({ ok: true, revision: 2 });
+
+    // The owner's caption edit lands on a new revision; the layout is
+    // carried, so the rendered poster still describes it exactly.
+    const edit = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 2, caption: "第二稿內容文字" });
+    expect(edit).toMatchObject({ ok: true, revision: 3 });
+    expect(gadget.storage.getPoster("item-1", 3)?.byteLength).toBe(32);
+  });
+
+  it("a layout change does NOT carry the poster — the stored pixels were rendered for the old layout", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const layout = {
+      template: "1080x1080",
+      headline: "Hello",
+      background: { kind: "solid", value: "#000000" },
+      textColor: "#ffffff",
+      align: "left"
+    };
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", posterLayout: layout });
+    const poster = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(poster).toMatchObject({ ok: true, revision: 2 });
+
+    const edit = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 2,
+      caption: "第二稿內容文字",
+      posterLayout: { ...layout, headline: "Different" }
+    });
+    expect(edit).toMatchObject({ ok: true, revision: 3 });
+    expect(gadget.storage.getPoster("item-1", 3)).toBeNull();
+    // The rev-2 poster itself is untouched — revision history stays honest.
+    expect(gadget.storage.getPoster("item-1", 2)?.byteLength).toBe(32);
   });
 });
 

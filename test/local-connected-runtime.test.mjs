@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
@@ -60,18 +61,28 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
     const png=Uint8Array.from({length:100000},(_,i)=>i%251);
     png.set([137,80,78,71,13,10,26,10]);
     new DataView(png.buffer).setUint32(16,1080);new DataView(png.buffer).setUint32(20,1350);
-    // SOI + SOF0 carrying 1350x1080 — enough structure for the dims parser;
-    // the publisher only ever sees bytes plus the sniffed mime.
-    const jpeg=new Uint8Array(100000);
-    jpeg.set([0xff,0xd8,0xff,0xc0,0x00,0x11,0x08]);
-    new DataView(jpeg.buffer).setUint16(7,1350);new DataView(jpeg.buffer).setUint16(9,1080);
+    // A real JPEG: canvas.toBlob output captured from the connected run —
+    // decodable bytes, not a synthetic header, since the fixture is what the
+    // publisher's container must accept.
+    const jpeg=new Uint8Array(readFileSync(new URL('./fixtures/poster-1080x1350.jpg',import.meta.url)));
     const posters=[{bytes:png,mimeType:'image/png',extension:'png'},{bytes:jpeg,mimeType:'image/jpeg',extension:'jpg'}];
     const intents=[{publishMode:'publish_now'},{publishMode:'schedule',publishLocalTime:'2099-08-01T10:00',timezone:'Asia/Hong_Kong'}];
     for(const [index,item] of batch.items.entries()){
       const saved=await call('saveRevision',[{batchItemId:item.id,expectedRevision:0,caption:'晨光為每天帶來嶄新的開始。',acceptedVisualMode:'text_poster',posterLayout:{template:'1080x1350',headline:'晨光與日常',background:{kind:'solid',value:'#123123'},textColor:'#ffffff',align:'left'},originalMediaRefs:[],publicationIntent:{publishMode:'save_draft'}}]);
       assert.equal(saved.ok,true,JSON.stringify(saved));
-      const poster=await call('savePoster',[{batchItemId:item.id,expectedRevision:saved.revision,template:'1080x1350',png:posters[index].bytes}]);
+      let poster=await call('savePoster',[{batchItemId:item.id,expectedRevision:saved.revision,template:'1080x1350',png:posters[index].bytes}]);
       assert.equal(poster.ok,true,JSON.stringify(poster));
+      if(index===0){
+        // A PNG draft on an Instagram destination refuses at submit — the
+        // provider's container would otherwise hold it at media_not_ready —
+        // and the recovery is a fresh JPEG render saved over it.
+        const refused=await call('submitForReview',[{batchItemId:item.id,expectedRevision:poster.revision,destinationBindings:['TEST_DESTINATION'],intent:intents[index]}]);
+        assert.equal(refused.ok,false,JSON.stringify(refused));
+        assert.equal(refused.code,'poster_format_stale');
+        posters[0]={bytes:jpeg,mimeType:'image/jpeg',extension:'jpg'};
+        poster=await call('savePoster',[{batchItemId:item.id,expectedRevision:poster.revision,template:'1080x1350',png:jpeg}]);
+        assert.equal(poster.ok,true,JSON.stringify(poster));
+      }
       const filed=await call('submitForReview',[{batchItemId:item.id,expectedRevision:poster.revision,destinationBindings:['TEST_DESTINATION'],intent:intents[index]}]);
       assert.equal(filed.state,'review_requested',JSON.stringify(filed));
       assert.equal(filed.submitted.length,1);

@@ -238,6 +238,15 @@ const PROVIDERS = {
   facebook: { list: listFacebookPagePosts, normalize: normalizeFacebookPagePosts }
 };
 
+/**
+ * Providers whose image publish container accepts JPEG only, per their own
+ * media documentation — Instagram's `image_url` container rejects PNG. A
+ * stored poster in another format would file clean here and then hold at
+ * `media_not_ready` when the provider's container refused it; submitting it
+ * is refused up front instead, naming the re-render that fixes it.
+ */
+const JPEG_ONLY_IMAGE_PROVIDERS = new Set(["instagram"]);
+
 export class Gadget extends DurableObject {
   static hooks = {
     scan: "Reads each granted source for new posts on the armed cadence and stores what changed."
@@ -1563,6 +1572,7 @@ export class Gadget extends DurableObject {
       disclaimers: config?.disclaimers,
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
+    const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
     return {
       id: batchItem.id,
       sourceItem,
@@ -1579,9 +1589,13 @@ export class Gadget extends DurableObject {
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
-      // Whether rendered PNG bytes already exist at this revision — the
-      // client materializes once per revision, never on every view.
-      posterStored: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null,
+      // Whether rendered bytes already exist at this revision — the client
+      // materializes once per revision, never on every view. The format is
+      // exposed too: a stored PNG predates the JPEG the renderer produces,
+      // and a destination whose container accepts JPEG only needs the owner
+      // to see (and re-render) that rather than file a post that holds.
+      posterStored: currentPoster !== null,
+      posterMimeType: currentPoster ? posterMimeType(currentPoster.bytes).mimeType : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -2065,11 +2079,29 @@ export class Gadget extends DurableObject {
     let posterShipped = false;
     const poster = this.storage.getPoster(batchItemId, revision.revision);
     if (poster) {
+      // The stored bytes carry their format — sniffed, never assumed: a
+      // JPEG renders for Instagram's container, a PNG still ships where a
+      // destination accepts it.
+      const { mimeType, extension } = posterMimeType(poster.bytes);
+      /*
+       * A stored PNG under a JPEG-only destination is a draft saved before
+       * the format rule existed: filing it would reach the provider and hold
+       * at `media_not_ready`, indistinguishable from a slow upload. The owner
+       * path is a fresh render — the drawer's Continue saves one — so refuse
+       * here, while the refusal can still name the fix.
+       */
+      const jpegOnly = bindings.some((binding) =>
+        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+      );
+      if (jpegOnly && mimeType !== "image/jpeg") {
+        return {
+          ok: false,
+          code: "poster_format_stale",
+          message:
+            "The saved poster is a PNG, which Instagram's publish container rejects — re-render it as JPEG (Continue to publish saves a fresh one) and submit again."
+        };
+      }
       try {
-        // The stored bytes carry their format — sniffed, never assumed: a
-        // JPEG renders for Instagram's container, a PNG still ships where a
-        // destination accepts it.
-        const { mimeType, extension } = posterMimeType(poster.bytes);
         const uploaded = await socialUploadMedia(this.env, {
           dataBase64: bytesToBase64(poster.bytes),
           mimeType,

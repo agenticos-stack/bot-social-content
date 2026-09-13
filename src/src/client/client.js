@@ -1057,11 +1057,21 @@ function App() {
             type: "button", class: "sl-primary",
             onclick: async () => {
               if (!(await saveDirty())) return;
+              /*
+               * saveDirty may have just appended revisions — the poster check
+               * must read the batch AS SAVED, not the copy this drawer opened
+               * on, or a caption edit leaves `posterStored` answering for a
+               * revision the poster no longer belongs to.
+               */
+              const saved = await rpc.getBatch(batch.id);
               // The poster's image bytes exist only when the client renders
               // them — and must exist before submit, or the post ships source
-              // media.
-              for (const item of batch.items ?? []) {
-                if (!item.posterLayout || item.posterStored) continue;
+              // media. A stored poster in a format the renderer no longer
+              // produces (a PNG saved before the JPEG switch) is re-rendered
+              // here rather than filed into a provider hold.
+              for (const item of saved?.items ?? []) {
+                if (!item.posterLayout) continue;
+                if (item.posterStored && item.posterMimeType === "image/jpeg") continue;
                 try {
                   const png = await renderPosterImage(item.posterLayout.template, {
                     headline: item.posterLayout.headline, subline: item.posterLayout.subline,
@@ -1079,7 +1089,7 @@ function App() {
                 }
               }
               batchDialog.close();
-              wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
+              wizard = resumeBatch(wizard, saved ?? await rpc.getBatch(batch.id));
               // The merged Publish step reads publication rows off
               // wizard.publishByItem — fetch them on the way in rather than
               // showing a picker for pairs that are already filed.
