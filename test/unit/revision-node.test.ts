@@ -62,6 +62,16 @@ function minimalPng(width: number, height: number) {
   return bytes;
 }
 
+// SOI + a leading SOF0 segment — the minimum the dimension parser walks.
+function minimalJpeg(width: number, height: number) {
+  const bytes = new Uint8Array(32);
+  bytes.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08]);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(7, height);
+  view.setUint16(9, width);
+  return bytes;
+}
+
 function seed(gadget: Gadget) {
   gadget.storage.setConfig({
     protectedTerms: [],
@@ -211,6 +221,39 @@ describe("social archive revision metadata persistence", () => {
       originalMediaRefs: [{ assetId: "saved-original", kind: "image", url: null, source: "original" }],
       publicationIntent: expect.objectContaining({ publishMode: "publish_now" })
     });
+  });
+
+  it("savePoster admits JPEG — the format Instagram's container accepts — and still refuses other bytes", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+
+    const saved = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(saved).toMatchObject({ ok: true });
+    expect(gadget.storage.getPoster("item-1", saved.revision)?.byteLength).toBe(32);
+
+    const wrongSize = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: saved.revision,
+      template: "1080x1350",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(wrongSize.ok).toBe(false);
+
+    const notImage = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: saved.revision,
+      template: "1080x1080",
+      png: new Uint8Array(24).fill(7)
+    });
+    expect(notImage.ok).toBe(false);
+    expect((notImage as { issues?: { code: string }[] }).issues?.[0]?.code).toBe("poster_not_image");
   });
 
   it("a caption-only save carries posterLayout and confirmedClaims forward", async () => {

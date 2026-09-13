@@ -1833,7 +1833,7 @@ export class Gadget extends DurableObject {
 
     const bytes = toBytes(png);
     // A caller bug, not an owner-facing condition — `steps.js`'s
-    // `onSavePoster` always hands this `renderPosterPng`'s own Uint8Array
+    // `onSavePoster` always hands this `renderPosterImage`'s own Uint8Array
     // output. Still a value, not a throw (see the file header note: a
     // workerd test proved a throw here breaks the facet's output gate the
     // same way an expected refusal's did).
@@ -1844,15 +1844,22 @@ export class Gadget extends DurableObject {
           {
             code: "invalid_argument",
             severity: "block",
-            message: "savePoster needs PNG bytes (Uint8Array, ArrayBuffer or base64 string)."
+            message: "savePoster needs image bytes (Uint8Array, ArrayBuffer or base64 string)."
           }
         ]
       };
     }
-    if (!isPngSignature(bytes)) {
+    /*
+     * PNG or JPEG, sniffed — never the caller's say-so. JPEG is what
+     * Instagram's publish container accepts for image_url media; PNG stays
+     * admitted because other destinations take it and already-stored posters
+     * are PNG.
+     */
+    const format = isPngSignature(bytes) ? "png" : isJpegSignature(bytes) ? "jpeg" : null;
+    if (!format) {
       return {
         ok: false,
-        issues: [{ code: "poster_not_png", severity: "block", message: "The uploaded file is not a PNG." }]
+        issues: [{ code: "poster_not_image", severity: "block", message: "The uploaded file is not a PNG or JPEG image." }]
       };
     }
 
@@ -1864,12 +1871,12 @@ export class Gadget extends DurableObject {
           {
             code: "poster_too_large",
             severity: "block",
-            message: `The poster PNG exceeds the ${constraints.maxBytes}-byte limit.`
+            message: `The poster image exceeds the ${constraints.maxBytes}-byte limit.`
           }
         ]
       };
     }
-    const dimensions = readPngDimensions(bytes);
+    const dimensions = format === "jpeg" ? readJpegDimensions(bytes) : readPngDimensions(bytes);
     if (!dimensions || dimensions.width !== constraints.width || dimensions.height !== constraints.height) {
       return {
         ok: false,
@@ -1877,7 +1884,7 @@ export class Gadget extends DurableObject {
           {
             code: "poster_wrong_size",
             severity: "block",
-            message: `The poster PNG must be exactly ${constraints.width}x${constraints.height}.`
+            message: `The poster image must be exactly ${constraints.width}x${constraints.height}.`
           }
         ]
       };
@@ -2059,10 +2066,14 @@ export class Gadget extends DurableObject {
     const poster = this.storage.getPoster(batchItemId, revision.revision);
     if (poster) {
       try {
+        // The stored bytes carry their format — sniffed, never assumed: a
+        // JPEG renders for Instagram's container, a PNG still ships where a
+        // destination accepts it.
+        const { mimeType, extension } = posterMimeType(poster.bytes);
         const uploaded = await socialUploadMedia(this.env, {
           dataBase64: bytesToBase64(poster.bytes),
-          mimeType: "image/png",
-          filename: `poster-${batchItemId}-r${revision.revision}.png`
+          mimeType,
+          filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
         });
         if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
           packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
@@ -2618,10 +2629,53 @@ function isPngSignature(bytes) {
   return PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
 }
 
+function isJpegSignature(bytes) {
+  return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
 function readPngDimensions(bytes) {
   if (bytes.byteLength < 24) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
+ * JPEG dims live in the first SOF segment (C0–CF except DHT/JPG/DAC), reached
+ * by walking `FF marker len16` segments from the SOI. Anything that doesn't
+ * parse is null — the caller treats that as "not an image we ship".
+ */
+function readJpegDimensions(bytes) {
+  if (!isJpegSignature(bytes)) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 2;
+  while (offset + 4 <= bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1];
+    // Standalone markers carry no length field: TEM, RSTn, SOI, EOI.
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2;
+      continue;
+    }
+    const length = view.getUint16(offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.byteLength) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return offset + 9 <= bytes.byteLength
+        ? { height: view.getUint16(offset + 5), width: view.getUint16(offset + 7) }
+        : null;
+    }
+    offset += 2 + length;
+  }
+  return null;
+}
+
+/**
+ * What `uploadMedia` should declare for a stored poster. The save path
+ * admits only PNG and JPEG, so a stored poster always resolves; the fallback
+ * is PNG purely so a corrupt row fails as a format refusal downstream rather
+ * than a bogus claim here.
+ */
+function posterMimeType(bytes) {
+  return isJpegSignature(bytes) ? { mimeType: "image/jpeg", extension: "jpg" } : { mimeType: "image/png", extension: "png" };
 }
 
 /** Uint8Array / ArrayBuffer / plain array / base64 string, all in — one boundary for "bytes arrived over RPC or JSON". */

@@ -33,7 +33,7 @@ import { resolveLocale, t } from "./i18n.js";
 import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
-import { computePosterLayout, drawPoster, renderPosterPng } from "./poster.js";
+import { computePosterLayout, drawPoster, renderPosterImage } from "./poster.js";
 import { confirmUnsavedNavigation } from "./navigation.js";
 import { detectProtectedLiterals } from "../../model.js";
 import { createInboxState, isEditableItem, renderInbox, setInboxFilter, setInboxLoading, setInboxSourceItems, setInboxSummaries } from "./inbox.js";
@@ -879,18 +879,18 @@ function App() {
       /*
        * The poster is the only "generated image" this gadget can make, and it
        * cannot travel through the publisher door (hosted URLs only). What the
-       * owner CAN do with it is download the PNG — deterministic render, same
-       * pixels as the preview.
+       * owner CAN do with it is download the JPEG — deterministic render, same
+       * pixels as the preview, same format the publisher's container accepts.
        */
       const download = el("button", {
         type: "button", class: "sl-secondary sl-drawer-poster-dl",
         onclick: async () => {
-          const bytes = await renderPosterPng(layout.template, {
+          const bytes = await renderPosterImage(layout.template, {
             headline: layout.headline, subline: layout.subline,
             background: { value: layout.background?.value }, textColor: layout.textColor, align: layout.align
           });
-          const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-          const link = el("a", { href: url, download: `poster-${layout.template}-${item.id}.png` });
+          const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+          const link = el("a", { href: url, download: `poster-${layout.template}-${item.id}.jpg` });
           link.click();
           setTimeout(() => URL.revokeObjectURL(url), 5000);
         }
@@ -1057,12 +1057,13 @@ function App() {
             type: "button", class: "sl-primary",
             onclick: async () => {
               if (!(await saveDirty())) return;
-              // The poster's PNG exists only when the client renders it — and
-              // it must exist before submit, or the post ships source media.
+              // The poster's image bytes exist only when the client renders
+              // them — and must exist before submit, or the post ships source
+              // media.
               for (const item of batch.items ?? []) {
                 if (!item.posterLayout || item.posterStored) continue;
                 try {
-                  const png = await renderPosterPng(item.posterLayout.template, {
+                  const png = await renderPosterImage(item.posterLayout.template, {
                     headline: item.posterLayout.headline, subline: item.posterLayout.subline,
                     background: { value: item.posterLayout.background?.value },
                     textColor: item.posterLayout.textColor, align: item.posterLayout.align
