@@ -1,4 +1,5 @@
 import { assertLocalApiOrigin, assertLocalFrontendOrigin, assertRemoteApiOrigin } from './platform-origin.mjs';
+import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
 
 const localRoutes = new Map([
   ['/api/auth/get-session', ['GET']],
@@ -50,7 +51,7 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
       if (!headers.get('content-type')?.startsWith('application/json')) return fail(415,'JSON required.');
       const reader=request.body?.getReader();const chunks=[];let size=0;
       if(reader)try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;
-        if(size>16384){await reader.cancel();return fail(413,'Request too large.');}chunks.push(value);
+        if(size>(url.pathname === '/api/dev/rpc' ? LOCAL_RPC_MAX_BYTES : 16384)){await reader.cancel();return fail(413,'Request too large.');}chunks.push(value);
       }}finally{reader.releaseLock();}
       body=Buffer.concat(chunks);
     }

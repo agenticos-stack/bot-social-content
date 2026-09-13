@@ -2,6 +2,16 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectedApi} from '../scripts/connected-api.mjs';
 const frontendOrigin='http://social.localhost:18000';
+test('poster requests pass the connected BFF without increasing the agent-message budget',async()=>{
+  const body=JSON.stringify({method:'savePoster',args:[{png:{$bot_bytes_b64:'a'.repeat(150000)}}]});
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{call:async request=>{
+    assert.equal(await request.text(),body);
+    return Response.json({ok:true,value:{revision:2}});
+  }}});
+  const request=path=>new Request(frontendOrigin+path,{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body});
+  assert.equal((await handle(request('/api/dev/rpc'))).status,200);
+  assert.equal((await handle(request('/api/dev/agent'))).status,413);
+});
 test('development launch never creates an installed gadget or API conversation',async()=>{
   let calls=0;
   const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{start:async()=>{calls++;return {mode:'local-source'};}},fetcher:()=>assert.fail('must not call marketplace or conversation API')});

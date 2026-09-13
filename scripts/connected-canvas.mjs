@@ -9,31 +9,33 @@
  * importing the published package here would pair a source encoder with an
  * installed decoder. preview.mjs resolves both from the same place.
  */
-export function connectedCanvasBridge(origin, decodeBytes){return `
+export function connectedCanvasBridge(origin, decodeBytes, encodeBytes = ''){return `
 ${decodeBytes}
+${encodeBytes}
 globalThis.RpcTarget=class {};
 let next=0;
 const calls=new Map();
+let subscriber;
 const ready=new Promise(resolve=>{
   function receive(event){
     if(event.source!==parent || event.origin!==${JSON.stringify(origin)} || event.data?.type!=='bot-dev-port' || event.ports.length!==1)return;
     removeEventListener('message',receive);
     const port=event.ports[0];
-    port.onmessage=event=>{const result=event.data;const call=calls.get(result?.id);if(!call)return;calls.delete(result.id);clearTimeout(call.timer);result.ok?call.resolve(__botDecodeBytes(result.value)):call.reject(new Error(result.error));};
+    port.onmessage=event=>{const result=event.data;if(result?.event){subscriber?.operation(result.event);return;}const call=calls.get(result?.id);if(!call)return;calls.delete(result.id);clearTimeout(call.timer);result.ok?call.resolve(__botDecodeBytes(result.value)):call.reject(new Error(result.error));};
     resolve(port);
   }
   addEventListener('message',receive);
 });
 globalThis.gadget=new Proxy({}, {get(_,method){
   if(method==='then')return undefined;
-  if(method==='subscribe')return async()=>({supported:false,reason:'Reload to read local changes.'});
+  if(method==='subscribe')return async(target)=>{subscriber=target;return {supported:true};};
   return async(...args)=>{
     const port=await ready;
     if(calls.size>=32)throw new Error('Too many pending local calls');
     const id=++next;
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{calls.delete(id);reject(new Error('The local host did not answer '+method+' within 30 seconds.'));},30000);
-      calls.set(id,{resolve,reject,timer});port.postMessage({id,method,args});
+      calls.set(id,{resolve,reject,timer});port.postMessage({id,method,args:typeof __botEncodeBytes==='function'?__botEncodeBytes(args):args});
     });
   };
 }});`}

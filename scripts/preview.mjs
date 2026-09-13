@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
+import { SOCIAL_DOOR_METHODS } from './local-rpc-contract.mjs';
 import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
 import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
@@ -134,12 +135,7 @@ if (remote) {
  * was still undefined because this list had not been told about it.
  */
 function doorMethodsByEnvKey() {
-  return {
-    social: ["createDraft", "submitForReview", "readStatus"],
-    schedule: ["create", "list", "cancel"],
-    workspace: ["notify"],
-    metered_fetch: ["socialPostsForAccount", "fetch_media"]
-  };
+  return SOCIAL_DOOR_METHODS;
 }
 
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
@@ -178,6 +174,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     const stateDirectory=resolve(sessionRoot,'runtime');
     const prior=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
     let local;
+    let agent;
     // The agent comes FIRST, and the isolate second, because the door spec
     // shapes `env` at load time and only the platform knows which doors this
     // conversation was actually granted. `callLocal` therefore waits on the
@@ -189,7 +186,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     let readyLocal;
     let localReady = new Promise((resolve) => { readyLocal = resolve; });
     try {
-      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
@@ -199,12 +196,16 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       // Only granted doors appear, so an ungranted one is absent from `env` —
       // the same absence an installed gadget sees, which is what lets the
       // gadget read a missing door as configuration rather than failure.
-      const doors = await agent.doors(doorMethodsByEnvKey()).catch(() => null);
+      let doors = await agent.doors(doorMethodsByEnvKey());
       // `doors` is null when the owner has granted none, and the testkit rejects a
       // null where it accepts an absence — so a workspace with no doors could not
       // start its runtime at all, and the preview reported that as a generic 409.
       // Absence is the documented, supported state; pass it as one.
-      const startRuntime=(files)=>createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined});
+      const startRuntime=async(files)=>{
+        const before=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
+        try{return await createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
+        finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!before.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
+      };
       local=await startRuntime(archive.files);
       readyLocal();
 
@@ -234,6 +235,17 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
        */
       let reloading=Promise.resolve();
       let lastHash=connectedSourceHash;
+      const refreshDoors=async()=>{
+        const next=await agent.doors(doorMethodsByEnvKey());
+        if(JSON.stringify(next?.spec ?? {})===JSON.stringify(doors?.spec ?? {}))return;
+        const previousDoors=doors;
+        await localReady;
+        localReady=new Promise(resolve=>{readyLocal=resolve;});
+        await local.dispose();
+        try { doors=next;local=await startRuntime(archive.files); }
+        catch(error){doors=previousDoors;local=await startRuntime(archive.files);throw error;}
+        finally{readyLocal();}
+      };
       const reload=async()=>{
         let files;
         try { files=await readSourceFiles(); }
@@ -266,22 +278,42 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       };
       const watchers=watchSource(scheduleReload);
       if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
-      console.warn('preview seed: fetchBudgetCredits is 0 — a metered scan fails closed until you set a budget in Settings.');
       // `local` is read through a getter: a reload replaces the binding, and a
       // holder of this object must reach the CURRENT isolate, not the one that
       // existed when it was handed over.
       return {
         get token(){ return local.token; },
-        handle:(request)=>local.handle(request),
-        agent,
+        handle:async(request)=>{
+          const input=await request.clone().json();
+          if(input.method==='refreshGrants') {
+            reloading=reloading.then(refreshDoors,refreshDoors);
+            await reloading;
+          }
+          await localReady;
+          return local.handle(request);
+        },
+        agent:{
+          get info(){return agent.info;},
+          handle:async(input,credential)=>{
+            if(input?.operation!=='draft')return agent.handle(input,credential);
+            if(typeof input.batchId!=='string'||!/^batch_[a-z0-9]+$/.test(input.batchId))throw new Error('A draft batch is required.');
+            await localReady;
+            const response=await local.handle(new Request(frontendOrigin+'/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method:'getBatch',args:[input.batchId]})}));
+            const batch=(await response.json()).value;
+            if(!response.ok||batch?.generation!=='requested')throw new Error('This batch has no pending generation request.');
+            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then prepare captions and text poster layouts and save the revisions. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions below.\n\n${archive.files['agent.md']}`},credential);
+          }
+        },
         dispose:async()=>{
           for (const watcher of watchers) watcher.close();
+          clearTimeout(pending);
+          await reloading;
           agent.close();
           await local.dispose();
         }
       };
     }
-    catch (error) { await local?.dispose().catch(() => undefined); throw error; }
+    catch (error) { agent?.close();await local?.dispose().catch(() => undefined); throw error; }
     finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!prior.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
   }
 }):null;
@@ -298,6 +330,9 @@ const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/toke
  */
 const DECODE_BYTES_SOURCE = overlay
   ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).DECODE_BYTES_SOURCE
+  : '';
+const ENCODE_BYTES_SOURCE = overlay
+  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).ENCODE_BYTES_SOURCE
   : '';
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
@@ -338,7 +373,7 @@ const server = createServer(async (request, response) => {
   if(connected && url.pathname==='/dev-canvas' && request.method==='GET'){
     response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src data:; img-src blob: data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`);
     response.setHeader('Content-Type','text/html; charset=utf-8');
-    const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
+    const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE, ENCODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
     response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
   }
   if (connected && url.pathname.startsWith('/api/')) {

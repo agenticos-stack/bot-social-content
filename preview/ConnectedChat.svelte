@@ -1,7 +1,7 @@
 <script>
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
 
-  let { agent, onBack } = $props();
+  let { agent, onBack, draftRequests = [], asksRevision = 0, onDraftHandled = () => {}, onChange = () => {} } = $props();
   const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   const workspaceId = $derived(typeof agent?.workspaceId === 'string' ? agent.workspaceId : '');
   // A full conversation id is 41 characters of mostly-constant prefix and
@@ -13,6 +13,7 @@
   let draft = $state('');
   let busy = $state(false);
   let error = $state('');
+  let failedDraft = $state(null);
 
   function textOf(value) {
     if (typeof value === 'string') return value;
@@ -59,6 +60,7 @@
       const result = await request({ operation: 'run', message: text });
       addAssistant(result?.result);
       asks = (await request({ operation: 'pending' }))?.asks ?? [];
+      onChange();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'The local agent request failed.';
     } finally { busy = false; }
@@ -69,11 +71,29 @@
     try {
       await request({ operation: 'answer', actionId, approve });
       asks = (await request({ operation: 'pending' }))?.asks ?? [];
+      onChange();
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not submit that decision.'; }
     finally { busy = false; }
   }
 
-  onMount(() => { void refreshAsks(); });
+  $effect(()=>{asksRevision;untrack(()=>{void refreshAsks();});});
+  $effect(()=>{
+    if(!busy && draftRequests.length){
+      const batchId=draftRequests[0];
+      untrack(()=>{onDraftHandled();void generate(batchId);});
+    }
+  });
+  async function generate(batchId){
+    busy=true;error='';failedDraft=null;
+    messages=[...messages,{role:'user',text:'Generate captions and posters for the selected references.'}];
+    try{
+      const result=await request({operation:'draft',batchId});
+      addAssistant(result?.result);
+      asks=(await request({operation:'pending'}))?.asks ?? [];
+      onChange();
+    }catch(cause){failedDraft=batchId;error=cause instanceof Error?cause.message:'Generation failed.';}
+    finally{busy=false;}
+  }
 </script>
 
 <section class="chat" aria-label="Local agent conversation">
@@ -106,7 +126,7 @@
       {/each}
     </aside>
   {/if}
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{error}{#if failedDraft}<button type="button" disabled={busy} onclick={()=>generate(failedDraft)}>Retry generation</button>{/if}</p>{/if}
   <form class="composer" onsubmit={send}>
     <input aria-label="Message" placeholder="Ask about this source…" bind:value={draft} disabled={busy} />
     <button type="submit" aria-label="Send message" disabled={busy || !draft.trim()}>↑</button>

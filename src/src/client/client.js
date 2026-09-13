@@ -1715,6 +1715,12 @@ function App() {
   }
 
   async function handleOperation(event) {
+    if(event?.type==='drafts_changed'){
+      await refreshSummary();
+      inboxState=setInboxSummaries(inboxState,await rpc.listBatchSummaries({limit:50}));
+      if(!wizard.batch)renderCurrentView();
+      return;
+    }
     if (!event || event.type !== "scan") return;
     if (!summary?.configured || wizard.batch) return; // a live scan never disturbs an in-progress batch
     try {
