@@ -98,6 +98,13 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
       // The env name is the local handle; createDraft is addressed by the
       // connector resource binding id the door's describe() resolved.
       assert.deepEqual(submitted[index].targets,[{destinationBinding:'crb_test_destination'}]);
+      // GUD-005: the provider holds media filed with no alt text — the filed
+      // asset carries the poster's rendered copy plus its real metadata.
+      const filedMedia=submitted[index].media?.[0];
+      assert.equal(filedMedia?.altText,'Poster: 晨光與日常');
+      assert.equal(filedMedia?.mimeType,posters[index].mimeType);
+      assert.equal(filedMedia?.byteSize,posters[index].bytes.byteLength);
+      assert.deepEqual([filedMedia?.width,filedMedia?.height],[1080,1350]);
       if(index===1)assert.equal(submitted[index].schedule.timezone,'Asia/Hong_Kong');
     }
     assert.equal(submitted.length,2);

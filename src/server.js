@@ -94,6 +94,8 @@ import {
   normalizeOpenInstagramPosts,
   publicationMedia,
   isPublisherAddressableUrl,
+  posterAltText,
+  sourceMediaAltText,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -2074,7 +2076,8 @@ export class Gadget extends DurableObject {
     const warnings = [];
     let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
-      sourceMedia: sourceItem?.media
+      sourceMedia: sourceItem?.media,
+      fallbackAltText: sourceMediaAltText(sourceItem)
     });
     let posterShipped = false;
     const poster = this.storage.getPoster(batchItemId, revision.revision);
@@ -2108,7 +2111,33 @@ export class Gadget extends DurableObject {
           filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
         });
         if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
-          packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+          /*
+           * GUD-005: the provider holds media filed without alt text — the
+           * poster describes itself by the copy it renders. Width/height come
+           * from the template, never from sniffed bytes.
+           */
+          let width = null;
+          let height = null;
+          try {
+            ({ width, height } = posterPngConstraints(poster.template));
+          } catch {
+            // A template the schema no longer knows ships without dims.
+          }
+          packedMedia = {
+            ok: true,
+            media: [
+              {
+                assetId: uploaded.assetId,
+                url: uploaded.url,
+                kind: "image",
+                altText: posterAltText(revision.posterLayout),
+                mimeType: uploaded.mimeType ?? mimeType,
+                byteSize: uploaded.byteSize ?? poster.byteLength,
+                width,
+                height
+              }
+            ]
+          };
           posterShipped = true;
         } else {
           warnings.push({

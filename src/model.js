@@ -29,6 +29,7 @@ const MAX_MEDIA_PER_ITEM = 10;
 const MAX_CAPTION_CHARS = 5_000;
 const MAX_HANDLE_CHARS = 100;
 const MAX_URL_CHARS = 2_048;
+const MAX_ALT_TEXT_CHARS = 1_000;
 const DEFAULT_MIN_CHINESE_SHARE = 0.3;
 const POSTER_MAX_BYTES = 2_000_000; // SQLite row-size headroom, CON-009.
 const REFINEMENT_BRIEF_VERSION = 1;
@@ -151,14 +152,21 @@ function doorMediaEntry(entry) {
         : "";
   if (!assetId) return null;
   const url = typeof value.url === "string" ? value.url.trim().slice(0, MAX_URL_CHARS) : "";
+  const altText =
+    typeof value.altText === "string" && value.altText.trim()
+      ? value.altText.trim().slice(0, MAX_ALT_TEXT_CHARS)
+      : typeof value.alt === "string" && value.alt.trim()
+        ? value.alt.trim().slice(0, MAX_ALT_TEXT_CHARS)
+        : "";
   return {
     assetId,
     url,
-    kind: value.kind === "video" ? "video" : "image"
+    kind: value.kind === "video" ? "video" : "image",
+    altText
   };
 }
 
-function packDoorMedia(entries) {
+function packDoorMedia(entries, fallbackAltText = "") {
   const media = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     const packed = doorMediaEntry(entry);
@@ -171,7 +179,7 @@ function packDoorMedia(entries) {
           "Every media item needs a publisher-addressable https url. Generated assets at /v1/media/:id/assets/:idx cannot be fetched by the publisher."
       };
     }
-    media.push(packed);
+    media.push({ ...packed, altText: packed.altText || fallbackAltText });
   }
   return { ok: true, media };
 }
@@ -179,11 +187,36 @@ function packDoorMedia(entries) {
 /**
  * Phase 1 (TASK-027): derived refs when they are publisher-addressable,
  * otherwise the source item's own media. Generated media-job URLs refuse.
+ * Providers hold media with no alt text (GUD-005), so the caller names the
+ * fallback description — the poster path passes its own instead.
  */
-export function publicationMedia({ derivedMediaRefs, sourceMedia } = {}) {
+export function publicationMedia({ derivedMediaRefs, sourceMedia, fallbackAltText = "" } = {}) {
   const derived = Array.isArray(derivedMediaRefs) ? derivedMediaRefs : [];
-  if (derived.length > 0) return packDoorMedia(derived);
-  return packDoorMedia(sourceMedia);
+  if (derived.length > 0) return packDoorMedia(derived, fallbackAltText);
+  return packDoorMedia(sourceMedia, fallbackAltText);
+}
+
+/**
+ * GUD-005 alt text. The rendered poster's own copy is its description; a
+ * source image is described by the post it came from. Both stay under the
+ * platform's 1000-char media bound.
+ */
+export function posterAltText(layout) {
+  const input = record(layout) ?? {};
+  const text = [input.headline, input.subline]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .join(" — ");
+  return (text ? `Poster: ${text}` : "Generated poster image").slice(0, MAX_ALT_TEXT_CHARS);
+}
+
+export function sourceMediaAltText(sourceItem) {
+  const item = record(sourceItem) ?? {};
+  const handle = typeof item.authorHandle === "string" ? item.authorHandle.trim() : "";
+  const label = typeof item.sourceLabel === "string" ? item.sourceLabel.trim() : "";
+  const who = handle ? `@${handle.replace(/^@+/, "")}` : label || "the source account";
+  const text = typeof item.text === "string" ? item.text.trim() : "";
+  return (text ? `${who} post: ${text}` : `Image posted by ${who}`).slice(0, MAX_ALT_TEXT_CHARS);
 }
 
 export function normalizePublicationIntent(input) {
