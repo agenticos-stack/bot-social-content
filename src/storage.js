@@ -19,7 +19,10 @@
 
 import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
 
-const CURRENT_SCHEMA_VERSION = 11;
+// Exported for the build only: `scripts/build.mjs` asserts that
+// `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
+// host reads before restoring older code cannot drift from the migrations here.
+export const CURRENT_SCHEMA_VERSION = 11;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
