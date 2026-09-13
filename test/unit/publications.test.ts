@@ -54,10 +54,29 @@ function sqlite() {
   return { ctx, db, sql };
 }
 
+/**
+ * A connector destination door as the platform wires it: `describe()` states the
+ * connector resource binding id (`crb_…`) `createDraft` wants as its target.
+ */
+function connectorDoor(name: string) {
+  return {
+    async describe() {
+      return {
+        provider: "instagram",
+        role: "destination",
+        resourceLabel: name,
+        resolvedId: `crb_${name.toLowerCase()}`
+      };
+    }
+  };
+}
+
 /** The Social Hub as the gadget sees it: createDraft answers, submitForReview files the ask by refusing. */
 function mockSocial(created: unknown[]) {
   let version = 0;
   return {
+    FB_MAIN: connectorDoor("FB_MAIN"),
+    IG_OUT: connectorDoor("IG_OUT"),
     social: {
       async createDraft(input: { targets?: { destinationBinding: string }[] }) {
         created.push(input);
@@ -182,8 +201,9 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     expect(gadget.storage.publicationsFor(first.item.id)).toMatchObject([
       { destinationBinding: "FB_MAIN", revision: 1, state: "review_requested", postId: "post-1", version: "ver-1" }
     ]);
-    // Each binding is its own draft: the door saw exactly one target.
-    expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "FB_MAIN" }]);
+    // Each binding is its own draft: the door saw exactly one target — the
+    // connector resource binding id `describe()` resolved, not the env name.
+    expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "crb_fb_main" }]);
 
     // The owner's new version leaves the filed localization active — REQ-017's
     // pair, not the item, is now what a second draft would collide with.
@@ -307,10 +327,11 @@ describe("TEST-008: a legacy caller's destinationBindings still land", () => {
         .map((row) => `${row.destinationBinding}:${row.state}:r${row.revision}`)
         .sort()
     ).toEqual(["FB_MAIN:review_requested:r1", "IG_OUT:review_requested:r1"]);
-    // Two bindings, two separate drafts — each door call saw its own pair.
+    // Two bindings, two separate drafts — each door call saw its own pair,
+    // addressed by the `crb_` id `describe()` resolved, not the env name.
     expect(
       created.map((input) => (input as { targets: { destinationBinding: string }[] }).targets[0].destinationBinding).sort()
-    ).toEqual(["FB_MAIN", "IG_OUT"]);
+    ).toEqual(["crb_fb_main", "crb_ig_out"]);
   });
 });
 

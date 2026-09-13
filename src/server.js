@@ -2146,12 +2146,31 @@ export class Gadget extends DurableObject {
         continue;
       }
 
+      /*
+       * The door's `destinationBinding` is the connector resource binding id
+       * (`crb_…`), not the env name this workspace knows the account by —
+       * `createDraft` resolves it through `loadConnectorResourceGrantById`,
+       * which only answers the id. `describe()` states it (`resolvedId`), and
+       * is asked HERE, at the moment of use, so a row stored before the field
+       * existed resolves the same way a fresh one does.
+       */
+      const described = await describeConnector(this.env, binding);
+      const resolvedId = readString(described?.resolvedId);
+      if (!resolvedId) {
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_unresolved",
+          message: `${binding} did not describe a destination the publisher can address.`
+        });
+        continue;
+      }
+
       let draft;
       try {
         draft = await socialCreateDraft(this.env, {
           caption,
           media: packedMedia.media,
-          targets: [{ destinationBinding: binding }],
+          targets: [{ destinationBinding: resolvedId }],
           origin: attribution.origin,
           protectedLiterals,
           // The Social Hub owns schedule validation and time resolution.

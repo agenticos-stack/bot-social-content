@@ -10,12 +10,15 @@ import {SOCIAL_DOOR_METHODS} from '../scripts/local-rpc-contract.mjs';
 test('connected host: empty setup, fetch, select, save poster and carry now/schedule to the publisher', {skip:!process.env.BOT_SDK_SOURCE}, async()=>{
   // Real gadget, transport and SQLite. Only provider effects are fixtures.
   const {encodeBytes}=await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE,'packages/testkit/src/rpc-bytes.js')));
-  const files=Object.fromEntries(await Promise.all(['server.js','storage.js','model.js','config.js','doors.js'].map(async name=>[name,await readFile(new URL('../src/'+name,import.meta.url),'utf8')])));
+  // The manifest owns the module list — a gadget source the test forgets to
+  // load fails inside the isolate as "No such module", not at the file read.
+  const manifest=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8'));
+  const files=Object.fromEntries(await Promise.all(manifest.files.filter(name=>name.endsWith('.js')&&name!=='client.js').map(async name=>[name,await readFile(new URL('../src/'+name,import.meta.url),'utf8')])));
   const origin='http://social.localhost:18000';
   const submitted=[];
   const uploads=[];
   const doors={spec:{...SOCIAL_DOOR_METHODS,TEST_DESTINATION:['describe']},async call(key,method,args){
-    if(key==='TEST_DESTINATION' && method==='describe')return {provider:'instagram',role:'destination',resourceLabel:'Test destination'};
+    if(key==='TEST_DESTINATION' && method==='describe')return {provider:'instagram',role:'destination',resourceLabel:'Test destination',resolvedId:'crb_test_destination'};
     if(key==='schedule' && method==='list')return [];
     if(key==='workspace' && method==='notify')return {ok:true};
     if(key==='metered_fetch' && method==='socialPostsForAccount')return {ok:true,posts:[1,2].map(i=>({pk:String(i),taken_at:1789000000,caption:{text:'Morning light'},url:'https://www.instagram.com/p/test'+i+'/'})),credits:1,miss:false,nextCursor:null};
@@ -62,6 +65,9 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
       assert.equal(filed.submitted.length,1);
       assert.deepEqual(uploads[index],Buffer.from(png));
       assert.equal(submitted[index].schedule.publishMode,intents[index].publishMode);
+      // The env name is the local handle; createDraft is addressed by the
+      // connector resource binding id the door's describe() resolved.
+      assert.deepEqual(submitted[index].targets,[{destinationBinding:'crb_test_destination'}]);
       if(index===1)assert.equal(submitted[index].schedule.timezone,'Asia/Hong_Kong');
     }
     assert.equal(submitted.length,2);

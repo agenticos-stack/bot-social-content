@@ -91,6 +91,18 @@ function seed(gadget: Gadget) {
 
 function mockSocial(created: unknown[]) {
   return {
+    // The connector destination door as the platform wires it: `describe()`
+    // states the `crb_` id `createDraft` wants as its target.
+    FB_MAIN: {
+      async describe() {
+        return {
+          provider: "facebook",
+          role: "destination",
+          resourceLabel: "Main Facebook",
+          resolvedId: "crb_fb_main"
+        };
+      }
+    },
     social: {
       async createDraft(input: unknown) {
         created.push(input);
