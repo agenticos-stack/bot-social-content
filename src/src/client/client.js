@@ -351,6 +351,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-dest-row:hover { background: var(--sl-surface-2); }
 .sl-dest-row-selected { border-color: var(--sl-accent-strong); background: var(--sl-accent-soft); }
 .sl-dest-row input { accent-color: var(--sl-accent-strong); width: 15px; height: 15px; flex-shrink: 0; }
+/* Stored destination whose grant is gone: kept visible (history), muted and
+   unfocusable — the tag names why it cannot be ticked. */
+.sl-dest-row-revoked { border-style: dashed; color: var(--sl-muted); cursor: default; }
+.sl-dest-row-revoked:hover { background: none; }
+.sl-dest-row-revoked.sl-dest-row-selected { border-color: var(--sl-line-strong); background: var(--sl-surface-2); }
 .sl-dest-tag { margin-left: auto; color: var(--sl-muted); font-size: 10px; }
 /* Pill segments, the active one filled in ink -- not radio dots. The input
    stays for keyboard/screen-reader semantics; it is visually hidden, not
@@ -1334,10 +1339,12 @@ function App() {
       const item = wizard.batch?.items.find((entry) => entry.id === id);
       if (!item || wizard.submittingByItem?.[id]) return;
       const choice = wizard.publishChoices?.[id] ?? {};
-      // The picker's answer is what the summary offers — a binding seeded
-      // from a since-revoked destination is not a choice (#1960).
+      // The picker's answer is what the summary offers AND still grants —
+      // a binding seeded from a since-revoked destination is not a choice,
+      // and the server would refuse it by the same rule (#1960).
       const knownBindings = new Set(
         (Array.isArray(summary?.destinations) ? summary.destinations : [])
+          .filter((entry) => entry.granted !== false)
           .map((entry) => entry.destinationBinding ?? entry.binding)
       );
       wizard = setPublishError(wizard, id, null);

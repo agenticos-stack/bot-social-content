@@ -214,7 +214,7 @@ describe("submitForReview createDraft media", () => {
   it("passes derivedMediaRefs when they are publisher-addressable", async () => {
     const created: unknown[] = [];
     const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    const gadget = new Gadget(ctx as never, { FB_MAIN: {}, ...mockSocial(created) } as never);
     seed(gadget);
     await gadget.saveRevision({
       batchItemId: "item-1",
@@ -232,7 +232,7 @@ describe("submitForReview createDraft media", () => {
   it("falls back to the source item media when derived refs are absent", async () => {
     const created: unknown[] = [];
     const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    const gadget = new Gadget(ctx as never, { FB_MAIN: {}, ...mockSocial(created) } as never);
     seed(gadget);
     await gadget.saveRevision({
       batchItemId: "item-1",
@@ -251,7 +251,7 @@ describe("submitForReview attribution (TASK-015)", () => {
   it("refuses when the stored ledger stands on a source other than the observed one", async () => {
     const created: unknown[] = [];
     const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    const gadget = new Gadget(ctx as never, { FB_MAIN: {}, ...mockSocial(created) } as never);
     seed(gadget);
     // A localization brief never inspects the ledger's bases, and a grounded
     // brief only checks spans it detects in the caption — so a contradicting
@@ -270,7 +270,7 @@ describe("submitForReview attribution (TASK-015)", () => {
   it("refuses before the door when the observation record is missing a field the door requires", async () => {
     const created: unknown[] = [];
     const { ctx } = sqliteContext();
-    const gadget = new Gadget(ctx as never, mockSocial(created) as never);
+    const gadget = new Gadget(ctx as never, { FB_MAIN: {}, ...mockSocial(created) } as never);
     seed(gadget);
     gadget.storage.setOriginLink("item-1", {
       provider: "instagram",

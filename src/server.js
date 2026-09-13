@@ -110,6 +110,7 @@ import { consentAllowsFetch } from "./grant-request.js";
 import {
   FETCH_DOOR_KEY,
   FIXED_DOOR_KEYS as FIXED_DOOR_KEY_LIST,
+  bindingGranted,
   doorGrantStatus,
   fetchMedia,
   isDoorRefusal,
@@ -341,6 +342,11 @@ export class Gadget extends DurableObject {
       const mediaLimits = description?.mediaLimits;
       return {
         binding: row.binding,
+        // The row is history — it proves the binding was configured once,
+        // never that the grant still lives. `granted` is the live check the
+        // picker needs so a revoked destination is shown as unavailable
+        // instead of offered as a send target that can only fail at submit.
+        granted: bindingGranted(this.env, row.binding),
         origin: row.origin ?? "binding",
         displayName: row.displayName ?? null,
         lastServedBy: row.lastServedBy ?? null,
@@ -2143,6 +2149,26 @@ export class Gadget extends DurableObject {
       // nothing, and the owner is told rather than handed a duplicate.
       if (mine && mine.revision === expectedRevision && mine.state !== "bound") {
         skipped.push({ destinationBinding: binding, publicationId: mine.id, reason: "already_submitted" });
+        continue;
+      }
+
+      /*
+       * Live authority, not stored history: a destination row survives a
+       * revoked grant so items it produced still name where they went, but
+       * "stored once" is not "sendable now". Checked BEFORE the door call so
+       * a revocation reads as itself — a grant to re-take — rather than as
+       * `provider_unavailable`, which an owner reads as an outage to wait
+       * out. The door gate would refuse the same call a heartbeat later;
+       * this names it accurately and leaves nothing half-filed.
+       */
+      if (!bindingGranted(this.env, binding)) {
+        const label =
+          this.storage.listDestinations().find((row) => row.binding === binding)?.label ?? binding;
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_not_granted",
+          message: `${label} is no longer connected — grant the connection again in Settings, then submit.`
+        });
         continue;
       }
 

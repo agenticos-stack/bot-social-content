@@ -269,10 +269,16 @@ export function submitItemEnabled(state, batchItemId, policy, destinations = [])
   if (!item || state.submitting || state.submittingByItem?.[batchItemId]) return false;
   if (state.conflicts && Object.hasOwn(state.conflicts, batchItemId)) return false;
   if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
-  // A destination the summary no longer offers is not a choice the picker
-  // could have made — a binding left over from a since-revoked destination
-  // counts for nothing (#1960).
-  const known = new Set(destinations.map((entry) => entry.destinationBinding ?? entry.binding));
+  // A destination the summary no longer offers — or still lists but whose
+  // grant the server has read as gone — is not a choice the picker could
+  // have made: a binding left over from a since-revoked destination counts
+  // for nothing (#1960). The row stays rendered and marked; it just cannot
+  // carry a submit.
+  const known = new Set(
+    destinations
+      .filter((entry) => entry.granted !== false)
+      .map((entry) => entry.destinationBinding ?? entry.binding)
+  );
   if (!publishBindings(state, batchItemId).some((binding) => known.has(binding))) return false;
   const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
   return !hasBlockingIssues(issues);
@@ -833,13 +839,22 @@ export function renderPublish(root, state, ctx) {
           el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "publishPickDestinations") }, destinations.map((destination) => {
             const binding = destination.destinationBinding ?? destination.binding;
             const filed = filedPairs.has(binding);
+            // Stored, but the grant is gone: the row stays (history is not
+            // silently rewritten) marked and unable to carry a submit until
+            // the connection is granted again — re-granting re-enables the
+            // owner's original choice, nothing re-points it elsewhere.
+            const revoked = destination.granted === false;
             const checked = filed || choice.bindings.includes(binding);
-            const tag = filed ? t(locale, "publishAlreadyFiled") : providerTag(destination.provider);
-            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}` }, [
+            const tag = filed
+              ? t(locale, "publishAlreadyFiled")
+              : revoked
+                ? t(locale, "publishAccessRevoked")
+                : providerTag(destination.provider);
+            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}${revoked ? " sl-dest-row-revoked" : ""}` }, [
               el("input", {
                 type: "checkbox",
                 checked,
-                disabled: filed || submitting,
+                disabled: filed || submitting || revoked,
                 onchange: () => handlers.onToggleBinding(item.id, binding)
               }),
               destination.label || binding,

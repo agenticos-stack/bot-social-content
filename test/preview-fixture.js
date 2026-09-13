@@ -31,9 +31,14 @@ const fixture = {
       sources: [{ binding: "IG_MAIN", provider: "instagram", glyphKey: "instagram", label: "Example Studio", lastOutcome: "confirmed" }],
       // ?nodest=1 renders the zero-destination publish step: draft cards
       // visible under the notice, sends disabled until one exists (#1960).
+      // ?revoked=1 keeps the row but flips the live-grant read off — the
+      // stored-but-dead destination the picker must mark, not offer.
       destinations: new URL(location.href).searchParams.get("nodest") === "1"
         ? []
-        : [{ destinationBinding: "IG_MAIN", provider: "instagram", label: "Example Studio" }],
+        : [{
+            destinationBinding: "IG_MAIN", provider: "instagram", label: "Example Studio",
+            ...(new URL(location.href).searchParams.get("revoked") === "1" ? { granted: false } : {})
+          }],
       config: {}
     };
   },
