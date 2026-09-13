@@ -1,8 +1,9 @@
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
 
 // Development-only wrapper. The packaged server and its storage stay unchanged.
-export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory, doors }) {
+export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory, doors, seedFixtures = true }) {
   if (!sdkSource) throw new Error('Local runtime requires BOT_SDK_SOURCE pointing to the SDK source checkout.');
   const { createLocalSession } = await import(pathToFileURL(resolve(sdkSource, 'packages/testkit/src/local-session.js')));
   const modules = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith('.js') && name !== 'client.js'));
@@ -60,9 +61,11 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
   const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
-  console.warn('Social Content preview seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
-  return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors, seed: [{method:'seedLocal',args:[]}],
-    allowedMethods: connectedDoors ? [...browsing, ...needsDoors] : browsing });
+  if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Set a budget in Settings to use metered fetching.');
+  return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors,
+    maxRequestBytes: LOCAL_RPC_MAX_BYTES,
+    seed: seedFixtures ? [{method:'seedLocal',args:[]}] : [],
+    allowedMethods: connectedDoors || !seedFixtures ? [...browsing, ...needsDoors] : browsing });
 }
 
 /** `decodeBytes` is the testkit's decoder source; see connectedCanvasBridge for why it is passed in. */

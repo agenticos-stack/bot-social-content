@@ -909,9 +909,9 @@ export function renderPublish(root, state, ctx) {
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
     renderWizardError(state),
-    destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
+    destinations.length ? null : emptyDestinations,
+    el("div", { class: "sl-review-grid" }, itemCards),
     footer
   ]);
 }
-
 

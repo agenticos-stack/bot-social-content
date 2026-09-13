@@ -1,7 +1,9 @@
 <script>
   import {onDestroy} from 'svelte';
+  import {LOCAL_RPC_MAX_BYTES} from '../scripts/local-rpc-contract.mjs';
+  let {onDraftRequested = () => {}, onMutation = () => {}, revision = 0} = $props();
   let frame=$state();
-  let port;
+  let port=$state.raw();
   let controller;
   function connect(){
     port?.close();controller?.abort();
@@ -16,11 +18,16 @@
       pending++;
       try{
         const body=JSON.stringify({method,args});
-        if(body.length>16000)throw new Error('Request too large');
+        if(new TextEncoder().encode(body).byteLength>LOCAL_RPC_MAX_BYTES)throw new Error('Request too large');
         const response=await fetch('/api/dev/rpc',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body,signal});
         const result=await response.json();
-        if(!response.ok || !result.ok)throw new Error('Local call unavailable. Check your session or the supported development methods.');
-        if(!signal.aborted)current.postMessage({id,ok:true,value:result.value});
+        if(!response.ok || !result.ok)throw new Error(result.error?.message || result.error || 'The local call failed.');
+        if(!signal.aborted){
+          current.postMessage({id,ok:true,value:result.value});
+          if(method==='createBatch' && typeof result.value?.id==='string' && result.value?.items?.length)onDraftRequested(result.value.id);
+          if(method==='requestGeneration' && result.value?.ok===true)onDraftRequested(args[0]);
+          if(method==='submitForReview')onMutation();
+        }
       }catch(error){if(!signal.aborted)current.postMessage({id,ok:false,error:error.message});}
       finally{pending--;}
     };
@@ -28,6 +35,7 @@
     frame.contentWindow.postMessage({type:'bot-dev-port'},'*',[channel.port2]);
   }
   onDestroy(()=>{port?.close();controller?.abort();});
+  $effect(()=>{revision;port?.postMessage({event:{type:'drafts_changed'}});});
 </script>
 <!--
   The SAME sandbox the platform uses, deliberately.
