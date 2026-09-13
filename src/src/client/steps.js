@@ -846,11 +846,18 @@ export function renderPublish(root, state, ctx) {
 
     const refusal = error
       ? el("div", { class: "sl-wizard-error", role: "alert" }, [
-          el("p", null, error.message),
+          // A missing grant is said in the owner's language with its way out;
+          // every other refusal keeps the server's own sentence.
+          el("p", null, error.code === "publisher_not_granted" ? t(locale, "publisherNotGrantedBody") : error.message),
           // REQ-017's opt-in is the refusal's own button — the owner takes it
           // deliberately, and nothing else retries with `createNewVersion`.
           error.code === "duplicate_active"
             ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onSubmitItem(item.id, true) }, t(locale, "duplicateBlockedNewVersion"))
+            : null,
+          // Draft first: publishing authority is asked for at the moment it is
+          // needed. The canvas only requests; the host confirms and grants.
+          error.code === "publisher_not_granted"
+            ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onGrantPublishing(item.id) }, t(locale, "publisherGrantAction"))
             : null
         ])
       : null;

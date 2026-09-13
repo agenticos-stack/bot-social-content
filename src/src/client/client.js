@@ -1410,6 +1410,14 @@ function App() {
       wizard = setWizardError(wizard, null);
       renderCurrentView();
     },
+    /**
+     * Publishing authority is the owner's to give, in the host's own dialog
+     * (`gadget:grant-door`). The canvas only asks; once the host grants it,
+     * the canvas is remounted and the owner submits again.
+     */
+    onGrantPublishing: () => {
+      window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "social" }, "*");
+    },
     onRetry: async (itemId, destinationBinding) => {
       // A failed pair re-files through the same per-item submit, scoped to
       // the one destination that failed.
