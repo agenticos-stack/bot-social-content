@@ -76,12 +76,29 @@ describe("adding a public source without metered_fetch", () => {
     expect(summary.doors.metered_fetch).toBe(false);
   });
 
+  it("refuses a still-bound door whose consent has been revoked", async () => {
+    const gadget = gadgetWithEnv({
+      workspace: { notify: async () => {} },
+      social: {},
+      schedule: {},
+      metered_fetch: { socialPostsForAccount: async () => ({ refused: true, code: "binding_revoked" }) },
+      __consent: { metered_fetch: false }
+    });
+
+    const result = await gadget.addOpenSource("https://www.instagram.com/essentialfoodsofficial/");
+    expect(result).toMatchObject({ ok: false, code: "fetch_not_granted" });
+    const summary = await gadget.summary();
+    expect(summary.sources).toEqual([]);
+    expect(summary.doors.metered_fetch).toBe(false);
+  });
+
   it("stores the account once the door is present", async () => {
     const gadget = gadgetWithEnv({
       workspace: { notify: async () => {} },
       social: {},
       schedule: {},
-      metered_fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [] }) }
+      metered_fetch: { socialPostsForAccount: async () => ({ ok: true, posts: [] }) },
+      __consent: { metered_fetch: true }
     });
 
     const result = await gadget.addOpenSource("https://www.instagram.com/favcrm.io/");
@@ -127,6 +144,56 @@ describe("refresh announcements", () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.titleKey).toBe("refreshedTitle");
   });
+
+  it("does not call a broker miss a success", () => {
+    const outcome = classifyRefreshOutcome({
+      failedSafe: 0,
+      unknown: 0,
+      new: 0,
+      perSource: [{ outcome: "no_answer", message: "No provider could answer." }]
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.titleKey).toBe("refreshNoAnswerTitle");
+  });
+
+  it("does not call a skipped run a success", () => {
+    const outcome = classifyRefreshOutcome({
+      skipped: true,
+      reason: "A scan is already running.",
+      failedSafe: 0,
+      unknown: 0,
+      new: 0,
+      perSource: []
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.titleKey).toBe("refreshSkippedTitle");
+    expect(outcome.detail).toMatch(/already running/i);
+  });
+
+  it("treats a confirmed-empty source plus a failed source as partial", () => {
+    const outcome = classifyRefreshOutcome({
+      failedSafe: 1,
+      unknown: 0,
+      new: 0,
+      perSource: [
+        { outcome: "confirmed", new: 0, changed: 0, unchanged: 0 },
+        { outcome: "failed_safe", message: "Unavailable" }
+      ]
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.titleKey).toBe("refreshPartialTitle");
+  });
+
+  it("treats a confirmed-empty scan as success", () => {
+    const outcome = classifyRefreshOutcome({
+      failedSafe: 0,
+      unknown: 0,
+      new: 0,
+      perSource: [{ outcome: "confirmed", new: 0, changed: 0, unchanged: 0 }]
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.titleKey).toBe("refreshedTitle");
+  });
 });
 
 describe("the canvas names the missing fetch door", () => {
@@ -147,7 +214,7 @@ describe("the canvas names the missing fetch door", () => {
 
   it("names the permission and the next action in both locales", () => {
     for (const locale of LOCALES) {
-      for (const key of ["fetchNeedsPermission", "fetchGrant", "refreshPartialTitle"]) {
+      for (const key of ["fetchNeedsPermission", "fetchGrant", "refreshPartialTitle", "refreshSkippedTitle", "refreshNoAnswerTitle"]) {
         expect(t(locale, key), `${locale}.${key}`).not.toBe(key);
       }
     }
