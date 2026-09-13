@@ -1174,11 +1174,17 @@ function App() {
     onRefresh: async () => {
       try {
         const result = await rpc.refresh();
+        // The summary carries each source's last outcome, which the source
+        // chip shows. Reloading only the posts left a failed refresh looking
+        // exactly like an account with no posts once the toast faded.
+        await refreshSummary();
         await loadCollection(collectionState.filter);
         const outcome = classifyRefreshOutcome(result);
         announce(t(locale, outcome.titleKey), outcome.detail);
       } catch (error) {
         console.error(error);
+        await refreshSummary().catch(() => {});
+        renderCurrentView();
         announce(t(locale, "refreshFailedTitle"), error instanceof Error ? error.message : "");
       }
     },
