@@ -163,6 +163,9 @@ export const STRINGS = Object.freeze({
     batchNoDestinationTitle: "No destination set up yet",
     batchNoDestinationBody: "Localized posts need somewhere to go. Add a destination account in Settings, then continue.",
     batchBlockedTitle: "These posts were not moved",
+    publisherNotGrantedTitle: "Publishing isn't allowed yet",
+    publisherNotGrantedBody: "Submitting for review needs the Social Hub publisher. Grant it, then submit again.",
+    publisherGrantAction: "Grant publishing",
     drawerSelectedNotice: "Added to your selection",
 
     // --- Localize (step 2) --------------------------------------------------
@@ -375,6 +378,9 @@ export const STRINGS = Object.freeze({
     batchNoDestinationTitle: "尚未設定發佈目的地",
     batchNoDestinationBody: "本地化後的帖文需要發佈位置。請先在設定中新增目的地帳戶，然後再繼續。",
     batchBlockedTitle: "這些帖文未有移動",
+    publisherNotGrantedTitle: "尚未獲准發佈",
+    publisherNotGrantedBody: "提交審核需要 Social Hub 發佈權限。請先授予，然後再提交。",
+    publisherGrantAction: "授予發佈權限",
     drawerSelectedNotice: "已加入選取",
     reviewed: "已審閱",
     posterTitle: "海報編輯器",
