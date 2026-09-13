@@ -166,6 +166,8 @@ export const STRINGS = Object.freeze({
     publisherNotGrantedTitle: "Publishing isn't allowed yet",
     publisherNotGrantedBody: "Submitting for review needs the Social Hub publisher. Grant it, then submit again.",
     publisherGrantAction: "Grant publishing",
+    scheduleNotGrantedBody: "Turning monitoring on needs the scan cadence permission. Grant it, then turn monitoring on again.",
+    scheduleGrantAction: "Grant scan cadence",
     drawerSelectedNotice: "Added to your selection",
 
     // --- Localize (step 2) --------------------------------------------------
@@ -381,6 +383,8 @@ export const STRINGS = Object.freeze({
     publisherNotGrantedTitle: "尚未獲准發佈",
     publisherNotGrantedBody: "提交審核需要 Social Hub 發佈權限。請先授予，然後再提交。",
     publisherGrantAction: "授予發佈權限",
+    scheduleNotGrantedBody: "啟用監察需要掃描頻率權限。請先授予，然後再啟用監察。",
+    scheduleGrantAction: "授予掃描頻率權限",
     drawerSelectedNotice: "已加入選取",
     reviewed: "已審閱",
     posterTitle: "海報編輯器",

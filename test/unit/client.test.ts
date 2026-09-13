@@ -923,6 +923,39 @@ describe("bundled client.js smoke test", () => {
       expect(back).toHaveLength(1);
     });
 
+    it("offers the scan cadence grant when turning monitoring on is refused for it", async () => {
+      const { document } = installMinimalDom();
+      document.documentElement.lang = "en";
+      const { gadget } = unconfiguredGadget(async () => ({ configured: true }));
+      (gadget as Record<string, unknown>).setMonitoring = async () => ({
+        ok: false,
+        code: "schedule_not_granted",
+        requirementKey: "schedule",
+        message: "Grant the scan cadence before turning monitoring on."
+      });
+      (globalThis as any).gadget = gadget;
+
+      await import(pathToFileURL(bundlePath).href + `?case=schedule-not-granted-${Date.now()}`);
+      await flushAsyncWork();
+      await findPrimaryButton(document).dispatchEvent({ type: "click", preventDefault: () => {} });
+      await flushAsyncWork();
+
+      const enable = findAll(document.body, (element) => element.tagName === "BUTTON" && element.getAttribute?.("data-monitor-enable") === "true")[0];
+      expect(enable.disabled).toBe(false);
+      await enable.dispatchEvent({ type: "click", preventDefault: () => {} });
+      await flushAsyncWork();
+
+      const banner = findAll(document.body, (element) => hasClass(element, "sl-setup-error"))[0];
+      expect(banner?.textContent).toContain(t("en", "scheduleNotGrantedBody"));
+      // The owner's language, not the server's diagnostic sentence.
+      expect(banner?.textContent).not.toContain("Grant the scan cadence before turning monitoring on.");
+      const grant = findAll(banner, (element) => element.tagName === "BUTTON")[0];
+      expect(grant?.textContent).toBe(t("en", "scheduleGrantAction"));
+      for (const locale of LOCALES) {
+        for (const key of ["scheduleNotGrantedBody", "scheduleGrantAction"]) expect(t(locale, key), `${locale}.${key}`).not.toBe(key);
+      }
+    });
+
     it("surfaces a failed setConfig inline (no alert) instead of silently resetting", async () => {
       const { document } = installMinimalDom();
       document.documentElement.lang = "en";

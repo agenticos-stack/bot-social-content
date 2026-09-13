@@ -603,7 +603,10 @@ export function renderSetup(root, draft, ctx) {
       sourceSection, rulesSection,
       section("setupPublicationSection", [note("setupPublicationNote")]),
       monitoringSection,
-      error ? el("p", { class: "sl-setup-error", role: "alert" }, error) : null,
+      error ? el("p", { class: "sl-setup-error", role: "alert" }, [
+        error,
+        ctx.errorAction ? el("button", { type: "button", class: "sl-secondary", onclick: () => ctx.errorAction.run() }, ctx.errorAction.label) : null
+      ]) : null,
       ctx.notice ? el("p", { role: "status", class: "sl-setup-notice" }, ctx.notice) : null,
       el("div", { class: "sl-setup-actions" }, [
         editing ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "settingsCancel")) : null,

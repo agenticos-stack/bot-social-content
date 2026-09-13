@@ -1089,7 +1089,11 @@ function App() {
                 }
               }
               batchDialog.close();
-              wizard = resumeBatch(wizard, saved ?? await rpc.getBatch(batch.id));
+              // Read again: every savePoster above appended a revision, so
+              // `saved` describes the batch before its posters were stored.
+              // Resuming from it started Publish on a stale revision with
+              // `posterStored` false for the posters just written.
+              wizard = resumeBatch(wizard, await rpc.getBatch(batch.id));
               // The merged Publish step reads publication rows off
               // wizard.publishByItem — fetch them on the way in rather than
               // showing a picker for pairs that are already filed.
@@ -1542,6 +1546,8 @@ function App() {
     // visible without needing the sandboxed iframe's own devtools console
     // (SEC-002 keeps it opaque to the top Studio frame).
     let error = null;
+    // A refusal that names a grant the host can give carries its button here.
+    let errorAction = null;
     // The public accounts this workspace watches, and the state of adding one.
     // Read from `summary()` rather than kept in the draft: they are stored the
     // moment they resolve, not on save, because resolution can fail and the
@@ -1560,6 +1566,7 @@ function App() {
         saving,
         error,
         editing,
+        errorAction,
         summary,
         dirty: JSON.stringify(draft) !== savedDraft,
         notice,
@@ -1680,6 +1687,7 @@ function App() {
         if (saving) return;
         draft = { ...draft, ...patch, ...(patch.refinementBrief ? { refinementBrief: { ...draft.refinementBrief, ...patch.refinementBrief } } : {}) };
         error = null;
+        errorAction = null;
         notice = null;
         // Do not replace the clicked Save button during the input's blur/change
         // event: replacement would consume the user's first click.
@@ -1692,11 +1700,18 @@ function App() {
         if (saving || (enabled && JSON.stringify(draft) !== savedDraft)) return;
         saving = true;
         error = null;
+        errorAction = null;
         notice = null;
         draw();
         try {
           const result = await rpc.setMonitoring(enabled);
-          if (!result?.ok) error = result?.message || t(locale, "genericError");
+          if (result?.code === "schedule_not_granted") {
+            error = t(locale, "scheduleNotGrantedBody");
+            errorAction = {
+              label: t(locale, "scheduleGrantAction"),
+              run: () => window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "schedule" }, "*")
+            };
+          } else if (!result?.ok) error = result?.message || t(locale, "genericError");
           await refreshSummary();
         } catch (thrown) {
           error = thrown instanceof Error ? thrown.message : String(thrown);
@@ -1708,6 +1723,7 @@ function App() {
         if (saving) return; // a stale second click (e.g. a slow first submit) must not race a duplicate setConfig
         saving = true;
         error = null;
+        errorAction = null;
         try {
           draw();
           const result = await rpc.saveSetup(toConfigPayload(draft));

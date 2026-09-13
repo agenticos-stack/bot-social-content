@@ -432,3 +432,35 @@ describe("poster_required: an open source never ships someone else's photo", () 
     expect(submitted.warnings?.map((w: { code: string }) => w.code)).toContain("poster_not_shipped");
   });
 });
+
+describe("draft first: scan cadence is checked when monitoring is turned on", () => {
+  it("refuses schedule_not_granted by value and arms nothing without the schedule door", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    await gadget.saveSetup({ cadence: "daily" });
+
+    const refused = await gadget.setMonitoring(true);
+    expect(refused).toMatchObject({ ok: false, code: "schedule_not_granted", requirementKey: "schedule" });
+    expect(gadget.storage.getConfig()?.monitoringEnabled).not.toBe(true);
+  });
+
+  it("arms the scan once the schedule door is granted", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      schedule: {
+        list: async () => [],
+        create: async (hook: string, cadence: unknown) => {
+          created.push({ hook, cadence });
+          return { id: "sch_1" };
+        },
+        cancel: async () => ({ cancelled: true })
+      }
+    });
+    await gadget.saveSetup({ cadence: "daily" });
+
+    const armed = await gadget.setMonitoring(true);
+    expect(armed).toMatchObject({ ok: true });
+    expect(created).toHaveLength(1);
+    expect(gadget.storage.getConfig()?.monitoringEnabled).toBe(true);
+  });
+});

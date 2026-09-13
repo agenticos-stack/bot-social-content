@@ -474,6 +474,17 @@ export class Gadget extends DurableObject {
         const cancelled = await scheduleCancel(this.env, row.id);
         if (cancelled?.cancelled !== true) return { ok: false, message: "Monitoring is paused. Resolve the existing schedule before applying a new cadence." };
       }
+      // Scan cadence is optional at open (draft first); turning monitoring on
+      // is the operation that needs it. Refused by value, naming the
+      // requirement, so the canvas can ask the host for exactly that grant.
+      if (!doorGrantStatus(this.env).schedule) {
+        return {
+          ok: false,
+          code: "schedule_not_granted",
+          requirementKey: "schedule",
+          message: "Grant the scan cadence before turning monitoring on."
+        };
+      }
       const schedule = await scheduleCreate(this.env, SCAN_HOOK_NAME, config.cadence);
       if (!schedule?.id) return { ok: false, message: "Monitoring is not enabled. Complete the schedule decision in the workspace, then retry." };
       this.storage.setConfig({ ...config, monitoringEnabled: true });

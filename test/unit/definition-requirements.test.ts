@@ -11,16 +11,14 @@ const byKey = Object.fromEntries(
 );
 
 describe("Social Content setup declarations", () => {
-  it("opens without connected sources, destinations, the publisher or public fetching", () => {
-    for (const key of ["source", "destination", "social", "metered_fetch"]) {
+  it("opens with nothing granted: every requirement is checked by the operation that uses it", () => {
+    // Sources, destinations, the publisher, public fetching, scan cadence and
+    // notifications. Opening and drafting need none of them; monitoring
+    // refuses `schedule_not_granted`, submitting refuses `publisher_not_granted`.
+    for (const key of ["source", "destination", "social", "metered_fetch", "schedule", "workspace"]) {
       expect({ key, optional: byKey[key]?.optional }).toEqual({ key, optional: true });
     }
-  });
-
-  it("still requires the capabilities setup can grant without any connection", () => {
-    for (const key of ["schedule", "workspace"]) {
-      expect({ key, optional: byKey[key]?.optional }).toEqual({ key, optional: undefined });
-    }
+    expect(SOCIAL_LOCALIZATION_DEFINITION.requirements.filter((requirement) => !(requirement as { optional?: boolean }).optional)).toEqual([]);
   });
 
   it("keeps each connector family's bounds for when it is used", () => {
