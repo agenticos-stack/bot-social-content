@@ -78,8 +78,9 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
       disposed: false,
       calls: { registerDevelopmentGadget: 0, runTurn: 0, pendingAsks: 0, answerAsk: 0, conversationActions: 0 },
       async subscribe() {},
-      async registerDevelopmentGadget() {
+      async registerDevelopmentGadget(metadata) {
         stub.calls.registerDevelopmentGadget += 1;
+        stub.registered = metadata;
         registrations += 1;
         return { gadgetId: `dev:${registrations}`, expiresAt: now() + leaseMs };
       },
@@ -392,6 +393,22 @@ test('a gadget-dev token cannot grant a door', async () => {
     const before = transport.requests.length;
     await assert.rejects(agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'dev_token_secret'), /Studio/);
     assert.equal(transport.requests.length, before);
+    agent.close();
+  });
+});
+
+test('registers the source server.js so the platform scans its reads, and re-sends it on reload', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, serverSource: 'static readMethods = ["summary"]',
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    assert.equal(transport.stubs[0].registered.serverSource, 'static readMethods = ["summary"]');
+    assert.equal('readMethods' in transport.stubs[0].registered, false);
+    await agent.reload({ sourceHash: 'b'.repeat(64), serverSource: 'static readMethods = ["summary", "listItems"]' });
+    assert.equal(transport.stubs[0].registered.serverSource, 'static readMethods = ["summary", "listItems"]');
     agent.close();
   });
 });

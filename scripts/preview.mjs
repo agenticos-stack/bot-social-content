@@ -186,7 +186,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     let readyLocal;
     let localReady = new Promise((resolve) => { readyLocal = resolve; });
     try {
-      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
@@ -261,7 +261,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           await previousReady;            // let in-flight calls finish on the old isolate
           await previous.dispose();       // releases the state lock; data stays
           local=await startRuntime(files);
-          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements});
+          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:files['server.js']});
           lastHash=nextHash;
           archive={files};
           console.log(`reloaded ${nextHash.slice(0,12)} — ${Object.keys(files).length} files`);

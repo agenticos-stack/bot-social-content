@@ -64,6 +64,13 @@ export async function createConnectedAgent({
    * no door.
    */
   requirements: initialRequirements = [],
+  /**
+   * The source's `server.js`, so the platform reads which methods are reads
+   * (`static readMethods`) with the scanner it uses for an installed gadget.
+   * Sent as source rather than a list: the API refuses a host naming its own
+   * reads.
+   */
+  serverSource: initialServerSource,
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -89,10 +96,15 @@ export async function createConnectedAgent({
   let sourceHash = initialSourceHash;
   let methods = initialMethods;
   let requirements = initialRequirements;
+  let serverSource = initialServerSource;
   if (typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Invalid source digest.');
 
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const sessionPath = resolve(stateDirectory, SESSION_FILE);
+
+  function registrationMetadata() {
+    return { title, sourceHash, methods, requirements, ...(typeof serverSource === 'string' ? { serverSource } : {}) };
+  }
 
   const events = [];
   function drainEvents() { return events.splice(0, events.length); }
@@ -156,7 +168,7 @@ export async function createConnectedAgent({
     const socket = openSocket(socketUrl);
     const stub = openSession(socket);
     await stub.subscribe(new Subscriber());
-    const registration = await stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
+    const registration = await stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
     workspaceId = resolvedWorkspaceId;
     session = { stub, socket, gadgetId: registration.gadgetId, expiresAt: registration.expiresAt };
     reconnectAttempts = 0;
@@ -342,11 +354,9 @@ export async function createConnectedAgent({
       sourceHash = next.sourceHash;
       if (Array.isArray(next.methods)) methods = next.methods;
       if (Array.isArray(next.requirements)) requirements = next.requirements;
+      if (typeof next.serverSource === 'string') serverSource = next.serverSource;
       await ensureConnected(remote ? devToken : cookie);
-      const registration = await session.stub.registerDevelopmentGadget(
-        { title, sourceHash, methods, requirements },
-        new LocalHost()
-      );
+      const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
       session.gadgetId = registration.gadgetId;
       session.expiresAt = registration.expiresAt;
       return { gadgetId: registration.gadgetId, sourceHash };
