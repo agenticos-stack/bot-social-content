@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSocialRuntime, browserBridge } from '../scripts/local-runtime.mjs';
 import { runInNewContext } from 'node:vm';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 
 test('real Social Content SQLite selection and capability refusal', {skip: !process.env.BOT_SDK_SOURCE}, async () => {
-  const names = ['server.js','storage.js','model.js','config.js','doors.js'];
+  // The manifest owns the module list — a gadget source the test forgets to
+  // load fails inside the isolate as "No such module", not at the file read.
+  const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
+  const names = manifest.files.filter(name => name.endsWith('.js') && name !== 'client.js');
   const files = Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(new URL('../src/'+name, import.meta.url), 'utf8')])));
   const origin = 'http://localhost:17921';
   const root = await mkdtemp(join(tmpdir(),'social-persistence-test-'));
@@ -30,7 +35,8 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
         assert.equal(options.credentials, 'omit');
         return session.handle(new Request(origin+url, {...options,headers:{...options.headers,origin}}));
       }};
-    runInNewContext(browserBridge(session.token), browser);
+    const { DECODE_BYTES_SOURCE } = await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE, 'packages/testkit/src/rpc-bytes.js')));
+    runInNewContext(browserBridge(session.token, DECODE_BYTES_SOURCE), browser);
     const filtered = await browser.gadget.listItems({filter:'all',query:'no matching source'});
     assert.equal(filtered.items.length, 0);
     assert.equal(messages.at(-1).value.records[0].id, 'fixture-0');
@@ -53,16 +59,24 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     const duplicate = await browser.gadget.createBatch({itemIds:['fixture-0'],destinationBindings:['LOCAL_DRAFT']});
     assert.equal(duplicate.code, 'duplicate_active');
     assert.equal((await browser.gadget.listBatchSummaries()).batches.length, 1);
-    await assert.rejects(browser.gadget.submitForReview(), /method_not_admitted/);
-    for (const method of ['submitForReview','seedLocal','setConfig','refresh']) assert.equal((await call(method)).status,403);
+    // submitForReview is admitted so it can refuse by value: with no doors a
+    // submission cannot reach a publisher — it answers a refusal, and the item
+    // stays in drafting.
+    const submit = await browser.gadget.submitForReview({batchItemId, expectedRevision:1, destinationBindings:['LOCAL_DRAFT']});
+    assert.equal(submit.ok, false);
+    assert.equal(typeof submit.code, 'string');
+    for (const method of ['seedLocal','setConfig','refresh']) assert.equal((await call(method)).status,403);
     const previousToken = session.token;
     await session.dispose();
     session = await createSocialRuntime(options);
-    assert.notEqual(session.token, previousToken);
+    // The session token lives beside the SQLite it guards: a restart keeps it,
+    // so the browser session the developer was holding stays valid.
+    assert.equal(session.token, previousToken);
     const persisted = (await (await call('getBatch',[batch.id])).json()).value;
     assert.equal(persisted.items[0].caption,caption);
     assert.equal(persisted.items[0].revision,1);
     assert.equal((await (await call('listItems',[{filter:'all'}])).json()).value.items.length,3);
-    await assert.rejects(browser.gadget.summary(), /local_session_required/);
+    const stillValid = await browser.gadget.summary();
+    assert.equal(typeof stillValid.counts.total, 'number');
   } finally { await session?.dispose(); await rm(root,{recursive:true,force:true}); }
 });

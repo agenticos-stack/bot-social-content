@@ -2,6 +2,16 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectedApi} from '../scripts/connected-api.mjs';
 const frontendOrigin='http://social.localhost:18000';
+test('poster requests pass the connected BFF without increasing the agent-message budget',async()=>{
+  const body=JSON.stringify({method:'savePoster',args:[{png:{$bot_bytes_b64:'a'.repeat(150000)}}]});
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{call:async request=>{
+    assert.equal(await request.text(),body);
+    return Response.json({ok:true,value:{revision:2}});
+  }}});
+  const request=path=>new Request(frontendOrigin+path,{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body});
+  assert.equal((await handle(request('/api/dev/rpc'))).status,200);
+  assert.equal((await handle(request('/api/dev/agent'))).status,413);
+});
 test('development launch never creates an installed gadget or API conversation',async()=>{
   let calls=0;
   const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{start:async()=>{calls++;return {mode:'local-source'};}},fetcher:()=>assert.fail('must not call marketplace or conversation API')});
@@ -45,4 +55,32 @@ test('remote platform BFF admits production API origins and never proxies cookie
   assert.equal((await handle(new Request(frontendOrigin+'/api/auth/get-session'))).status,404);
   assert.equal((await handle(new Request(frontendOrigin+'/api/auth/dev-sign-in',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,404);
   assert.equal((await handle(new Request(frontendOrigin+'/api/dev/session',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:'{}'}))).status,200);
+});
+test('connected BFF forwards only the owner answer to a door grant',async()=>{
+  const inputs=[];
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async(_request,value)=>{inputs.push(value);return {requirementKey:'metered_fetch',persistedToAgent:false};}},fetcher:()=>assert.fail('grant must go through the development host')});
+  const request=body=>new Request(frontendOrigin+'/api/dev/grant',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await handle(request({requirementKey:'metered_fetch'}))).status,400);
+  assert.equal((await handle(request({requirementKey:'metered_fetch',persistToAgent:'no'}))).status,400);
+  assert.equal((await handle(request({requirementKey:'metered_fetch',persistToAgent:false,resolvedId:'x'}))).status,400);
+  assert.equal(inputs.length,0);
+  const response=await handle(request({requirementKey:'metered_fetch',persistToAgent:false}));
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{data:{requirementKey:'metered_fetch',persistedToAgent:false}});
+  assert.deepEqual(inputs,[{requirementKey:'metered_fetch',persistToAgent:false}]);
+  const refused=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async()=>{throw new Error('That door is not one this gadget declared.');}}});
+  const failed=await refused(request({requirementKey:'email',persistToAgent:false}));
+  assert.equal(failed.status,409);
+  assert.equal((await failed.json()).error.message,'That door is not one this gadget declared.');
+});
+test('connected BFF admits only a connection listing or one account choice',async()=>{
+  const inputs=[];
+  const handle=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{connections:async(_request,value)=>{inputs.push(value);return value.operation==='list'?{families:[]}:{granted:{requirementKey:'destination:IG_FAVCRM'}};}},fetcher:()=>assert.fail('connections go through the development host')});
+  const request=body=>new Request(frontendOrigin+'/api/dev/connections',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json'},body:JSON.stringify(body)});
+  for(const bad of [{},{operation:'revoke'},{operation:'list',requirementKey:'destination'},{operation:'grant',requirementKey:'destination'},{operation:'grant',requirementKey:'destination',resolvedId:7},{operation:'grant',requirementKey:'destination',resolvedId:'crb_1',resolvedLabel:'x'}])
+    assert.equal((await handle(request(bad))).status,400);
+  assert.equal(inputs.length,0);
+  assert.deepEqual(await (await handle(request({operation:'list'}))).json(),{data:{families:[]}});
+  assert.equal((await handle(request({operation:'grant',requirementKey:'destination',resolvedId:'crb_1'}))).status,200);
+  assert.deepEqual(inputs,[{operation:'list'},{operation:'grant',requirementKey:'destination',resolvedId:'crb_1'}]);
 });

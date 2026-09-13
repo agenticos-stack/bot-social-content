@@ -94,6 +94,8 @@ import {
   normalizeOpenInstagramPosts,
   publicationMedia,
   isPublisherAddressableUrl,
+  posterAltText,
+  sourceMediaAltText,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -237,6 +239,15 @@ const PROVIDERS = {
   },
   facebook: { list: listFacebookPagePosts, normalize: normalizeFacebookPagePosts }
 };
+
+/**
+ * Providers whose image publish container accepts JPEG only, per their own
+ * media documentation — Instagram's `image_url` container rejects PNG. A
+ * stored poster in another format would file clean here and then hold at
+ * `media_not_ready` when the provider's container refused it; submitting it
+ * is refused up front instead, naming the re-render that fixes it.
+ */
+const JPEG_ONLY_IMAGE_PROVIDERS = new Set(["instagram"]);
 
 export class Gadget extends DurableObject {
   static hooks = {
@@ -1563,6 +1574,7 @@ export class Gadget extends DurableObject {
       disclaimers: config?.disclaimers,
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
+    const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
     return {
       id: batchItem.id,
       sourceItem,
@@ -1579,9 +1591,13 @@ export class Gadget extends DurableObject {
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
-      // Whether rendered PNG bytes already exist at this revision — the
-      // client materializes once per revision, never on every view.
-      posterStored: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null,
+      // Whether rendered bytes already exist at this revision — the client
+      // materializes once per revision, never on every view. The format is
+      // exposed too: a stored PNG predates the JPEG the renderer produces,
+      // and a destination whose container accepts JPEG only needs the owner
+      // to see (and re-render) that rather than file a post that holds.
+      posterStored: currentPoster !== null,
+      posterMimeType: currentPoster ? posterMimeType(currentPoster.bytes).mimeType : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -1833,7 +1849,7 @@ export class Gadget extends DurableObject {
 
     const bytes = toBytes(png);
     // A caller bug, not an owner-facing condition — `steps.js`'s
-    // `onSavePoster` always hands this `renderPosterPng`'s own Uint8Array
+    // `onSavePoster` always hands this `renderPosterImage`'s own Uint8Array
     // output. Still a value, not a throw (see the file header note: a
     // workerd test proved a throw here breaks the facet's output gate the
     // same way an expected refusal's did).
@@ -1844,15 +1860,22 @@ export class Gadget extends DurableObject {
           {
             code: "invalid_argument",
             severity: "block",
-            message: "savePoster needs PNG bytes (Uint8Array, ArrayBuffer or base64 string)."
+            message: "savePoster needs image bytes (Uint8Array, ArrayBuffer or base64 string)."
           }
         ]
       };
     }
-    if (!isPngSignature(bytes)) {
+    /*
+     * PNG or JPEG, sniffed — never the caller's say-so. JPEG is what
+     * Instagram's publish container accepts for image_url media; PNG stays
+     * admitted because other destinations take it and already-stored posters
+     * are PNG.
+     */
+    const format = isPngSignature(bytes) ? "png" : isJpegSignature(bytes) ? "jpeg" : null;
+    if (!format) {
       return {
         ok: false,
-        issues: [{ code: "poster_not_png", severity: "block", message: "The uploaded file is not a PNG." }]
+        issues: [{ code: "poster_not_image", severity: "block", message: "The uploaded file is not a PNG or JPEG image." }]
       };
     }
 
@@ -1864,12 +1887,12 @@ export class Gadget extends DurableObject {
           {
             code: "poster_too_large",
             severity: "block",
-            message: `The poster PNG exceeds the ${constraints.maxBytes}-byte limit.`
+            message: `The poster image exceeds the ${constraints.maxBytes}-byte limit.`
           }
         ]
       };
     }
-    const dimensions = readPngDimensions(bytes);
+    const dimensions = format === "jpeg" ? readJpegDimensions(bytes) : readPngDimensions(bytes);
     if (!dimensions || dimensions.width !== constraints.width || dimensions.height !== constraints.height) {
       return {
         ok: false,
@@ -1877,7 +1900,7 @@ export class Gadget extends DurableObject {
           {
             code: "poster_wrong_size",
             severity: "block",
-            message: `The poster PNG must be exactly ${constraints.width}x${constraints.height}.`
+            message: `The poster image must be exactly ${constraints.width}x${constraints.height}.`
           }
         ]
       };
@@ -2068,19 +2091,68 @@ export class Gadget extends DurableObject {
     const warnings = [];
     let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
-      sourceMedia: sourceItem?.media
+      sourceMedia: sourceItem?.media,
+      fallbackAltText: sourceMediaAltText(sourceItem)
     });
     let posterShipped = false;
     const poster = this.storage.getPoster(batchItemId, revision.revision);
     if (poster) {
+      // The stored bytes carry their format — sniffed, never assumed: a
+      // JPEG renders for Instagram's container, a PNG still ships where a
+      // destination accepts it.
+      const { mimeType, extension } = posterMimeType(poster.bytes);
+      /*
+       * A stored PNG under a JPEG-only destination is a draft saved before
+       * the format rule existed: filing it would reach the provider and hold
+       * at `media_not_ready`, indistinguishable from a slow upload. The owner
+       * path is a fresh render — the drawer's Continue saves one — so refuse
+       * here, while the refusal can still name the fix.
+       */
+      const jpegOnly = bindings.some((binding) =>
+        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+      );
+      if (jpegOnly && mimeType !== "image/jpeg") {
+        return {
+          ok: false,
+          code: "poster_format_stale",
+          message:
+            "The saved poster is a PNG, which Instagram's publish container rejects — re-render it as JPEG (Continue to publish saves a fresh one) and submit again."
+        };
+      }
       try {
         const uploaded = await socialUploadMedia(this.env, {
           dataBase64: bytesToBase64(poster.bytes),
-          mimeType: "image/png",
-          filename: `poster-${batchItemId}-r${revision.revision}.png`
+          mimeType,
+          filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
         });
         if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
-          packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+          /*
+           * GUD-005: the provider holds media filed without alt text — the
+           * poster describes itself by the copy it renders. Width/height come
+           * from the template, never from sniffed bytes.
+           */
+          let width = null;
+          let height = null;
+          try {
+            ({ width, height } = posterPngConstraints(poster.template));
+          } catch {
+            // A template the schema no longer knows ships without dims.
+          }
+          packedMedia = {
+            ok: true,
+            media: [
+              {
+                assetId: uploaded.assetId,
+                url: uploaded.url,
+                kind: "image",
+                altText: posterAltText(revision.posterLayout),
+                mimeType: uploaded.mimeType ?? mimeType,
+                byteSize: uploaded.byteSize ?? poster.byteLength,
+                width,
+                height
+              }
+            ]
+          };
           posterShipped = true;
         } else {
           warnings.push({
@@ -2161,12 +2233,31 @@ export class Gadget extends DurableObject {
         continue;
       }
 
+      /*
+       * The door's `destinationBinding` is the connector resource binding id
+       * (`crb_…`), not the env name this workspace knows the account by —
+       * `createDraft` resolves it through `loadConnectorResourceGrantById`,
+       * which only answers the id. `describe()` states it (`resolvedId`), and
+       * is asked HERE, at the moment of use, so a row stored before the field
+       * existed resolves the same way a fresh one does.
+       */
+      const described = await describeConnector(this.env, binding);
+      const resolvedId = readString(described?.resolvedId);
+      if (!resolvedId) {
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_unresolved",
+          message: `${binding} did not describe a destination the publisher can address.`
+        });
+        continue;
+      }
+
       let draft;
       try {
         draft = await socialCreateDraft(this.env, {
           caption,
           media: packedMedia.media,
-          targets: [{ destinationBinding: binding }],
+          targets: [{ destinationBinding: resolvedId }],
           origin: attribution.origin,
           protectedLiterals,
           // The Social Hub owns schedule validation and time resolution.
@@ -2225,7 +2316,7 @@ export class Gadget extends DurableObject {
         replaceIds
       });
       filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
-      mergedTargets.push(...normalizeTargets(draft.targets, [binding]));
+      mergedTargets.push(...normalizeTargets(this.toWorkspaceBindings(draft.targets), [binding]));
       lastFiled = draft;
     }
 
@@ -2282,7 +2373,7 @@ export class Gadget extends DurableObject {
       if (publication.version) {
         const fresh = await socialReadStatus(this.env, publication.version);
         const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-        targets = normalizeTargets(freshTargets, [publication.destinationBinding], null);
+        targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null);
         if (freshTargets) {
           // The pair's own outcome rows are the item's canonical targets.
           this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
@@ -2292,6 +2383,28 @@ export class Gadget extends DurableObject {
     }
 
     return { publications, targets: publications.flatMap((publication) => publication.targets) };
+  }
+
+  /**
+   * The door keys its target rows by the resource binding id it published to
+   * (`crb_…`), while this workspace files publications under the env name the
+   * owner picked. `resolvedId` is the bridge already stored on each
+   * destination row — without this translation every returned outcome reads
+   * as "unknown" forever, and `draft.targets` at submit time file a row keyed
+   * to an id nobody else in this workspace uses.
+   */
+  toWorkspaceBindings(entries) {
+    const resolvedToBinding = new Map();
+    for (const row of this.storage.listDestinations()) {
+      const resolvedId = readString(row.describe?.resolvedId);
+      if (resolvedId) resolvedToBinding.set(resolvedId, row.binding);
+    }
+    if (!resolvedToBinding.size) return Array.isArray(entries) ? entries : [];
+    return (Array.isArray(entries) ? entries : []).map((entry) => {
+      const key = entry?.destinationBinding ?? entry?.binding;
+      const workspace = typeof key === "string" ? resolvedToBinding.get(key) : undefined;
+      return workspace ? { ...entry, destinationBinding: workspace } : entry;
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -2592,10 +2705,53 @@ function isPngSignature(bytes) {
   return PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
 }
 
+function isJpegSignature(bytes) {
+  return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
 function readPngDimensions(bytes) {
   if (bytes.byteLength < 24) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
+ * JPEG dims live in the first SOF segment (C0–CF except DHT/JPG/DAC), reached
+ * by walking `FF marker len16` segments from the SOI. Anything that doesn't
+ * parse is null — the caller treats that as "not an image we ship".
+ */
+function readJpegDimensions(bytes) {
+  if (!isJpegSignature(bytes)) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 2;
+  while (offset + 4 <= bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1];
+    // Standalone markers carry no length field: TEM, RSTn, SOI, EOI.
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2;
+      continue;
+    }
+    const length = view.getUint16(offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.byteLength) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return offset + 9 <= bytes.byteLength
+        ? { height: view.getUint16(offset + 5), width: view.getUint16(offset + 7) }
+        : null;
+    }
+    offset += 2 + length;
+  }
+  return null;
+}
+
+/**
+ * What `uploadMedia` should declare for a stored poster. The save path
+ * admits only PNG and JPEG, so a stored poster always resolves; the fallback
+ * is PNG purely so a corrupt row fails as a format refusal downstream rather
+ * than a bogus claim here.
+ */
+function posterMimeType(bytes) {
+  return isJpegSignature(bytes) ? { mimeType: "image/jpeg", extension: "jpg" } : { mimeType: "image/png", extension: "png" };
 }
 
 /** Uint8Array / ArrayBuffer / plain array / base64 string, all in — one boundary for "bytes arrived over RPC or JSON". */

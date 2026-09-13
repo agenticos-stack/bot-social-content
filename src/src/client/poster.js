@@ -9,7 +9,7 @@
 //
 // `computePosterLayout` is pure geometry (testable in node without a canvas)
 // so tests/social-localization-client.test.ts can assert the layout maths
-// directly; `drawPoster` and `exportPosterPng` are the imperative half that
+// directly; `drawPoster` and `renderPosterImage` are the imperative half that
 // needs a real `CanvasRenderingContext2D`.
 
 import { posterPngConstraints } from "../../model.js";
@@ -122,8 +122,17 @@ export function drawPoster(ctx, layout, config) {
   }
 }
 
-/** Renders `config` onto a fresh canvas at `template`'s pixel size and returns the PNG as bytes ready for savePoster(). */
-export async function renderPosterPng(template, config) {
+/**
+ * Renders `config` onto a fresh canvas at `template`'s pixel size and returns
+ * the image as bytes ready for savePoster().
+ *
+ * JPEG, not PNG: Instagram's content-publishing API accepts only JPEG for an
+ * `image_url` container — a PNG ships fine through uploadMedia but the
+ * provider's container then fails at publish time, leaving the post held on
+ * `media_not_ready`. The poster is fully opaque (the background fill covers
+ * the canvas), so the flattening JPEG applies to alpha costs nothing.
+ */
+export async function renderPosterImage(template, config) {
   const layout = computePosterLayout({ template, headline: config.headline, subline: config.subline, align: config.align });
   const canvas = document.createElement("canvas");
   canvas.width = layout.width;
@@ -131,7 +140,7 @@ export async function renderPosterPng(template, config) {
   const ctx = canvas.getContext("2d");
   drawPoster(ctx, layout, config);
   const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob((result) => (result ? resolve(result) : reject(new Error("canvas.toBlob returned no blob"))), "image/png");
+    canvas.toBlob((result) => (result ? resolve(result) : reject(new Error("canvas.toBlob returned no blob"))), "image/jpeg", 0.92);
   });
   const buffer = await blob.arrayBuffer();
   const bytes = new Uint8Array(buffer);

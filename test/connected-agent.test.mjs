@@ -36,8 +36,12 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
   const requests = [];
 
   function fetchImpl(url, options) {
-    requests.push({ url, method: options?.method, headers: options?.headers });
+    requests.push({ url, method: options?.method, headers: options?.headers, body: options?.body });
     const target = new URL(url);
+    if (target.pathname === '/v2/workspaces/ws_1/door-grants' && options.method === 'POST') {
+      const { requirementKey } = JSON.parse(options.body);
+      return Promise.resolve(jsonResponse(201, { data: { grant: { requirementKey }, persistedToAgent: false } }));
+    }
     if (target.pathname === '/v2/workspaces' && options.method === 'POST') {
       workspaceCreated = true;
       return Promise.resolve(jsonResponse(200, { data: { workspaceId: 'ws_1' } }));
@@ -74,8 +78,9 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
       disposed: false,
       calls: { registerDevelopmentGadget: 0, runTurn: 0, pendingAsks: 0, answerAsk: 0, conversationActions: 0 },
       async subscribe() {},
-      async registerDevelopmentGadget() {
+      async registerDevelopmentGadget(metadata) {
         stub.calls.registerDevelopmentGadget += 1;
+        stub.registered = metadata;
         registrations += 1;
         return { gadgetId: `dev:${registrations}`, expiresAt: now() + leaseMs };
       },
@@ -86,6 +91,11 @@ function createFakeTransport({ now, leaseMs = 30 * 60 * 1000, hooks = {} }) {
       async pendingAsks() { stub.calls.pendingAsks += 1; return hooks.pendingAsks ? hooks.pendingAsks() : []; },
       async answerAsk(actionId, decision) { stub.calls.answerAsk += 1; return hooks.answerAsk ? hooks.answerAsk(actionId, decision) : { applied: true }; },
       async conversationActions() { return []; },
+      async developmentDoors() { return hooks.developmentDoors ? hooks.developmentDoors() : []; },
+      async developmentConnectionChoices() { return hooks.connectionChoices ? hooks.connectionChoices() : []; },
+      async grantDevelopmentConnection(input) { stub.connectionGrants = [...(stub.connectionGrants ?? []), input]; return hooks.grantConnection ? hooks.grantConnection(input) : { ok: true, requirementKey: `${input.requirementKey}:IG_FAVCRM`, env: 'env.IG_FAVCRM', label: 'IG FavCRM' }; },
+      async grantDevelopmentDoor(requirementKey) { stub.doorGrants = [...(stub.doorGrants ?? []), requirementKey]; return hooks.grantDoor ? hooks.grantDoor(requirementKey) : { requirementKey }; },
+      async revokeDevelopmentDoor(requirementKey) { stub.doorRevokes = [...(stub.doorRevokes ?? []), requirementKey]; return { requirementKey, ungranted: true }; },
       onRpcBroken(cb) { brokenCallback = cb; },
       breakNow(error) { brokenCallback?.(error ?? new Error('rpc broken')); },
       [Symbol.dispose]() { stub.disposed = true; }
@@ -352,3 +362,122 @@ test('reload refuses a digest that is not one, rather than registering it', asyn
   });
 });
 
+
+test('grants only a declared door, with the owner scope sent explicitly and the current cookie', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const before = transport.requests.length;
+    await assert.rejects(agent.grantDoor({ requirementKey: 'email', persistToAgent: false }, 'session=alice'), /not one this gadget declared/);
+    await assert.rejects(agent.grantDoor({ requirementKey: 'metered_fetch' }, 'session=alice'), /conversation only/);
+    assert.equal(transport.requests.length, before, 'a refused grant never reaches the API');
+
+    const result = await agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'session=rotated');
+    assert.deepEqual(result, { requirementKey: 'metered_fetch', persistedToAgent: false });
+    const sent = transport.requests.at(-1);
+    assert.equal(new URL(sent.url).pathname, '/v2/workspaces/ws_1/door-grants');
+    assert.equal(sent.headers.cookie, 'session=rotated');
+    assert.equal(sent.headers.origin, frontendOrigin);
+    assert.deepEqual(JSON.parse(sent.body), { requirementKey: 'metered_fetch', persistToAgent: false });
+    agent.close();
+  });
+});
+
+test('a gadget-dev token grants a door over the socket, conversation-only', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin: prodApi, devToken: 'dev_token_secret', workspaceId: prodWorkspace, stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const before = transport.requests.length;
+    const result = await agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'dev_token_secret');
+    // No REST call ever leaves — a dev session holds no cookie. The socket
+    // grant is attributed server-side to the member the token binds.
+    assert.deepEqual(result, { requirementKey: 'metered_fetch', persistedToAgent: false });
+    assert.deepEqual(transport.stubs[0].doorGrants, ['metered_fetch']);
+    assert.equal(transport.requests.length, before);
+    agent.close();
+  });
+});
+
+test('registers the source server.js so the platform scans its reads, and re-sends it on reload', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, serverSource: 'static readMethods = ["summary"]',
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    assert.equal(transport.stubs[0].registered.serverSource, 'static readMethods = ["summary"]');
+    assert.equal('readMethods' in transport.stubs[0].registered, false);
+    await agent.reload({ sourceHash: 'b'.repeat(64), serverSource: 'static readMethods = ["summary", "listItems"]' });
+    assert.equal(transport.stubs[0].registered.serverSource, 'static readMethods = ["summary", "listItems"]');
+    agent.close();
+  });
+});
+
+test('projects a granted family member with the connector methods the platform reports', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const hooks = {
+      developmentDoors: () => [
+        { envKey: 'social', requirementKey: 'social', granted: true },
+        { envKey: 'destination', requirementKey: 'destination', granted: false },
+        { envKey: 'IG_FAVCRM', requirementKey: 'destination:IG_FAVCRM', granted: true, family: 'destination', methods: ['describe', 'instagram_list_media'] },
+        { envKey: 'IG_STRAY', requirementKey: 'IG_STRAY', granted: true, methods: ['describe'] }
+      ]
+    };
+    const transport = createFakeTransport({ now: () => 1_000_000, hooks });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const doors = await agent.doors({ social: ['createDraft'] });
+    assert.deepEqual(doors.spec, { social: ['createDraft'], IG_FAVCRM: ['describe', 'instagram_list_media'] });
+    agent.close();
+  });
+});
+
+test('connects an account only for a declared family, and says the platform refusal', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const hooks = { connectionChoices: () => [{ requirementKey: 'destination', label: 'Destination channels', members: [], choices: [] }] };
+    const transport = createFakeTransport({ now: () => 1_000_000, hooks });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'destination', kind: 'connector_resource', role: 'destination' }, { requirementKey: 'social', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    assert.equal((await agent.connectionChoices())[0].requirementKey, 'destination');
+    await assert.rejects(agent.grantConnection({ requirementKey: 'social', resolvedId: 'crb_1' }), /not one this gadget declared/);
+    await assert.rejects(agent.grantConnection({ requirementKey: 'destination', resolvedId: '' }), /Choose an account/);
+    assert.equal(transport.stubs[0].connectionGrants, undefined);
+    assert.deepEqual(await agent.grantConnection({ requirementKey: 'destination', resolvedId: 'crb_1' }), { requirementKey: 'destination:IG_FAVCRM', env: 'env.IG_FAVCRM', label: 'IG FavCRM' });
+    assert.deepEqual(transport.stubs[0].connectionGrants, [{ requirementKey: 'destination', resolvedId: 'crb_1' }]);
+    hooks.grantConnection = () => ({ ok: false, code: 'requirement_max_reached', message: 'destination already holds the maximum of 1.' });
+    await assert.rejects(agent.grantConnection({ requirementKey: 'destination', resolvedId: 'crb_2' }), /maximum of 1/);
+    agent.close();
+  });
+});
+
+test('a gadget-dev token connects an account over the socket', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin: prodApi, devToken: 'dev_token_secret', workspaceId: prodWorkspace, stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'destination', kind: 'connector_resource' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    // Studio cannot grant a development conversation's family — there is no
+    // installed gadget row to discover it through — so the socket is the only
+    // consent surface, and the member the token binds is who it records.
+    const result = await agent.grantConnection({ requirementKey: 'destination', resolvedId: 'crb_1' });
+    assert.deepEqual(result, { requirementKey: 'destination:IG_FAVCRM', env: 'env.IG_FAVCRM', label: 'IG FavCRM' });
+    assert.deepEqual(transport.stubs[0].connectionGrants, [{ requirementKey: 'destination', resolvedId: 'crb_1' }]);
+    agent.close();
+  });
+});

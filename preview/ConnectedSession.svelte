@@ -9,6 +9,12 @@
   let error = $state('');
   let orgName = $state('');
   let development = $state(null);
+  let draftRequests = $state([]);
+  let canvasRevision = $state(0);
+  let asksRevision = $state(0);
+  function queueDraft(batchId){
+    if(typeof batchId==='string' && !draftRequests.includes(batchId))draftRequests=[...draftRequests,batchId];
+  }
   const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   async function request(path, body) {
     const response = await fetch(path, {method:body === undefined ? 'GET' : 'POST',credentials:'include',
@@ -40,8 +46,8 @@
 
 {#if development}
   <div class="runtime-shell">
-    {#snippet chat()}<ConnectedChat agent={development.agent} onBack={()=>development=null} />{/snippet}
-    {#snippet canvas()}<ConnectedCanvas />{/snippet}
+    {#snippet chat()}<ConnectedChat agent={development.agent} {draftRequests} {asksRevision} onDraftHandled={()=>draftRequests=draftRequests.slice(1)} onChange={()=>canvasRevision++} onBack={()=>development=null} />{/snippet}
+    {#snippet canvas()}<ConnectedCanvas revision={canvasRevision} onDraftRequested={queueDraft} onMutation={()=>asksRevision++} />{/snippet}
     <Shell {chat} {canvas} chatSide="left" chatOpen={true} mobilePane="canvas" canvasScroll="clip" chatLabel="Development connection" canvasLabel="Local canvas" />
   </div>
 {:else}
@@ -49,7 +55,7 @@
   <section aria-labelledby="connection-title">
     <h1 id="connection-title">{remote ? 'Production platform' : user ? 'Signed in' : 'Sign in'}</h1>
     {#if remote}
-      <p class="hint">Development source — Production platform (read-only). The host holds a gadget-dev token; this browser never sees it. Publishing doors are not granted.</p>
+      <p class="hint">Local source connected to your production workspace. Provider calls use the connections you grant. Review the content and timing before submitting a post.</p>
       <button class="primary" type="button" onclick={start} disabled={busy}>{busy ? 'Working…' : 'Start development session'}</button>
       <p class="hint">Opens your local source with persistent SQLite against the production agent session. No upload or marketplace installation.</p>
     {:else if user}

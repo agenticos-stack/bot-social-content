@@ -64,6 +64,13 @@ export async function createConnectedAgent({
    * no door.
    */
   requirements: initialRequirements = [],
+  /**
+   * The source's `server.js`, so the platform reads which methods are reads
+   * (`static readMethods`) with the scanner it uses for an installed gadget.
+   * Sent as source rather than a list: the API refuses a host naming its own
+   * reads.
+   */
+  serverSource: initialServerSource,
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -89,10 +96,15 @@ export async function createConnectedAgent({
   let sourceHash = initialSourceHash;
   let methods = initialMethods;
   let requirements = initialRequirements;
+  let serverSource = initialServerSource;
   if (typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Invalid source digest.');
 
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const sessionPath = resolve(stateDirectory, SESSION_FILE);
+
+  function registrationMetadata() {
+    return { title, sourceHash, methods, requirements, ...(typeof serverSource === 'string' ? { serverSource } : {}) };
+  }
 
   const events = [];
   function drainEvents() { return events.splice(0, events.length); }
@@ -156,7 +168,7 @@ export async function createConnectedAgent({
     const socket = openSocket(socketUrl);
     const stub = openSession(socket);
     await stub.subscribe(new Subscriber());
-    const registration = await stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
+    const registration = await stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
     workspaceId = resolvedWorkspaceId;
     session = { stub, socket, gadgetId: registration.gadgetId, expiresAt: registration.expiresAt };
     reconnectAttempts = 0;
@@ -273,7 +285,10 @@ export async function createConnectedAgent({
     const spec = {};
     for (const door of Array.isArray(granted) ? granted : []) {
       if (!door?.granted) continue;
-      const names = methodsByDoor?.[door.envKey];
+      // A connector family member is named by the owner's choice of account,
+      // so the source cannot list it in advance; its methods are the
+      // connector door's, as the platform reports them.
+      const names = methodsByDoor?.[door.envKey] ?? (typeof door.family === 'string' && Array.isArray(door.methods) ? door.methods : undefined);
       if (!Array.isArray(names) || names.length === 0) continue;
       spec[door.envKey] = names;
     }
@@ -287,11 +302,82 @@ export async function createConnectedAgent({
     };
   }
 
+  /**
+   * Record the owner's yes to one door this source declared, for this
+   * conversation.
+   *
+   * The canvas only ASKS (`gadget:grant-door`); the owner answered in the
+   * host's own dialog before this runs. `persistToAgent` is required and
+   * sent explicitly, because the API reads an omitted flag as "also save it
+   * for the assistant" for an organization-scoped door, and the dialog's
+   * default is this conversation only.
+   *
+   * Remote mode grants over the socket: there is no cookie to reach the REST
+   * route with, and a gadget-dev conversation has no assistant to persist to
+   * anyway, so the grant is conversation-only either way. The dev token binds
+   * the member who minted it — `grantedBy` records them, the same attribution
+   * a Studio grant gets — and the platform re-verifies their membership on
+   * every socket ticket.
+   */
+  async function grantDoor(input, currentCookie) {
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
+      throw new Error('That door is not one this gadget declared.');
+    if (typeof input?.persistToAgent !== 'boolean') throw new Error('Say whether this grant is for this conversation only.');
+    if (remote) {
+      await ensureConnected(devToken);
+      const result = await session.stub.grantDevelopmentDoor(requirementKey);
+      return { requirementKey: result?.requirementKey ?? requirementKey, persistedToAgent: false };
+    }
+    await ensureConnected(currentCookie);
+    const result = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(workspaceId)}/door-grants`, {
+      frontendOrigin, cookie: currentCookie, method: 'POST', body: { requirementKey, persistToAgent: input.persistToAgent }, fetchImpl
+    });
+    return {
+      requirementKey: result?.data?.grant?.requirementKey ?? requirementKey,
+      persistedToAgent: result?.data?.persistedToAgent === true
+    };
+  }
+
+  /** Each connector family this source declared, what it holds, and what the owner could add. */
+  async function connectionChoices() {
+    await ensureConnected(remote ? devToken : cookie);
+    const families = await session.stub.developmentConnectionChoices();
+    return Array.isArray(families) ? families : [];
+  }
+
+  /**
+   * The owner's choice of one existing account for a declared family. The
+   * platform checks the account, the family's size and consent; this only
+   * refuses what it can already see is wrong.
+   *
+   * The socket is the ONLY surface this can go through: the REST grant route
+   * finds a family through the conversation's installed gadgets, and a
+   * development gadget is attached nowhere — so Studio could never grant it.
+   * That holds in remote mode exactly as in local: the dev token binds the
+   * member who minted it, the grant lands under `grantedBy: <that member>`,
+   * and the same member could grant this account to this conversation from
+   * Studio were a family grant reachable there at all.
+   */
+  async function grantConnection(input) {
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey && row?.kind === 'connector_resource'))
+      throw new Error('That connection family is not one this gadget declared.');
+    if (typeof input?.resolvedId !== 'string' || !input.resolvedId) throw new Error('Choose an account to connect.');
+    await ensureConnected(remote ? devToken : cookie);
+    const result = await session.stub.grantDevelopmentConnection({ requirementKey, resolvedId: input.resolvedId });
+    if (!result?.ok) throw new Error(result?.message || 'That connection could not be granted.');
+    return { requirementKey: result.requirementKey, env: result.env, label: result.label ?? null };
+  }
+
   return {
+    connectionChoices,
+    grantConnection,
     get info() {
       return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
     },
     doors,
+    grantDoor,
     handle,
     /**
      * Point the live session at new source.
@@ -311,11 +397,9 @@ export async function createConnectedAgent({
       sourceHash = next.sourceHash;
       if (Array.isArray(next.methods)) methods = next.methods;
       if (Array.isArray(next.requirements)) requirements = next.requirements;
+      if (typeof next.serverSource === 'string') serverSource = next.serverSource;
       await ensureConnected(remote ? devToken : cookie);
-      const registration = await session.stub.registerDevelopmentGadget(
-        { title, sourceHash, methods, requirements },
-        new LocalHost()
-      );
+      const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
       session.gadgetId = registration.gadgetId;
       session.expiresAt = registration.expiresAt;
       return { gadgetId: registration.gadgetId, sourceHash };

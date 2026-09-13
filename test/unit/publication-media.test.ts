@@ -91,6 +91,18 @@ function seed(gadget: Gadget) {
 
 function mockSocial(created: unknown[]) {
   return {
+    // The connector destination door as the platform wires it: `describe()`
+    // states the `crb_` id `createDraft` wants as its target.
+    FB_MAIN: {
+      async describe() {
+        return {
+          provider: "facebook",
+          role: "destination",
+          resourceLabel: "Main Facebook",
+          resolvedId: "crb_fb_main"
+        };
+      }
+    },
     social: {
       async createDraft(input: unknown) {
         created.push(input);
@@ -131,13 +143,22 @@ describe("publicationMedia", () => {
 
   it("uses derived refs when they are publisher-addressable", () => {
     const result = publicationMedia({
-      derivedMediaRefs: [{ assetId: "derived-1", kind: "image", url: "https://cdn.example.test/derived.jpg" }],
+      derivedMediaRefs: [
+        { assetId: "derived-1", kind: "image", url: "https://cdn.example.test/derived.jpg", altText: "Rendered poster" }
+      ],
       originalMediaRefs: [],
       sourceMedia: source
     });
     expect(result).toEqual({
       ok: true,
-      media: [{ assetId: "derived-1", url: "https://cdn.example.test/derived.jpg", kind: "image" }]
+      media: [
+        {
+          assetId: "derived-1",
+          url: "https://cdn.example.test/derived.jpg",
+          kind: "image",
+          altText: "Rendered poster"
+        }
+      ]
     });
   });
 
@@ -145,11 +166,38 @@ describe("publicationMedia", () => {
     const result = publicationMedia({
       derivedMediaRefs: [],
       originalMediaRefs: [],
-      sourceMedia: source
+      sourceMedia: source,
+      fallbackAltText: "Main Instagram post: Original source"
     });
     expect(result).toEqual({
       ok: true,
-      media: [{ assetId: "source-media", url: "https://cdn.example.test/original.jpg", kind: "image" }]
+      media: [
+        {
+          assetId: "source-media",
+          url: "https://cdn.example.test/original.jpg",
+          kind: "image",
+          altText: "Main Instagram post: Original source"
+        }
+      ]
+    });
+  });
+
+  it("keeps an entry's own alt text over the fallback, and accepts `alt`", () => {
+    const result = publicationMedia({
+      derivedMediaRefs: [],
+      originalMediaRefs: [],
+      sourceMedia: [
+        { id: "m1", kind: "image", url: "https://cdn.example.test/a.jpg", alt: "Entry alt" },
+        { id: "m2", kind: "image", url: "https://cdn.example.test/b.jpg" }
+      ],
+      fallbackAltText: "Fallback description"
+    });
+    expect(result).toEqual({
+      ok: true,
+      media: [
+        { assetId: "m1", url: "https://cdn.example.test/a.jpg", kind: "image", altText: "Entry alt" },
+        { assetId: "m2", url: "https://cdn.example.test/b.jpg", kind: "image", altText: "Fallback description" }
+      ]
     });
   });
 
@@ -225,7 +273,16 @@ describe("submitForReview createDraft media", () => {
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
     expect(result).not.toMatchObject({ ok: false });
     expect(created[0]).toMatchObject({
-      media: [{ assetId: "derived-1", url: "https://cdn.example.test/derived.jpg", kind: "image" }]
+      media: [
+        {
+          assetId: "derived-1",
+          url: "https://cdn.example.test/derived.jpg",
+          kind: "image",
+          // GUD-005: no entry-level alt text means the source post's own
+          // description rides along — providers hold alt-less media.
+          altText: "Main Instagram post: Original source"
+        }
+      ]
     });
   });
 
@@ -242,7 +299,14 @@ describe("submitForReview createDraft media", () => {
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
     expect(result).not.toMatchObject({ ok: false });
     expect(created[0]).toMatchObject({
-      media: [{ assetId: "source-media", url: "https://cdn.example.test/original.jpg", kind: "image" }]
+      media: [
+        {
+          assetId: "source-media",
+          url: "https://cdn.example.test/original.jpg",
+          kind: "image",
+          altText: "Main Instagram post: Original source"
+        }
+      ]
     });
   });
 });
