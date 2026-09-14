@@ -114,6 +114,7 @@ import { consentAllowsFetch } from "./grant-request.js";
 import {
   FETCH_DOOR_KEY,
   FIXED_DOOR_KEYS as FIXED_DOOR_KEY_LIST,
+  bindingGranted,
   doorGrantStatus,
   fetchMedia,
   isDoorRefusal,
@@ -356,6 +357,11 @@ export class Gadget extends DurableObject {
       const mediaLimits = description?.mediaLimits;
       return {
         binding: row.binding,
+        // The row is history — it proves the binding was configured once,
+        // never that the grant still lives. `granted` is the live check the
+        // picker needs so a revoked destination is shown as unavailable
+        // instead of offered as a send target that can only fail at submit.
+        granted: bindingGranted(this.env, row.binding),
         origin: row.origin ?? "binding",
         displayName: row.displayName ?? null,
         lastServedBy: row.lastServedBy ?? null,
@@ -2561,15 +2567,42 @@ export class Gadget extends DurableObject {
       }
 
       /*
+       * Live authority, not stored history: a destination row survives a
+       * revoked grant so items it produced still name where they went, but
+       * "stored once" is not "sendable now". Checked BEFORE the door call so
+       * a revocation reads as itself — a grant to re-take — rather than as
+       * `provider_unavailable`, which an owner reads as an outage to wait
+       * out. The door gate would refuse the same call a heartbeat later;
+       * this names it accurately and leaves nothing half-filed.
+       */
+      if (!bindingGranted(this.env, binding)) {
+        const label =
+          this.storage.listDestinations().find((row) => row.binding === binding)?.label ?? binding;
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_not_granted",
+          message: `${label} is no longer connected — grant the connection again in Settings, then submit.`
+        });
+        continue;
+      }
+
+      /*
        * The door's `destinationBinding` is the connector resource binding id
        * (`crb_…`), not the env name this workspace knows the account by —
        * `createDraft` resolves it through `loadConnectorResourceGrantById`,
        * which only answers the id. `describe()` states it (`resolvedId`), and
        * is asked HERE, at the moment of use, so a row stored before the field
-       * existed resolves the same way a fresh one does.
+       * existed resolves the same way a fresh one does. A binding whose door
+       * offers no describe() at all is the older plain-env shape — the env
+       * name itself is the publisher address — while a describe-capable door
+       * that cannot name a resolvedId is a real misconfiguration to refuse.
+       * (`typeof` is safe HERE: the gate's Proxy reports "function" for every
+       * name, so a non-function member means a genuinely plain object.)
        */
+      const door = this.env[binding];
       const described = await describeConnector(this.env, binding);
-      const resolvedId = readString(described?.resolvedId);
+      const resolvedId =
+        readString(described?.resolvedId) ?? (door && typeof door.describe !== "function" ? binding : null);
       if (!resolvedId) {
         failures.push({
           destinationBinding: binding,

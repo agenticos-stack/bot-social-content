@@ -264,12 +264,22 @@ export function reviewEnabled(state) {
  * asked of the item, plus the one thing that only exists at this step: at
  * least one destination chosen.
  */
-export function submitItemEnabled(state, batchItemId, policy) {
+export function submitItemEnabled(state, batchItemId, policy, destinations = []) {
   const item = state.batch?.items.find((entry) => entry.id === batchItemId);
   if (!item || state.submitting || state.submittingByItem?.[batchItemId]) return false;
   if (state.conflicts && Object.hasOwn(state.conflicts, batchItemId)) return false;
   if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
-  if (!publishBindings(state, batchItemId).length) return false;
+  // A destination the summary no longer offers — or still lists but whose
+  // grant the server has read as gone — is not a choice the picker could
+  // have made: a binding left over from a since-revoked destination counts
+  // for nothing (#1960). The row stays rendered and marked; it just cannot
+  // carry a submit.
+  const known = new Set(
+    destinations
+      .filter((entry) => entry.granted !== false)
+      .map((entry) => entry.destinationBinding ?? entry.binding)
+  );
+  if (!publishBindings(state, batchItemId).some((binding) => known.has(binding))) return false;
   const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
   return !hasBlockingIssues(issues);
 }
@@ -732,17 +742,18 @@ export function renderPublish(root, state, ctx) {
     destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
 
   /*
-   * TASK-017/TASK-022: with nowhere configured there is nothing to submit
-   * TO — said on this step, where the choice actually lives, with both ways
-   * out beside it. Drafting was never blocked on this; only the send is.
+   * TASK-017/TASK-022's sentence stays, but it sits ABOVE the cards now: the
+   * drafts paint at zero destinations — the owner reads what they have before
+   * wiring where it goes — and only the send waits (#1960). A banner, not an
+   * empty screen, because the cards under it are not empty.
    */
-  const emptyDestinations = el("div", { class: "sl-empty" }, [
-    el("strong", null, t(locale, "batchNoDestinationTitle")),
-    el("p", null, t(locale, "publishNoDestinationsBody")),
-    el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-primary", onclick: () => handlers.onOpenSettings() }, t(locale, "settingsOpen")),
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections"))
-    ])
+  const noDestinationNotice = el("div", { class: "sl-notice", role: "status" }, [
+    el("p", null, [
+      el("strong", null, t(locale, "batchNoDestinationTitle") + " "),
+      t(locale, "publishNoDestinationsBody")
+    ]),
+    el("button", { type: "button", class: "sl-notice-action", onclick: () => handlers.onOpenSettings() }, t(locale, "settingsOpen")),
+    el("button", { type: "button", class: "sl-notice-action", onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections"))
   ]);
 
   /*
@@ -783,7 +794,7 @@ export function renderPublish(root, state, ctx) {
     };
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
-    const enabled = submitItemEnabled(state, item.id, policy);
+    const enabled = submitItemEnabled(state, item.id, policy, destinations);
     const poster = posterCanvas(locale, item);
     // The slot keeps the ratio it ships in whether or not a poster exists
     // yet, so the caption beside it does not jump as the owner moves
@@ -831,13 +842,22 @@ export function renderPublish(root, state, ctx) {
           el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "publishPickDestinations") }, destinations.map((destination) => {
             const binding = destination.destinationBinding ?? destination.binding;
             const filed = filedPairs.has(binding);
+            // Stored, but the grant is gone: the row stays (history is not
+            // silently rewritten) marked and unable to carry a submit until
+            // the connection is granted again — re-granting re-enables the
+            // owner's original choice, nothing re-points it elsewhere.
+            const revoked = destination.granted === false;
             const checked = filed || choice.bindings.includes(binding);
-            const tag = filed ? t(locale, "publishAlreadyFiled") : providerTag(destination.provider);
-            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}` }, [
+            const tag = filed
+              ? t(locale, "publishAlreadyFiled")
+              : revoked
+                ? t(locale, "publishAccessRevoked")
+                : providerTag(destination.provider);
+            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}${revoked ? " sl-dest-row-revoked" : ""}` }, [
               el("input", {
                 type: "checkbox",
                 checked,
-                disabled: filed || submitting,
+                disabled: filed || submitting || revoked,
                 onchange: () => handlers.onToggleBinding(item.id, binding)
               }),
               destination.label || binding,
@@ -899,23 +919,23 @@ export function renderPublish(root, state, ctx) {
         renderApprovalNote(),
         refusal,
         // A hairline, a reassurance on the left, submit on the right --
-        // the item's own submit is this card's one primary.
-        destinations.length
-          ? el("div", { class: "sl-submit-row" }, [
-              el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
-              el(
-                "button",
-                {
-                  type: "button",
-                  class: "sl-primary",
-                  disabled: !enabled,
-                  title: enabled ? "" : t(locale, "submitBlocked"),
-                  onclick: () => handlers.onSubmitItem(item.id, false)
-                },
-                submitting ? t(locale, "saving") : t(locale, "submitForReview")
-              )
-            ])
-          : null
+        // the item's own submit is this card's one primary. It renders
+        // at zero destinations too, disabled and saying why: the send is
+        // what waits on a destination, never the draft (#1960).
+        el("div", { class: "sl-submit-row" }, [
+          el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
+          el(
+            "button",
+            {
+              type: "button",
+              class: "sl-primary",
+              disabled: !enabled,
+              title: enabled ? "" : destinations.length ? t(locale, "submitBlocked") : t(locale, "batchNoDestinationTitle"),
+              onclick: () => handlers.onSubmitItem(item.id, false)
+            },
+            submitting ? t(locale, "saving") : t(locale, "submitForReview")
+          )
+        ])
         ])
       ])
     ]);
@@ -933,7 +953,7 @@ export function renderPublish(root, state, ctx) {
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
     renderWizardError(state),
-    destinations.length ? null : emptyDestinations,
+    destinations.length ? null : noDestinationNotice,
     el("div", { class: "sl-review-grid" }, itemCards),
     footer
   ]);

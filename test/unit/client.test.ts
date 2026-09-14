@@ -42,6 +42,7 @@ import {
   computeIssues,
   createSetupDraft,
   createWizardState,
+  renderPublish,
   applySavedPoster,
   discardDraft,
   draftIsDirty,
@@ -49,7 +50,6 @@ import {
   isApprovalExpired,
   setBatch,
   resumeBatch,
-  renderPublish,
   setPublishError,
   recordDraftConflict,
   resolveDraftConflict,
@@ -264,6 +264,143 @@ describe("the selection tray, when nothing is set up to publish to", () => {
     const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
     expect(labels.join(" ")).toContain("Draft 1 post");
     expect(labels.join(" ")).not.toContain("post(s)");
+  });
+});
+
+/*
+ * #1960 — the publish step's draft cards used to hide behind the
+ * zero-destination empty state: the owner could not SEE what they drafted
+ * until a destination existed. The cards paint regardless; only the send
+ * waits, and the notice above the grid names the way out.
+ */
+describe("the Publish step, when nothing is set up to publish to", () => {
+  const item = {
+    id: "item1",
+    state: "drafting",
+    sourceItem: { sourceLabel: "@acct", provider: "instagram", text: "a post", id: "p1" },
+    revision: 1,
+    destinationBindings: [],
+    publications: []
+  };
+
+  function publishView(summary: unknown) {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const wizard = setBatch(createWizardState(), { id: "batch1", items: [item] as never });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary,
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    return root;
+  }
+
+  const cards = (root: unknown) =>
+    findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-preview-card"));
+  const submitButtons = (root: unknown) =>
+    findAll(
+      root as never,
+      (e: { tagName?: string; textContent?: string }) =>
+        e.tagName === "BUTTON" && String(e.textContent ?? "").includes("Submit for review")
+    );
+
+  const notices = (root: unknown) =>
+    findAll(root as never, (e: { classList?: { contains(n: string): boolean } }) =>
+      e.classList?.contains("sl-notice") === true);
+
+  it("renders the draft cards under the no-destination notice", () => {
+    const root = publishView({ destinations: [] });
+    expect(cards(root)).toHaveLength(1);
+    expect(notices(root)).toHaveLength(1);
+  });
+
+  it("keeps the card's own submit visible, disabled, and naming the missing destination", () => {
+    const root = publishView({ destinations: [] });
+    const submit = submitButtons(root)[0] as { disabled?: boolean; getAttribute(n: string): string | null };
+    expect(submit).toBeDefined();
+    expect(submit.disabled).toBe(true);
+    expect(submit.getAttribute("title")).toBe("No destination set up yet");
+  });
+
+  it("does not let a since-revoked destination binding submit through", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    // The item still carries the binding a removed destination left behind —
+    // the picker cannot render it, so it is not a choice the owner made.
+    const wizard = setBatch(createWizardState(), {
+      id: "batch1",
+      items: [{ ...item, destinationBindings: ["IG_GONE"] }] as never
+    });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary: { destinations: [] },
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    const submit = submitButtons(root)[0] as { disabled?: boolean };
+    expect(submit).toBeDefined();
+    expect(submit.disabled).toBe(true);
+  });
+
+  /*
+   * The stored-but-revoked case: the destination row still exists (history
+   * is not rewritten) but the server's live read says its grant is gone.
+   * The row renders marked and untouchable; a submit resting on it alone
+   * stays disabled — and re-granting flips `granted` back, re-enabling the
+   * owner's original selection instead of re-pointing it elsewhere.
+   */
+  it("shows a revoked destination marked and keeps a submit resting on it alone disabled", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    // The item still points at the destination it was drafted for — the
+    // picker's seeded selection — while the summary says its grant is gone.
+    const wizard = setBatch(createWizardState(), {
+      id: "batch1",
+      items: [{ ...item, destinationBindings: ["IG_MAIN"] }] as never
+    });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary: { destinations: [{ binding: "IG_MAIN", label: "IG", provider: "instagram", granted: false }] },
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    const rows = findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-dest-row"));
+    expect(rows).toHaveLength(1);
+    expect(String((rows[0] as { className?: string }).className)).toContain("sl-dest-row-revoked");
+    const checkbox = findAll(rows[0] as never, (e: { tagName?: string }) => e.tagName === "INPUT")[0] as { disabled?: boolean };
+    expect(checkbox.disabled).toBe(true);
+    expect(findAll(rows[0] as never, (e: { textContent?: string }) => String(e.textContent ?? "").includes("access revoked"))).toHaveLength(1);
+    const submit = submitButtons(root)[0] as { disabled?: boolean };
+    expect(submit.disabled).toBe(true);
+  });
+
+  it("re-enables the same selection once the grant is back", () => {
+    const root = publishView({ destinations: [{ binding: "IG_MAIN", label: "IG", provider: "instagram", granted: true }] });
+    const rows = findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-dest-row"));
+    expect(rows).toHaveLength(1);
+    expect(String((rows[0] as { className?: string }).className)).not.toContain("sl-dest-row-revoked");
+  });
+
+  it("shows no notice once a destination exists", () => {
+    const root = publishView({ destinations: [{ binding: "IG_MAIN", label: "IG" }] });
+    expect(cards(root)).toHaveLength(1);
+    expect(notices(root)).toHaveLength(0);
   });
 });
 

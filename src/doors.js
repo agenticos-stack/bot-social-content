@@ -93,6 +93,28 @@ export function doorGrantStatus(env) {
 }
 
 /**
+ * Whether one connector binding's grant is live right now — `doorGrantStatus`'s
+ * question asked of the env name the owner chose at grant time (`IG_FAVCRM`)
+ * rather than a fixed door key. A stored destination row is history: it proves
+ * the binding was configured once, never that it still is. The consent
+ * projection is the truth when the runtime supplies one — but it is keyed by
+ * REQUIREMENT key (`connector:IG_FAVCRM`, or a family member's
+ * `source:IG_FAVCRM`), whose env name is the suffix after the first colon,
+ * while a plain door's key is its env name verbatim. Without a projection
+ * (unit-test envs, a runtime that predates it) the minted stub's own presence
+ * is the answer the door gate would enforce.
+ */
+export function bindingGranted(env, binding) {
+  if (!env || typeof env !== "object" || typeof binding !== "string" || !binding) return false;
+  const consent = env.__consent && typeof env.__consent === "object" ? env.__consent : null;
+  if (!consent) return Boolean(env[binding]);
+  for (const key of Object.keys(consent)) {
+    if (consent[key] === true && (key === binding || key.endsWith(`:${binding}`))) return true;
+  }
+  return false;
+}
+
+/**
  * Calls one pinned action on a granted connector door.
  *
  * `binding` is the owner-chosen label slug the door was granted under
