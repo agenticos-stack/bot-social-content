@@ -50,13 +50,26 @@ const REFUSALS = {
   fetch_transient: { title: "drawerMediaTransientTitle", body: null, action: "retry", label: "drawerMediaRetry" },
   reference_media_stale: { title: "drawerMediaStaleTitle", body: "drawerMediaStaleBody", action: "refresh", label: "drawerMediaRefreshSources" },
   media_unusable: { title: "drawerMediaUnusableTitle", body: null, action: null, label: null },
-  fetch_uncertain: { title: "drawerMediaUncertainTitle", body: "drawerMediaUncertainBody", action: "retry", label: "drawerMediaCheckAgain" }
+  fetch_uncertain: { title: "drawerMediaUncertainTitle", body: "drawerMediaUncertainBody", action: "retry", label: "drawerMediaCheckAgain" },
+  // F2: the notice's own read came back unreadable (thrown), not merely
+  // "not granted" — distinct from `fetch_grant_unconfirmed`, which is the
+  // owner's OWN activation attempt failing to confirm. `recheck` re-reads
+  // metadata only, never `getMedia`.
+  fetch_permission_unknown: { title: "drawerMediaPermissionUnknownTitle", body: "drawerMediaPermissionUnknownBody", action: "recheck", label: "drawerMediaCheckAgain" }
 };
 const DEFAULT_REFUSAL = { title: "drawerMediaRefusedTitle", body: null, action: "retry", label: "drawerMediaRetry" };
 
-/** The three refused codes that mean "this frame is waiting on `metered_fetch` consent", not on media transport. */
+/** The refused codes that mean "this frame is waiting on `metered_fetch` consent", not on media transport. */
 function isPermissionCode(code) {
-  return code === "fetch_permission_required" || code === "fetch_activation_failed" || code === "fetch_grant_unconfirmed" || code === "fetch_permission_changed";
+  return code === "fetch_permission_required" || code === "fetch_activation_failed" || code === "fetch_grant_unconfirmed"
+    || code === "fetch_permission_changed" || code === "fetch_permission_unknown";
+}
+
+/** What a fresh `metered_fetch` read means for a permission-refused frame — never the notice's own attempted-operation reason. */
+function permissionCodeFor(state) {
+  if (state === "granted") return "fetch_permission_changed"; // consent is live; the owner's own check reads once, nothing here auto-fetches
+  if (state === "absent") return "fetch_permission_required";
+  return "fetch_permission_unknown"; // the read failed or came back unreadable
 }
 
 /**
@@ -65,13 +78,18 @@ function isPermissionCode(code) {
  * `options.requestGrant()` / `options.requestActivation()` resolve to the
  * host's correlated `{ outcome, message }` (`grant-request.js` vocabulary).
  * `options.refreshSources()` is the owner's deliberate re-scan.
- * `options.refreshPermissions()` (F2) is called, fire-and-forget, from
- * `notifyDoorsChanged()` below — a plain metadata read (`rpc.summary()`),
- * never `getMedia`. None of the four reads media; only a confirmed
- * `activated` (or the owner's own click) leads to a read, and only of the
- * frame that asked.
+ * `options.recheckPermission()` (F2) is the owner's explicit "Check again"
+ * on an unconfirmed-permission frame — a plain metadata read, never
+ * `getMedia`, resolving to `{ state }`.
  *
- * Returns `{ node, strip, frameCount, frameStates, notifyDoorsChanged, dispose }`.
+ * `notifyPermission({ state })` (F2) is how the caller — never this module —
+ * reports a fresh `metered_fetch` consent read, taken after an unprompted
+ * host notice. This stage never reads permission metadata on its own
+ * initiative and never infers consent from the notice itself. None of these
+ * reads media; only a confirmed `activated` (or the owner's own click) leads
+ * to a read, and only of the frame that asked.
+ *
+ * Returns `{ node, strip, frameCount, frameStates, notifyPermission, dispose }`.
  */
 export function createMediaStage(rpc, item, locale, options = {}) {
   const frames = framesOf(item);
@@ -105,11 +123,12 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   function showRefusal(key) {
     const state = states.get(key);
     const shape = REFUSALS[state?.code] ?? DEFAULT_REFUSAL;
-    // F2: a revoke notice disables a permission-related action outright — the
-    // server is authoritative, and a stale "Activate" pointed at a grant that
-    // is gone would just fail again. `null` here means no button at all,
-    // never a permanently-disabled one nobody can recover from: a later
-    // grant (`notifyDoorsChanged("grant")`) clears the flag and restores it.
+    // F2: an absent-consent read disables a permission-related action
+    // outright — the read is authoritative, and a stale "Activate" pointed
+    // at a grant that is gone would just fail again. `null` here means no
+    // button at all, never a permanently-disabled one nobody can recover
+    // from: a later `notifyPermission({ state: "granted" })` clears the flag
+    // and restores it.
     const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
     const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
     const pending = Boolean(state?.action);
@@ -231,6 +250,21 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     const state = states.get(key);
     if (!live || !state || state.status !== "refused" || state.action) return;
     if (action === "retry") { states.delete(key); startFetch(key); return; }
+    if (action === "recheck") {
+      const attempt = { ...state, action, note: null };
+      states.set(key, attempt);
+      repaint(key);
+      let result;
+      try {
+        result = await options.recheckPermission?.();
+      } catch (error) {
+        result = { state: "unknown" };
+      }
+      // Closed, replaced (a notice already answered this frame) or moved on.
+      if (!live || states.get(key) !== attempt) return;
+      applyPermissionState(key, result?.state ?? "unknown");
+      return;
+    }
     const request =
       action === "grant" ? options.requestGrant
         : action === "activate" ? options.requestActivation
@@ -256,6 +290,14 @@ export function createMediaStage(rpc, item, locale, options = {}) {
       return;
     }
     settle(key, attempt, answer ?? { outcome: "unconfirmed" });
+  }
+
+  /** Applies a fresh `metered_fetch` read to one frame — only if it is currently refused for permission; a held frame, a transient refusal, etc. are untouched. */
+  function applyPermissionState(key, state) {
+    const current = states.get(key);
+    if (!current || current.status !== "refused" || !isPermissionCode(current.code)) return;
+    states.set(key, { ...current, code: permissionCodeFor(state), action: null, note: null, message: null });
+    repaint(key);
   }
 
   function settle(key, attempt, { outcome, message }) {
@@ -334,21 +376,18 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   else showEmpty();
 
   /**
-   * The host changed `metered_fetch` consent outside this canvas. Only frames
-   * refused for permission move, and nothing is read here:
-   * - grant: offer a check of the frame under the current permission;
-   * - revoke: back to permission needed, dropping any activation or check.
+   * The host told this canvas an operation was ATTEMPTED elsewhere (Studio's
+   * own access popover) — never whether it succeeded (grant-request.js).
+   * `state` is the caller's own fresh read of `metered_fetch` consent, taken
+   * after the notice; it is what every currently permission-refused frame
+   * moves to. A failed or lost revoke with consent still live must not read
+   * as "permission gone", and an unreadable read must not read as either —
+   * that is why this takes a read's outcome, never the notice's reason.
    * Held frames, selection and the strip are untouched.
    */
-  function notifyDoorsChanged(reason) {
+  function notifyPermission({ state }) {
     if (!live) return;
-    void options.refreshPermissions?.();
-    const code = reason === "revoke" ? "fetch_permission_required" : "fetch_permission_changed";
-    for (const [key, state] of states) {
-      if (state.status !== "refused" || !isPermissionCode(state.code)) continue;
-      states.set(key, { ...state, code, action: null, note: null, message: null });
-      repaint(key);
-    }
+    for (const key of states.keys()) applyPermissionState(key, state);
   }
 
   return {
@@ -358,7 +397,7 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     frameStates() {
       return frames.map((frame) => ({ id: String(frame.id), status: states.get(String(frame.id))?.status ?? "unread" }));
     },
-    notifyDoorsChanged,
+    notifyPermission,
     dispose() {
       live = false;
       inFlight.clear();

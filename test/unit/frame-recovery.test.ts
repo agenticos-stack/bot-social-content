@@ -1,6 +1,7 @@
 // Carousel frame recovery: correlated host answers, one pending action per
 // frame, liveness, no silent refetch, and real API-shaped refusal codes.
 // Deterministic fixture coverage only — not a browser or runtime proof.
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
 import { fetchMedia } from "../../src/doors.js";
@@ -187,28 +188,13 @@ describe("carousel frame recovery", () => {
   // F2: Studio's own access popover can grant or revoke `metered_fetch`
   // while this drawer is already open, showing a permission-refused frame.
   // Nothing in this file's normal flow tells the frame about that — these
-  // cases are the host's unprompted `gadget:doors-changed` notice, reaching
-  // the stage as `notifyDoorsChanged(reason)` (client.js's job is only to
-  // parse the message and forward the reason; see grant-request.test.ts for
-  // that parsing).
-  it("a notification refreshes permission metadata without calling getMedia", async () => {
-    const d = door({ a: blocked("fetch_permission_required") });
-    let refreshCalls = 0;
-    const stage = createMediaStage(d.rpc, carousel, "en", {
-      requestGrant: deferredHost().ask,
-      refreshPermissions: async () => { refreshCalls += 1; }
-    });
-    await flushAsyncWork();
-    d.asked.length = 0;
-
-    stage.notifyDoorsChanged("grant");
-    await flushAsyncWork();
-
-    expect(refreshCalls).toBe(1);
-    expect(d.asked).toEqual([]); // no getMedia, no provider call, no generation
-  });
-
-  it("a stuck frame — waiting on a grant answer that will never arrive because it was granted elsewhere — becomes actionable again after a grant notice", async () => {
+  // cases are the caller's fresh `metered_fetch` read, handed to the stage
+  // as `notifyPermission({ state })` (client.js's job — see the
+  // "onDoorsChanged" describe block below — is to notice the host's
+  // unprompted `gadget:doors-changed` message, then re-read consent itself
+  // rather than trust what the notice merely says was attempted; see
+  // grant-request.test.ts for the message parsing).
+  it("a stuck frame — waiting on a grant answer that will never arrive because it was granted elsewhere — becomes actionable again once the read finds it granted", async () => {
     const d = door({ a: blocked("fetch_permission_required") });
     const host = deferredHost(); // never answered: the owner used Studio's popover instead
     const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: host.ask });
@@ -218,7 +204,7 @@ describe("carousel frame recovery", () => {
     expect(button(stage.node, "Waiting for your answer").disabled).toBe(true);
     d.asked.length = 0;
 
-    stage.notifyDoorsChanged("grant");
+    stage.notifyPermission({ state: "granted" });
     await flushAsyncWork();
 
     // Unstuck, but NOT auto-fetched: the owner's own next press reads once.
@@ -227,13 +213,13 @@ describe("carousel frame recovery", () => {
     expect(button(stage.node, "Check again").disabled).toBe(false);
   });
 
-  it("an idle permission-needed frame stays actionable (not auto-fetched) after a grant notice", async () => {
+  it("an idle permission-needed frame stays actionable (not auto-fetched) once a read finds it granted", async () => {
     const d = door({ a: blocked("fetch_permission_required") });
     const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
     await flushAsyncWork();
     d.asked.length = 0;
 
-    stage.notifyDoorsChanged("grant");
+    stage.notifyPermission({ state: "granted" });
     await flushAsyncWork();
 
     expect(d.asked).toEqual([]);
@@ -247,23 +233,82 @@ describe("carousel frame recovery", () => {
     expect(d.asked).toEqual(["a"]);
   });
 
-  it("a revoke notice drops activation and offers the grant again; a later grant notice offers a check", async () => {
+  it("a successful revoke — read finds consent absent — drops activation and offers the grant again", async () => {
     const d = door({ a: blocked("fetch_activation_failed") });
     const stage = createMediaStage(d.rpc, carousel, "en", { requestActivation: deferredHost().ask });
     await flushAsyncWork();
     expect(button(stage.node, "Retry activation").disabled).toBe(false);
     d.asked.length = 0;
 
-    stage.notifyDoorsChanged("revoke");
+    stage.notifyPermission({ state: "absent" });
     await flushAsyncWork();
     expect(buttons(stage.node).some((candidate) => candidate.textContent.includes("Retry activation"))).toBe(false);
     expect(texts(stage.node)).toContain("Permission needed for this frame");
     expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
 
-    stage.notifyDoorsChanged("grant");
+    stage.notifyPermission({ state: "granted" });
     await flushAsyncWork();
     expect(button(stage.node, "Check again").disabled).toBe(false);
     expect(d.asked).toEqual([]); // still nothing read automatically
+  });
+
+  it("a revoke ATTEMPT that failed or was lost, with consent still live, does not read as permission needed", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
+    await flushAsyncWork();
+    d.asked.length = 0;
+
+    // The host notice named "revoke" as the operation it tried; the read is
+    // the authority, and it found the grant still live.
+    stage.notifyPermission({ state: "granted" });
+    await flushAsyncWork();
+
+    expect(texts(stage.node)).not.toContain("Permission needed for this frame");
+    expect(texts(stage.node)).toContain("Permission updated in Studio");
+    expect(d.asked).toEqual([]);
+  });
+
+  it("an unreadable metadata read shows an unconfirmed state with an explicit recheck, and a later successful recheck applies its result", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    let recheckCalls = 0;
+    const stage = createMediaStage(d.rpc, carousel, "en", {
+      requestGrant: deferredHost().ask,
+      recheckPermission: async () => { recheckCalls += 1; return { state: "granted" }; }
+    });
+    await flushAsyncWork();
+    d.asked.length = 0;
+
+    stage.notifyPermission({ state: "unknown" });
+    await flushAsyncWork();
+    expect(texts(stage.node)).toContain("Could not confirm this frame's permission");
+    expect(d.asked).toEqual([]);
+
+    click(button(stage.node, "Check again"));
+    await flushAsyncWork();
+
+    expect(recheckCalls).toBe(1);
+    expect(d.asked).toEqual([]); // the recheck itself is metadata-only, never getMedia
+    expect(texts(stage.node)).toContain("Permission updated in Studio");
+    expect(button(stage.node, "Check again").disabled).toBe(false);
+  });
+
+  it("a metadata read that stays unreadable leaves the frame available to recheck again, never getMedia", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    const stage = createMediaStage(d.rpc, carousel, "en", {
+      requestGrant: deferredHost().ask,
+      recheckPermission: async () => { throw new Error("metadata read failed"); }
+    });
+    await flushAsyncWork();
+    d.asked.length = 0;
+
+    stage.notifyPermission({ state: "unknown" });
+    await flushAsyncWork();
+    click(button(stage.node, "Check again"));
+    await flushAsyncWork();
+
+    expect(d.asked).toEqual([]);
+    expect(texts(stage.node)).toContain("Could not confirm this frame's permission");
+    expect(button(stage.node, "Check again").disabled).toBe(false);
   });
 
   it("leaves a non-permission refusal (a transient or stale-source refusal) alone", async () => {
@@ -274,7 +319,7 @@ describe("carousel frame recovery", () => {
     await flushAsyncWork();
     expect(button(stage.node, "Try again")).toBeDefined();
 
-    stage.notifyDoorsChanged("revoke");
+    stage.notifyPermission({ state: "absent" });
     await flushAsyncWork();
     // Unaffected: this refusal has nothing to do with `metered_fetch` consent.
     expect(button(stage.node, "Try again").disabled).toBe(false);
@@ -291,7 +336,7 @@ describe("carousel frame recovery", () => {
       (child) => child.getAttribute("aria-selected")
     );
 
-    stage.notifyDoorsChanged("grant");
+    stage.notifyPermission({ state: "granted" });
     await flushAsyncWork();
 
     expect(d.asked).toEqual([]); // the already-held frame is not re-read
@@ -308,7 +353,7 @@ describe("carousel frame recovery", () => {
     const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
     await flushAsyncWork();
     stage.dispose();
-    expect(() => stage.notifyDoorsChanged("grant")).not.toThrow();
+    expect(() => stage.notifyPermission({ state: "granted" })).not.toThrow();
   });
 
   it("an expired media link offers a deliberate source refresh, not a retry loop", async () => {
@@ -322,6 +367,73 @@ describe("carousel frame recovery", () => {
     await flushAsyncWork();
     expect(refreshes).toBe(1);
     expect(statuses(stage)[0]).toBe("held");
+  });
+});
+
+// client.js's `onDoorsChanged` — the handler for the host's unprompted
+// `gadget:doors-changed` notice — extracted UNCHANGED from its own source,
+// the same technique drawer-session.test.ts uses for other client handlers.
+// It owns the metadata-only read and the out-of-order sequencing; the stage
+// tests above only cover what happens once it hands a stage `{ state }`.
+describe("onDoorsChanged (client.js notice handler)", () => {
+  const clientSource = readFileSync(new URL("../../src/src/client/client.js", import.meta.url), "utf8");
+
+  function extractOnDoorsChanged(scope: Record<string, unknown>) {
+    const start = clientSource.indexOf("  async function onDoorsChanged()");
+    const end = clientSource.indexOf("  function askHost(", start);
+    if (start < 0 || end <= start) throw new Error("client.js extraction boundary changed for onDoorsChanged");
+    return new Function("scope", `with(scope){${clientSource.slice(start, end)}; return onDoorsChanged;}`)(scope) as () => Promise<void>;
+  }
+
+  it("re-reads metadata and reports the read's outcome, not the reason a notice never carries", async () => {
+    const notified: { state: string }[] = [];
+    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
+    const scope: Record<string, unknown> = {
+      permissionReadSeq: 0,
+      liveMediaStages: new Set([stage]),
+      console,
+      refreshSummary: async () => ({ doors: { metered_fetch: true } })
+    };
+    await extractOnDoorsChanged(scope)();
+    expect(notified).toEqual([{ state: "granted" }]);
+  });
+
+  it("reports unknown, not absent, when the metadata read fails", async () => {
+    const notified: { state: string }[] = [];
+    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
+    const scope: Record<string, unknown> = {
+      permissionReadSeq: 0,
+      liveMediaStages: new Set([stage]),
+      console: { error() {} },
+      refreshSummary: async () => { throw new Error("summary unreachable"); }
+    };
+    await extractOnDoorsChanged(scope)();
+    expect(notified).toEqual([{ state: "unknown" }]);
+  });
+
+  it("out of order: a slower read an earlier notice started must not overwrite a newer notice's already-applied result", async () => {
+    const notified: { state: string }[] = [];
+    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
+    const resolvers: Array<(value: { doors: { metered_fetch: boolean } }) => void> = [];
+    const scope: Record<string, unknown> = {
+      permissionReadSeq: 0,
+      liveMediaStages: new Set([stage]),
+      console,
+      refreshSummary: () => new Promise((resolve) => { resolvers.push(resolve); })
+    };
+    const onDoorsChanged = extractOnDoorsChanged(scope);
+
+    const noticeA = onDoorsChanged(); // started first, answered last
+    const noticeB = onDoorsChanged(); // started second, answered first
+
+    resolvers[1]({ doors: { metered_fetch: true } }); // B: consent is granted
+    await noticeB;
+    resolvers[0]({ doors: { metered_fetch: false } }); // A: would have said absent
+    await noticeA;
+
+    // B's result is the only one ever handed to a stage; A's late, stale read
+    // never overwrites it.
+    expect(notified).toEqual([{ state: "granted" }]);
   });
 });
 

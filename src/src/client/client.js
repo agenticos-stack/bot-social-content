@@ -794,6 +794,11 @@ function App() {
   const liveMediaStages = new Set();
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
+  // F2: every `metered_fetch` read a doors-changed notice starts gets the
+  // next number. Only the read holding the current number may apply its
+  // outcome, so a slow read an earlier notice started can never overwrite
+  // what a later notice's read already found.
+  let permissionReadSeq = 0;
 
   /**
    * PUT IT ON THE SCREEN.
@@ -836,7 +841,7 @@ function App() {
     // message is never also a grant-result.
     const notice = parseGadgetDoorsChangedMessage(event.data);
     if (notice) {
-      if (notice.requirementKey === "metered_fetch") onDoorsChanged(notice.reason);
+      if (notice.requirementKey === "metered_fetch") onDoorsChanged();
       return;
     }
     const result = parseGadgetGrantResultMessage(event.data);
@@ -848,20 +853,40 @@ function App() {
     pending.resolve({ outcome: result.outcome, message: result.message });
   });
   /**
-   * F2: refresh permission metadata only — never `getMedia`, no provider
-   * call, no generation — and let the open drawer's media stage (if any)
-   * move a permission-refused frame to a state the owner can act on. Does
-   * nothing to the collection, the wizard, or any unsaved caption/alt/
-   * instruction edit: this is a metadata read plus a per-frame UI state
-   * change, not a redraw of anything else on screen.
+   * F2: the notice only says an operation was ATTEMPTED elsewhere (Studio's
+   * own access popover) — never whether it succeeded. A failed or lost
+   * revoke with consent still live must not read as "permission gone", and
+   * an unreadable read must not read as either. So the notice is treated as
+   * pure invalidation: re-read current `metered_fetch` consent (never
+   * `getMedia`, no provider call, no generation) and hand every live media
+   * stage the READ's own outcome, not the notice's reason. Does nothing to
+   * the collection, the wizard, or any unsaved caption/alt/instruction edit:
+   * this is a metadata read plus a per-frame UI state change, not a redraw
+   * of anything else on screen. Sequenced against other notices — see
+   * `permissionReadSeq` above.
    */
-  async function onDoorsChanged(reason) {
+  async function onDoorsChanged() {
+    const seq = ++permissionReadSeq;
+    const state = await readMeteredFetchConsent();
+    if (seq !== permissionReadSeq) return; // a newer notice's read already answered
+    for (const stage of liveMediaStages) stage.notifyPermission({ state });
+  }
+
+  /**
+   * The one place that decides current `metered_fetch` consent from the
+   * summary the client already reads — the same derivation `fetchGranted`
+   * uses for the setup screen (`Boolean(summary?.doors?.metered_fetch)`,
+   * below). A failed read is `"unknown"`, never `"absent"`: the two are not
+   * the same fact, and only a real read may report which.
+   */
+  async function readMeteredFetchConsent() {
     try {
-      await refreshSummary();
+      const fresh = await refreshSummary();
+      return Boolean(fresh?.doors?.metered_fetch) ? "granted" : "absent";
     } catch (error) {
       console.error(error);
+      return "unknown";
     }
-    for (const stage of liveMediaStages) stage.notifyDoorsChanged(reason);
   }
   function askHost(type, requirementKey, timeoutMs) {
     const requestId = newGrantRequestId();
@@ -885,7 +910,10 @@ function App() {
     const stage = createMediaStage(rpc, target, locale, {
       requestGrant: () => requestDoorGrant("metered_fetch"),
       requestActivation: () => requestDoorActivation("metered_fetch"),
-      refreshSources: () => collectionHandlers.onRefresh()
+      refreshSources: () => collectionHandlers.onRefresh(),
+      // The owner's own "Check again" on an unconfirmed-permission frame:
+      // the same metadata-only read as a notice, never `getMedia`.
+      recheckPermission: async () => ({ state: await readMeteredFetchConsent() })
     });
     liveMediaStages.add(stage);
     const dispose = stage.dispose;
