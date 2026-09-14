@@ -7,6 +7,15 @@
  * ALREADY granted in this conversation; it never grants anything. The host
  * answers either with one gadget:grant-result carrying the request's id.
  *
+ * A gadget:doors-changed message is neither: it is the host telling this
+ * canvas, UNPROMPTED, that a grant/revoke attempt happened SOMEWHERE ELSE —
+ * Studio's own access popover, not this frame's own request (that one is
+ * answered directly, correlated, through gadget:grant-result). It carries
+ * only what kind of attempt it was (`reason`), never the outcome: this
+ * canvas re-checks its own permission metadata to learn the truth, the same
+ * way Studio's own Connections pane re-reads rather than trusting a guessed
+ * status (F2, design-plans/evidence/social-content-841e2ca-review/README.md).
+ *
  * Both Studio and the local Social Content preview implement this contract.
  * The host still presents confirmation in its own trusted UI, only for a
  * declared requirement, and only to messages from its own frame. The platform
@@ -72,6 +81,22 @@ export function parseGadgetGrantResultMessage(data) {
     outcome: data.outcome,
     message: typeof data.message === "string" ? data.message : null
   };
+}
+
+/** What a gadget:doors-changed notice may say happened. Never an outcome — see the file header. */
+export const DOORS_CHANGED_REASONS = Object.freeze(["grant", "revoke"]);
+
+/**
+ * Parses a host's unprompted `gadget:doors-changed` notice. `type` and
+ * `requirementKey` are validated the same way every other message here is;
+ * an unrecognised `reason` is refused too, rather than passed through as an
+ * arbitrary string this client would have to guess the meaning of.
+ */
+export function parseGadgetDoorsChangedMessage(data) {
+  if (!data || typeof data !== "object" || data.type !== "gadget:doors-changed") return null;
+  const requirementKey = requirementKeyOf(data.requirementKey);
+  if (!requirementKey || !DOORS_CHANGED_REASONS.includes(data.reason)) return null;
+  return { requirementKey, reason: data.reason };
 }
 
 /** A fresh id for one request, unguessable enough that a stale answer cannot collide. */

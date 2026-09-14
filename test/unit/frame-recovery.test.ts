@@ -184,6 +184,124 @@ describe("carousel frame recovery", () => {
     expect(texts(stage.node)).toContain("cover image only, not played");
   });
 
+  // F2: Studio's own access popover can grant or revoke `metered_fetch`
+  // while this drawer is already open, showing a permission-refused frame.
+  // Nothing in this file's normal flow tells the frame about that — these
+  // cases are the host's unprompted `gadget:doors-changed` notice, reaching
+  // the stage as `notifyDoorsChanged(reason)` (client.js's job is only to
+  // parse the message and forward the reason; see grant-request.test.ts for
+  // that parsing).
+  it("a notification refreshes permission metadata without calling getMedia", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    let refreshCalls = 0;
+    const stage = createMediaStage(d.rpc, carousel, "en", {
+      requestGrant: deferredHost().ask,
+      refreshPermissions: async () => { refreshCalls += 1; }
+    });
+    await flushAsyncWork();
+    d.asked.length = 0;
+
+    stage.notifyDoorsChanged("grant");
+    await flushAsyncWork();
+
+    expect(refreshCalls).toBe(1);
+    expect(d.asked).toEqual([]); // no getMedia, no provider call, no generation
+  });
+
+  it("a stuck frame — waiting on a grant answer that will never arrive because it was granted elsewhere — becomes actionable again after a grant notice", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    const host = deferredHost(); // never answered: the owner used Studio's popover instead
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: host.ask });
+    await flushAsyncWork();
+    click(button(stage.node, "Allow public fetching"));
+    await flushAsyncWork();
+    expect(button(stage.node, "Waiting for your answer").disabled).toBe(true);
+    d.asked.length = 0;
+
+    stage.notifyDoorsChanged("grant");
+    await flushAsyncWork();
+
+    // Unstuck, but NOT auto-fetched: the owner's own next press asks fresh.
+    expect(d.asked).toEqual([]);
+    expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
+  });
+
+  it("an idle permission-needed frame stays actionable (not auto-fetched) after a grant notice", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
+    await flushAsyncWork();
+    d.asked.length = 0;
+
+    stage.notifyDoorsChanged("grant");
+    await flushAsyncWork();
+
+    expect(d.asked).toEqual([]);
+    expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
+  });
+
+  it("a revoke notice disables the frame's action; a later grant notice restores it", async () => {
+    const d = door({ a: blocked("fetch_activation_failed") });
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestActivation: deferredHost().ask });
+    await flushAsyncWork();
+    expect(button(stage.node, "Retry activation").disabled).toBe(false);
+    d.asked.length = 0;
+
+    stage.notifyDoorsChanged("revoke");
+    await flushAsyncWork();
+    expect(buttons(stage.node).some((candidate) => candidate.textContent.includes("Retry activation"))).toBe(false);
+    expect(texts(stage.node)).toContain("Permission saved, fetching not started");
+
+    stage.notifyDoorsChanged("grant");
+    await flushAsyncWork();
+    expect(button(stage.node, "Retry activation").disabled).toBe(false);
+    expect(d.asked).toEqual([]); // still nothing read automatically
+  });
+
+  it("leaves a non-permission refusal (a transient or stale-source refusal) alone", async () => {
+    const d = door({ a: JPEG, b: blocked("fetch_transient") });
+    const stage = createMediaStage(d.rpc, carousel, "en");
+    await flushAsyncWork();
+    frameTab(stage, 1);
+    await flushAsyncWork();
+    expect(button(stage.node, "Try again")).toBeDefined();
+
+    stage.notifyDoorsChanged("revoke");
+    await flushAsyncWork();
+    // Unaffected: this refusal has nothing to do with `metered_fetch` consent.
+    expect(button(stage.node, "Try again").disabled).toBe(false);
+  });
+
+  it("touches only the refused permission frame's own action state — a held frame, the selection and the strip stay exactly as they were", async () => {
+    const d = door({ a: JPEG, b: blocked("fetch_permission_required") });
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
+    await flushAsyncWork();
+    frameTab(stage, 1); // select the refused frame
+    await flushAsyncWork();
+    d.asked.length = 0;
+    const selectedBefore = (stage.strip as { children: { getAttribute(name: string): string | null }[] }).children.map(
+      (child) => child.getAttribute("aria-selected")
+    );
+
+    stage.notifyDoorsChanged("grant");
+    await flushAsyncWork();
+
+    expect(d.asked).toEqual([]); // the already-held frame is not re-read
+    expect(statuses(stage)).toEqual(["held", "refused", "unread"]); // no status changed, only its action did
+    expect(
+      (stage.strip as { children: { getAttribute(name: string): string | null }[] }).children.map((child) =>
+        child.getAttribute("aria-selected")
+      )
+    ).toEqual(selectedBefore); // the selected frame is unchanged
+  });
+
+  it("does nothing once the stage is disposed", async () => {
+    const d = door({ a: blocked("fetch_permission_required") });
+    const stage = createMediaStage(d.rpc, carousel, "en", { requestGrant: deferredHost().ask });
+    await flushAsyncWork();
+    stage.dispose();
+    expect(() => stage.notifyDoorsChanged("grant")).not.toThrow();
+  });
+
   it("an expired media link offers a deliberate source refresh, not a retry loop", async () => {
     const d = door({ a: blocked("reference_media_stale") });
     let refreshes = 0;

@@ -34,7 +34,7 @@ import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { createImageAcceptance } from "./image-acceptance.js";
-import { newGrantRequestId, parseGadgetGrantResultMessage } from "../../grant-request.js";
+import { newGrantRequestId, parseGadgetDoorsChangedMessage, parseGadgetGrantResultMessage } from "../../grant-request.js";
 import { renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
 import {
@@ -826,6 +826,16 @@ function App() {
   // client still boots where there is none (unit shims, a detached render).
   if (typeof window.addEventListener === "function") window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
+    // F2: an unprompted "something about this door may have changed" notice
+    // — Studio's own access popover, not a reply to anything this canvas
+    // asked (those go through gadget:grant-result below, correlated by
+    // requestId). Handled first and returns either way: a doors-changed
+    // message is never also a grant-result.
+    const notice = parseGadgetDoorsChangedMessage(event.data);
+    if (notice) {
+      if (notice.requirementKey === "metered_fetch") onDoorsChanged(notice.reason);
+      return;
+    }
     const result = parseGadgetGrantResultMessage(event.data);
     if (!result?.requestId) return;
     const pending = pendingDoorRequests.get(result.requestId);
@@ -834,6 +844,22 @@ function App() {
     if (pending.timer) clearTimeout(pending.timer);
     pending.resolve({ outcome: result.outcome, message: result.message });
   });
+  /**
+   * F2: refresh permission metadata only — never `getMedia`, no provider
+   * call, no generation — and let the open drawer's media stage (if any)
+   * move a permission-refused frame to a state the owner can act on. Does
+   * nothing to the collection, the wizard, or any unsaved caption/alt/
+   * instruction edit: this is a metadata read plus a per-frame UI state
+   * change, not a redraw of anything else on screen.
+   */
+  async function onDoorsChanged(reason) {
+    try {
+      await refreshSummary();
+    } catch (error) {
+      console.error(error);
+    }
+    activePreviewStage?.notifyDoorsChanged(reason);
+  }
   function askHost(type, requirementKey, timeoutMs) {
     const requestId = newGrantRequestId();
     return new Promise((resolve) => {
@@ -856,7 +882,10 @@ function App() {
     return createMediaStage(rpc, target, locale, {
       requestGrant: () => requestDoorGrant("metered_fetch"),
       requestActivation: () => requestDoorActivation("metered_fetch"),
-      refreshSources: () => collectionHandlers.onRefresh()
+      refreshSources: () => collectionHandlers.onRefresh(),
+      // F2: `notifyDoorsChanged()` calls this, fire-and-forget, on an
+      // unprompted host notice — a plain metadata read, never `getMedia`.
+      refreshPermissions: () => refreshSummary()
     });
   }
 

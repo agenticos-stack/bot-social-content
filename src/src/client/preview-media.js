@@ -51,16 +51,24 @@ const REFUSALS = {
 };
 const DEFAULT_REFUSAL = { title: "drawerMediaRefusedTitle", body: null, action: "retry", label: "drawerMediaRetry" };
 
+/** The three refused codes that mean "this frame is waiting on `metered_fetch` consent", not on media transport. */
+function isPermissionCode(code) {
+  return code === "fetch_permission_required" || code === "fetch_activation_failed" || code === "fetch_grant_unconfirmed";
+}
+
 /**
  * Builds the stage for one item and starts reading its first frame.
  *
  * `options.requestGrant()` / `options.requestActivation()` resolve to the
  * host's correlated `{ outcome, message }` (`grant-request.js` vocabulary).
- * `options.refreshSources()` is the owner's deliberate re-scan. None of them
- * reads media; only a confirmed `activated` (or the owner's own click) leads
- * to a read, and only of the frame that asked.
+ * `options.refreshSources()` is the owner's deliberate re-scan.
+ * `options.refreshPermissions()` (F2) is called, fire-and-forget, from
+ * `notifyDoorsChanged()` below — a plain metadata read (`rpc.summary()`),
+ * never `getMedia`. None of the four reads media; only a confirmed
+ * `activated` (or the owner's own click) leads to a read, and only of the
+ * frame that asked.
  *
- * Returns `{ node, strip, frameCount, frameStates, dispose }`.
+ * Returns `{ node, strip, frameCount, frameStates, notifyDoorsChanged, dispose }`.
  */
 export function createMediaStage(rpc, item, locale, options = {}) {
   const frames = framesOf(item);
@@ -94,7 +102,14 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   function showRefusal(key) {
     const state = states.get(key);
     const shape = REFUSALS[state?.code] ?? DEFAULT_REFUSAL;
-    const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
+    // F2: a revoke notice disables a permission-related action outright — the
+    // server is authoritative, and a stale "Activate" pointed at a grant that
+    // is gone would just fail again. `null` here means no button at all,
+    // never a permanently-disabled one nobody can recover from: a later
+    // grant (`notifyDoorsChanged("grant")`) clears the flag and restores it.
+    const action = state?.actionDisabled
+      ? null
+      : shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
     const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
     const pending = Boolean(state?.action);
     const pendingLabel = state?.action === "grant" ? "drawerMediaWaitingGrant" : state?.action === "activate" ? "drawerMediaStarting" : "drawerMediaFetching";
@@ -317,6 +332,34 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   if (frames.length) show(0);
   else showEmpty();
 
+  /**
+   * F2: a host-popover grant or revoke landed SOMEWHERE ELSE (Studio's own
+   * access popover) while this drawer was open — never this stage's own
+   * `act()`, which already settles its own frame from the host's correlated
+   * answer. Refreshes permission metadata only (no `getMedia`, no provider
+   * call, no generation) and, for every frame currently refused on a
+   * permission code, moves it to a state the owner can act on.
+   *
+   * `reason: "grant"` UNSTICKS a frame that is stuck `pending` (disabled,
+   * waiting on a host answer that will never arrive — the request it was
+   * actually waiting on was made through a different UI and already
+   * answered there) and re-enables one this method had previously disabled;
+   * either way it does NOT itself fetch — the owner's next press does, and
+   * gets a fresh, correlated answer. `reason: "revoke"` disables the action
+   * outright (`showRefusal`'s own `actionDisabled` reads this): the server
+   * is authoritative, and a stale "Activate" pointed at a grant that is gone
+   * would only fail again.
+   */
+  function notifyDoorsChanged(reason) {
+    if (!live) return;
+    void options.refreshPermissions?.();
+    for (const [key, state] of states) {
+      if (state.status !== "refused" || !isPermissionCode(state.code)) continue;
+      states.set(key, { ...state, action: null, actionDisabled: reason === "revoke" });
+      repaint(key);
+    }
+  }
+
   return {
     node: stage,
     strip: frames.length > 1 ? strip : null,
@@ -324,6 +367,7 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     frameStates() {
       return frames.map((frame) => ({ id: String(frame.id), status: states.get(String(frame.id))?.status ?? "unread" }));
     },
+    notifyDoorsChanged,
     dispose() {
       live = false;
       inFlight.clear();
