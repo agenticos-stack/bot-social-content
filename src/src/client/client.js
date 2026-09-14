@@ -794,11 +794,9 @@ function App() {
   const liveMediaStages = new Set();
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
-  // F2: every `metered_fetch` read a doors-changed notice starts gets the
-  // next number. Only the read holding the current number may apply its
-  // outcome, so a slow read an earlier notice started can never overwrite
-  // what a later notice's read already found.
-  let permissionReadSeq = 0;
+  // Every summary read takes the next number; only the most recently started
+  // read may write shared `summary`/`policy` (see `readSummaryInOrder`).
+  let summaryReadSeq = 0;
 
   /**
    * PUT IT ON THE SCREEN.
@@ -853,41 +851,72 @@ function App() {
     pending.resolve({ outcome: result.outcome, message: result.message });
   });
   /**
-   * F2: the notice only says an operation was ATTEMPTED elsewhere (Studio's
-   * own access popover) — never whether it succeeded. A failed or lost
-   * revoke with consent still live must not read as "permission gone", and
-   * an unreadable read must not read as either. So the notice is treated as
-   * pure invalidation: re-read current `metered_fetch` consent (never
-   * `getMedia`, no provider call, no generation) and hand every live media
-   * stage the READ's own outcome, not the notice's reason. Does nothing to
-   * the collection, the wizard, or any unsaved caption/alt/instruction edit:
-   * this is a metadata read plus a per-frame UI state change, not a redraw
-   * of anything else on screen. Sequenced against other notices — see
-   * `permissionReadSeq` above.
+   * A host door notice says an operation was attempted elsewhere, never that it
+   * succeeded. Re-read consent (metadata only: no getMedia, provider call or
+   * generation) and give live media stages the read's outcome. An obsolete read
+   * changes nothing.
    */
   async function onDoorsChanged() {
-    const seq = ++permissionReadSeq;
     const state = await readMeteredFetchConsent();
-    if (seq !== permissionReadSeq) return; // a newer notice's read already answered
+    if (state === null) return;
     for (const stage of liveMediaStages) stage.notifyPermission({ state });
   }
 
+  /** The owner's "Check again": the same ordered read; an obsolete one reports the committed state. */
+  async function recheckMeteredFetchConsent() {
+    const state = await readMeteredFetchConsent();
+    return { state: state ?? meteredFetchConsentOf(summary) };
+  }
+
   /**
-   * The one place that decides current `metered_fetch` consent from the
-   * summary the client already reads — the same derivation `fetchGranted`
-   * uses for the setup screen (`Boolean(summary?.doors?.metered_fetch)`,
-   * below). A failed read is `"unknown"`, never `"absent"`: the two are not
-   * the same fact, and only a real read may report which.
+   * Current `metered_fetch` consent from an ordered summary read: "granted",
+   * "absent", "unknown" when the current read failed, or null when a newer read
+   * started meanwhile (that read owns shared state and the answer).
    */
   async function readMeteredFetchConsent() {
-    try {
-      const fresh = await refreshSummary();
-      return Boolean(fresh?.doors?.metered_fetch) ? "granted" : "absent";
-    } catch (error) {
-      console.error(error);
+    const read = await readSummaryInOrder();
+    if (!read.current) return null;
+    if (read.error) {
+      console.error(read.error);
       return "unknown";
     }
+    return meteredFetchConsentOf(read.snapshot);
   }
+
+  /** The same derivation Settings uses for `fetchGranted`. */
+  function meteredFetchConsentOf(snapshot) {
+    return Boolean(snapshot?.doors?.metered_fetch) ? "granted" : "absent";
+  }
+
+  /**
+   * Reads the summary, then commits it to shared `summary`/`policy` only if no
+   * newer read started while this one was pending. A stale success or failure
+   * leaves the newer state untouched.
+   */
+  async function readSummaryInOrder() {
+    const seq = ++summaryReadSeq;
+    try {
+      const snapshot = await rpc.summary();
+      const current = seq === summaryReadSeq;
+      if (current) commitSummary(snapshot);
+      return { snapshot, current };
+    } catch (error) {
+      return { error, current: seq === summaryReadSeq };
+    }
+  }
+
+  function commitSummary(snapshot) {
+    summary = snapshot;
+    policy = snapshot?.config || {};
+  }
+
+  /** Existing callers: an ordered read that throws on failure and returns the snapshot. */
+  async function refreshSummary() {
+    const read = await readSummaryInOrder();
+    if (read.error) throw read.error;
+    return read.snapshot;
+  }
+
   function askHost(type, requirementKey, timeoutMs) {
     const requestId = newGrantRequestId();
     return new Promise((resolve) => {
@@ -913,7 +942,7 @@ function App() {
       refreshSources: () => collectionHandlers.onRefresh(),
       // The owner's own "Check again" on an unconfirmed-permission frame:
       // the same metadata-only read as a notice, never `getMedia`.
-      recheckPermission: async () => ({ state: await readMeteredFetchConsent() })
+      recheckPermission: () => recheckMeteredFetchConsent()
     });
     liveMediaStages.add(stage);
     const dispose = stage.dispose;
@@ -972,12 +1001,6 @@ function App() {
       collectionState = setLoading(collectionState, false);
     }
     renderCurrentView();
-  }
-
-  async function refreshSummary() {
-    summary = await rpc.summary();
-    policy = summary?.config || {};
-    return summary;
   }
 
   // --- Preview drawer (REQ-021 / PAT-005) ---------------------------------

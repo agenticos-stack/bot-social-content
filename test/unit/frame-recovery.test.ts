@@ -378,62 +378,128 @@ describe("carousel frame recovery", () => {
 describe("onDoorsChanged (client.js notice handler)", () => {
   const clientSource = readFileSync(new URL("../../src/src/client/client.js", import.meta.url), "utf8");
 
-  function extractOnDoorsChanged(scope: Record<string, unknown>) {
+  // The real read/commit block from client.js: onDoorsChanged, the owner recheck,
+  // the consent reader and the ordered summary read that writes shared state.
+  function extractPermissionBlock(scope: Record<string, unknown>) {
     const start = clientSource.indexOf("  async function onDoorsChanged()");
     const end = clientSource.indexOf("  function askHost(", start);
-    if (start < 0 || end <= start) throw new Error("client.js extraction boundary changed for onDoorsChanged");
-    return new Function("scope", `with(scope){${clientSource.slice(start, end)}; return onDoorsChanged;}`)(scope) as () => Promise<void>;
+    if (start < 0 || end <= start) throw new Error("client.js extraction boundary changed for the permission read block");
+    return new Function(
+      "scope",
+      `with(scope){${clientSource.slice(start, end)}; return { onDoorsChanged, recheckMeteredFetchConsent };}`
+    )(scope) as { onDoorsChanged: () => Promise<void>; recheckMeteredFetchConsent: () => Promise<{ state: string }> };
   }
 
-  it("re-reads metadata and reports the read's outcome, not the reason a notice never carries", async () => {
-    const notified: { state: string }[] = [];
-    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
+  /** Controlled summary RPC: each call waits until the test settles it. */
+  function permissionHarness() {
+    const pending: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+    const notified: string[] = [];
+    let mediaReads = 0;
+    const initialPolicy = { cadence: "daily" };
     const scope: Record<string, unknown> = {
-      permissionReadSeq: 0,
-      liveMediaStages: new Set([stage]),
-      console,
-      refreshSummary: async () => ({ doors: { metered_fetch: true } })
-    };
-    await extractOnDoorsChanged(scope)();
-    expect(notified).toEqual([{ state: "granted" }]);
-  });
-
-  it("reports unknown, not absent, when the metadata read fails", async () => {
-    const notified: { state: string }[] = [];
-    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
-    const scope: Record<string, unknown> = {
-      permissionReadSeq: 0,
-      liveMediaStages: new Set([stage]),
+      summary: { doors: { metered_fetch: false }, config: initialPolicy },
+      policy: initialPolicy,
+      summaryReadSeq: 0,
+      liveMediaStages: new Set([{ notifyPermission: ({ state }: { state: string }) => notified.push(state) }]),
       console: { error() {} },
-      refreshSummary: async () => { throw new Error("summary unreachable"); }
+      rpc: {
+        summary: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+        getMedia: () => { mediaReads += 1; }
+      }
     };
-    await extractOnDoorsChanged(scope)();
-    expect(notified).toEqual([{ state: "unknown" }]);
+    const block = extractPermissionBlock(scope);
+    const snapshot = (granted: boolean, cadence: string) => ({ doors: { metered_fetch: granted }, config: { cadence } });
+    return {
+      ...block,
+      scope,
+      notified,
+      pending,
+      snapshot,
+      mediaReads: () => mediaReads,
+      // What Settings renders: runSetup passes Boolean(summary?.doors?.metered_fetch).
+      settingsFetchGranted: () => Boolean((scope.summary as { doors?: { metered_fetch?: boolean } })?.doors?.metered_fetch)
+    };
+  }
+
+  it("Settings derives fetchGranted from the same shared summary this block commits", () => {
+    expect(clientSource).toContain("Boolean(summary?.doors?.metered_fetch),");
   });
 
-  it("out of order: a slower read an earlier notice started must not overwrite a newer notice's already-applied result", async () => {
-    const notified: { state: string }[] = [];
-    const stage = { notifyPermission: (payload: { state: string }) => notified.push(payload) };
-    const resolvers: Array<(value: { doors: { metered_fetch: boolean } }) => void> = [];
-    const scope: Record<string, unknown> = {
-      permissionReadSeq: 0,
-      liveMediaStages: new Set([stage]),
-      console,
-      refreshSummary: () => new Promise((resolve) => { resolvers.push(resolve); })
-    };
-    const onDoorsChanged = extractOnDoorsChanged(scope);
+  it("A: an older absent read resolving after a newer granted read changes neither the panel nor Settings", async () => {
+    const h = permissionHarness();
+    const olderA = h.onDoorsChanged();
+    const newerB = h.onDoorsChanged();
+    h.pending[1].resolve(h.snapshot(true, "newer"));
+    await newerB;
+    h.pending[0].resolve(h.snapshot(false, "older"));
+    await olderA;
 
-    const noticeA = onDoorsChanged(); // started first, answered last
-    const noticeB = onDoorsChanged(); // started second, answered first
+    expect(h.notified).toEqual(["granted"]);
+    expect(h.settingsFetchGranted()).toBe(true);
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("newer");
+    expect(h.mediaReads()).toBe(0);
+  });
 
-    resolvers[1]({ doors: { metered_fetch: true } }); // B: consent is granted
-    await noticeB;
-    resolvers[0]({ doors: { metered_fetch: false } }); // A: would have said absent
-    await noticeA;
+  it("B: an older granted read resolving after a newer absent read cannot restore granted UI", async () => {
+    const h = permissionHarness();
+    const olderA = h.onDoorsChanged();
+    const newerB = h.onDoorsChanged();
+    h.pending[1].resolve(h.snapshot(false, "newer"));
+    await newerB;
+    h.pending[0].resolve(h.snapshot(true, "older"));
+    await olderA;
 
-    // B's result is the only one ever handed to a stage; A's late, stale read
-    // never overwrites it.
-    expect(notified).toEqual([{ state: "granted" }]);
+    expect(h.notified).toEqual(["absent"]);
+    expect(h.settingsFetchGranted()).toBe(false);
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("newer");
+    expect(h.mediaReads()).toBe(0);
+  });
+
+  it("C: an older failure resolving after a newer success does not downgrade to unknown", async () => {
+    const h = permissionHarness();
+    const olderA = h.onDoorsChanged();
+    const newerB = h.onDoorsChanged();
+    h.pending[1].resolve(h.snapshot(true, "newer"));
+    await newerB;
+    h.pending[0].reject(new Error("late summary failure"));
+    await olderA;
+
+    expect(h.notified).toEqual(["granted"]);
+    expect(h.settingsFetchGranted()).toBe(true);
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("newer");
+  });
+
+  it("D: a current failed read is unconfirmed, keeps the last committed state, and the owner recheck recovers both panel and Settings", async () => {
+    const h = permissionHarness();
+    const failing = h.onDoorsChanged();
+    h.pending[0].reject(new Error("summary unreachable"));
+    await failing;
+    expect(h.notified).toEqual(["unknown"]);
+    expect(h.settingsFetchGranted()).toBe(false); // unchanged, not an invented denial or grant
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("daily");
+
+    const recheck = h.recheckMeteredFetchConsent();
+    expect(h.pending).toHaveLength(2); // one metadata read, nothing else
+    h.pending[1].resolve(h.snapshot(true, "rechecked"));
+    await expect(recheck).resolves.toEqual({ state: "granted" });
+    expect(h.settingsFetchGranted()).toBe(true);
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("rechecked");
+    expect(h.mediaReads()).toBe(0);
+  });
+
+  it("E: an owner recheck overtaken by a newer host notice reports the committed newer state, and panel and Settings agree", async () => {
+    const h = permissionHarness();
+    const recheck = h.recheckMeteredFetchConsent(); // older
+    const notice = h.onDoorsChanged(); // newer
+    h.pending[1].resolve(h.snapshot(false, "notice"));
+    await notice;
+    h.pending[0].resolve(h.snapshot(true, "recheck"));
+
+    await expect(recheck).resolves.toEqual({ state: "absent" });
+    expect(h.notified).toEqual(["absent"]);
+    expect(h.settingsFetchGranted()).toBe(false);
+    expect((h.scope.policy as { cadence: string }).cadence).toBe("notice");
+    expect(h.mediaReads()).toBe(0);
   });
 });
 
