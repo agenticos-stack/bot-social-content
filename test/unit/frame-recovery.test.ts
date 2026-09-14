@@ -221,9 +221,10 @@ describe("carousel frame recovery", () => {
     stage.notifyDoorsChanged("grant");
     await flushAsyncWork();
 
-    // Unstuck, but NOT auto-fetched: the owner's own next press asks fresh.
+    // Unstuck, but NOT auto-fetched: the owner's own next press reads once.
     expect(d.asked).toEqual([]);
-    expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
+    expect(texts(stage.node)).toContain("Permission updated in Studio");
+    expect(button(stage.node, "Check again").disabled).toBe(false);
   });
 
   it("an idle permission-needed frame stays actionable (not auto-fetched) after a grant notice", async () => {
@@ -236,10 +237,17 @@ describe("carousel frame recovery", () => {
     await flushAsyncWork();
 
     expect(d.asked).toEqual([]);
-    expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
+    expect(texts(stage.node)).not.toContain("Permission needed for this frame");
+    expect(texts(stage.node)).toContain("Permission updated in Studio");
+
+    // Only the owner's check reads the frame, exactly once.
+    d.answers.a = JPEG;
+    click(button(stage.node, "Check again"));
+    await flushAsyncWork();
+    expect(d.asked).toEqual(["a"]);
   });
 
-  it("a revoke notice disables the frame's action; a later grant notice restores it", async () => {
+  it("a revoke notice drops activation and offers the grant again; a later grant notice offers a check", async () => {
     const d = door({ a: blocked("fetch_activation_failed") });
     const stage = createMediaStage(d.rpc, carousel, "en", { requestActivation: deferredHost().ask });
     await flushAsyncWork();
@@ -249,11 +257,12 @@ describe("carousel frame recovery", () => {
     stage.notifyDoorsChanged("revoke");
     await flushAsyncWork();
     expect(buttons(stage.node).some((candidate) => candidate.textContent.includes("Retry activation"))).toBe(false);
-    expect(texts(stage.node)).toContain("Permission saved, fetching not started");
+    expect(texts(stage.node)).toContain("Permission needed for this frame");
+    expect(button(stage.node, "Allow public fetching").disabled).toBe(false);
 
     stage.notifyDoorsChanged("grant");
     await flushAsyncWork();
-    expect(button(stage.node, "Retry activation").disabled).toBe(false);
+    expect(button(stage.node, "Check again").disabled).toBe(false);
     expect(d.asked).toEqual([]); // still nothing read automatically
   });
 

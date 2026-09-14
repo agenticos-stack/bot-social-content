@@ -43,6 +43,9 @@ const REFUSALS = {
   fetch_activation_failed: { title: "drawerMediaActivationTitle", body: "drawerMediaActivationBody", action: "activate", label: "drawerMediaActivationRetry" },
   // The host could not confirm whether consent was saved. Not "permission
   // saved": activation checks what is actually held before starting anything.
+  // The host reported a grant made outside this canvas. Nothing was read; the
+  // owner's check reads this frame once under the current permission.
+  fetch_permission_changed: { title: "drawerMediaPermissionChangedTitle", body: "drawerMediaPermissionChangedBody", action: "retry", label: "drawerMediaCheckAgain" },
   fetch_grant_unconfirmed: { title: "drawerMediaGrantUnconfirmedTitle", body: "drawerMediaGrantUnconfirmedBody", action: "activate", label: "drawerMediaActivationRetry" },
   fetch_transient: { title: "drawerMediaTransientTitle", body: null, action: "retry", label: "drawerMediaRetry" },
   reference_media_stale: { title: "drawerMediaStaleTitle", body: "drawerMediaStaleBody", action: "refresh", label: "drawerMediaRefreshSources" },
@@ -53,7 +56,7 @@ const DEFAULT_REFUSAL = { title: "drawerMediaRefusedTitle", body: null, action: 
 
 /** The three refused codes that mean "this frame is waiting on `metered_fetch` consent", not on media transport. */
 function isPermissionCode(code) {
-  return code === "fetch_permission_required" || code === "fetch_activation_failed" || code === "fetch_grant_unconfirmed";
+  return code === "fetch_permission_required" || code === "fetch_activation_failed" || code === "fetch_grant_unconfirmed" || code === "fetch_permission_changed";
 }
 
 /**
@@ -107,9 +110,7 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     // is gone would just fail again. `null` here means no button at all,
     // never a permanently-disabled one nobody can recover from: a later
     // grant (`notifyDoorsChanged("grant")`) clears the flag and restores it.
-    const action = state?.actionDisabled
-      ? null
-      : shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
+    const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
     const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
     const pending = Boolean(state?.action);
     const pendingLabel = state?.action === "grant" ? "drawerMediaWaitingGrant" : state?.action === "activate" ? "drawerMediaStarting" : "drawerMediaFetching";
@@ -333,29 +334,19 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   else showEmpty();
 
   /**
-   * F2: a host-popover grant or revoke landed SOMEWHERE ELSE (Studio's own
-   * access popover) while this drawer was open — never this stage's own
-   * `act()`, which already settles its own frame from the host's correlated
-   * answer. Refreshes permission metadata only (no `getMedia`, no provider
-   * call, no generation) and, for every frame currently refused on a
-   * permission code, moves it to a state the owner can act on.
-   *
-   * `reason: "grant"` UNSTICKS a frame that is stuck `pending` (disabled,
-   * waiting on a host answer that will never arrive — the request it was
-   * actually waiting on was made through a different UI and already
-   * answered there) and re-enables one this method had previously disabled;
-   * either way it does NOT itself fetch — the owner's next press does, and
-   * gets a fresh, correlated answer. `reason: "revoke"` disables the action
-   * outright (`showRefusal`'s own `actionDisabled` reads this): the server
-   * is authoritative, and a stale "Activate" pointed at a grant that is gone
-   * would only fail again.
+   * The host changed `metered_fetch` consent outside this canvas. Only frames
+   * refused for permission move, and nothing is read here:
+   * - grant: offer a check of the frame under the current permission;
+   * - revoke: back to permission needed, dropping any activation or check.
+   * Held frames, selection and the strip are untouched.
    */
   function notifyDoorsChanged(reason) {
     if (!live) return;
     void options.refreshPermissions?.();
+    const code = reason === "revoke" ? "fetch_permission_required" : "fetch_permission_changed";
     for (const [key, state] of states) {
       if (state.status !== "refused" || !isPermissionCode(state.code)) continue;
-      states.set(key, { ...state, action: null, actionDisabled: reason === "revoke" });
+      states.set(key, { ...state, code, action: null, note: null, message: null });
       repaint(key);
     }
   }
