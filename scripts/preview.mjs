@@ -228,7 +228,13 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
             const headers={};
             if(identity.devToken)headers.authorization=`Bearer ${identity.devToken}`;
             if(identity.cookie)headers.cookie=identity.cookie;
-            const response=await fetch(`${apiOrigin}/v2/workspaces/${devWorkspaceId}/attachments/${registration.attachmentId}/content`,{headers,redirect:'error',signal:AbortSignal.timeout(30000)});
+            // The conversation the agent generated in. In local connected mode
+            // there is no gadget-dev workspace id, and reading with an empty
+            // one requested /v2/workspaces//attachments/… — a 404 that left a
+            // real generated image pending indefinitely.
+            const conversationId=agent?.info?.workspaceId || devWorkspaceId;
+            if(!conversationId){console.warn(`generated image ${registration.id}: no conversation id yet — stays pending`);continue;}
+            const response=await fetch(`${apiOrigin}/v2/workspaces/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(registration.attachmentId)}/content`,{headers,redirect:'error',signal:AbortSignal.timeout(30000)});
             if(!response.ok){
               console.warn(`generated image ${registration.id}: attachment read refused (${response.status}) — stays pending`);
               continue;
