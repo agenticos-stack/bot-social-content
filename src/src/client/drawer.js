@@ -175,7 +175,16 @@ export function confirmDrawerChoice(dialog, { title, body, choices }) {
     settle(value);
   };
   const onCancel = (event) => { event.preventDefault?.(); finish("cancel"); };
-  const onClose = () => finish("cancel");
+  /*
+   * A `close` event is dispatched as a later task, after `close()` returns.
+   * When one prompt resolves and the caller opens the next on the same dialog
+   * straight away (replace a pending request, then decide about unsaved
+   * instructions), the first prompt's close arrives while the dialog is open
+   * again — and used to answer the second prompt "cancel", so Regenerate did
+   * nothing and said nothing. Only a close that left the dialog closed is a
+   * real dismissal.
+   */
+  const onClose = () => { if (dialog.open) return; finish("cancel"); };
   replace(dialog, [
     el("div", { class: "sl-preview-sheet" }, [
       el("header", { class: "sl-preview-head" }, [el("strong", null, title)]),
