@@ -185,12 +185,61 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     // promise instead of reaching a runtime that is going away.
     let readyLocal;
     let localReady = new Promise((resolve) => { readyLocal = resolve; });
+    let deliverTimer;
     try {
+      /*
+       * The attachment→gadget transfer is a HOST job, not an agent one: the
+       * agent's saveGeneratedImage names an uploadId, and the host — which
+       * holds the session credential the v2 attachment route authenticates —
+       * fetches the bytes and delivers them. Image bytes therefore never
+       * appear in an agent tool result, and the private attachment URL never
+       * leaves the authenticated path. In remote mode the dev token does not
+       * authenticate v2 REST routes (session cookie / OAuth bearer only), so
+       * the read fails there and the registration stays truthfully pending —
+       * that gap is the shared platform contract, not something this host
+       * can fake.
+       */
+      const deliverGeneratedAttachments=async()=>{
+        await localReady;
+        const callLocal=async(method,args)=>{
+          const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
+          const payload=await result.json();
+          if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
+          return payload.value;
+        };
+        let pending;
+        try { pending=(await callLocal('pendingGeneratedImages',{}))?.pending ?? []; }
+        catch { return; }
+        for (const registration of pending) {
+          if(typeof registration?.attachmentId!=='string'||!registration.attachmentId) continue;
+          try {
+            const headers={};
+            if(identity.devToken)headers.authorization=`Bearer ${identity.devToken}`;
+            if(identity.cookie)headers.cookie=identity.cookie;
+            const response=await fetch(`${apiOrigin}/v2/workspaces/${devWorkspaceId}/attachments/${registration.attachmentId}/content`,{headers,redirect:'error',signal:AbortSignal.timeout(30000)});
+            if(!response.ok){
+              console.warn(`generated image ${registration.id}: attachment read refused (${response.status}) — stays pending`);
+              continue;
+            }
+            const bytes=Buffer.from(await response.arrayBuffer());
+            const mimeType=(response.headers.get('content-type')||'').split(';')[0]||undefined;
+            const delivered=await callLocal('deliverGeneratedImage',{id:registration.id,bytes:bytes.toString('base64'),mimeType});
+            if(delivered?.ok)console.log(`generated image ${registration.id}: delivered ${bytes.byteLength} bytes (${mimeType||'unknown'})`);
+            else console.warn(`generated image ${registration.id}: delivery refused — ${delivered?.issues?.[0]?.message||'unknown'}`);
+          } catch (error) {
+            console.warn(`generated image ${registration.id}: delivery failed — ${error instanceof Error?error.message:error}`);
+          }
+        }
+      };
       agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
         if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
+        // A successful registration kicks the transfer off; the sweep below
+        // retries anything the kick missed (a transient read failure must not
+        // strand a registration the agent already made).
+        if(method==='saveGeneratedImage'&&payload.value?.ok)deliverGeneratedAttachments().catch(()=>{});
         return payload.value;
       }});
       // Only granted doors appear, so an ungranted one is absent from `env` —
@@ -208,6 +257,12 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       };
       local=await startRuntime(archive.files);
       readyLocal();
+      // Any registration left pending (a refused read, a restart between
+      // register and deliver) is retried on a slow sweep — a delivery that
+      // can never complete reads as `generatedImage.ready: false` forever,
+      // which is the truth, but a transient 5xx must not pin it there.
+      deliverTimer=setInterval(()=>{ deliverGeneratedAttachments().catch(()=>{}); },30000);
+      deliverTimer.unref?.();
 
       /**
        * Hot reload: new source becomes the live source without a restart.
@@ -335,12 +390,13 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
             const response=await local.handle(new Request(frontendOrigin+'/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method:'getBatch',args:[input.batchId]})}));
             const batch=(await response.json()).value;
             if(!response.ok||batch?.generation!=='requested')throw new Error('This batch has no pending generation request.');
-            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then prepare captions and text poster layouts for each item marked generation "requested" and save the revisions. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions below.\n\n${archive.files['agent.md']}`},credential);
+            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then prepare captions and text poster layouts for each item whose own generation mark is set, echoing that mark's id back as generationRequest on every saveRevision/savePoster. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions below.\n\n${archive.files['agent.md']}`},credential);
           }
         },
         dispose:async()=>{
           for (const watcher of watchers) watcher.close();
           clearTimeout(pending);
+          clearInterval(deliverTimer);
           await reloading;
           agent.close();
           await local.dispose();

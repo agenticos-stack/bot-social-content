@@ -1183,16 +1183,68 @@ export const ITEM_PHASES = Object.freeze([
 ]);
 
 const ATTENTION_OUTCOMES = new Set(["failed", "failed_safe", "held", "unknown"]);
+/*
+ * Outcomes that still need the owner's eye — an approval queue entry, a
+ * provider-side confirmation, a first readback. Any of them outranks
+ * `scheduled`: a post filed to two destinations where one is scheduled but
+ * the other still awaits approval is pending owner work, not done.
+ */
+const PENDING_OUTCOMES = new Set([
+  "awaiting_approval",
+  "pending_approval",
+  "awaiting_review",
+  "in_review",
+  "submitted",
+  "review_requested",
+  "pending",
+  "processing"
+]);
 const FILING_ITEM_STATES = new Set(["submitted", "awaiting_approval", "review_requested"]);
 const EDITABLE_ITEM_STATES = new Set(["drafting", "expired"]);
 
 /**
+ * The durable generation mark a `batch_items.generation` row carries.
+ *
+ * Since the correlation fix the stored value is a JSON string —
+ * `{ id, base, needs: { caption, image } }` — so a save can be correlated
+ * back to the request that asked for it and caption work can never satisfy
+ * a still-pending image ask. The pre-identity `'requested'` string still
+ * parses (legacy rows), as an unidentifiable request needing both.
+ * `null`/absent means nothing is being generated.
+ */
+export function generationMark(mark) {
+  if (!mark) return null;
+  if (typeof mark === "object") {
+    return {
+      id: typeof mark.id === "string" ? mark.id : null,
+      base: Number.isFinite(mark.base) ? mark.base : null,
+      needs: {
+        caption: mark.needs?.caption !== false,
+        image: mark.needs?.image !== false
+      }
+    };
+  }
+  if (typeof mark === "string" && mark.startsWith("{")) {
+    try {
+      return generationMark(JSON.parse(mark));
+    } catch {
+      return null;
+    }
+  }
+  // Legacy 'requested'/'drafting' strings: a request with no identity that
+  // still needs both caption and image output.
+  return { id: null, base: null, needs: { caption: true, image: true } };
+}
+
+/**
  * Deliveries = live publications plus their freshest canonical outcome.
  * `targets` rows carry optional provenance stamps (`publicationId`,
- * `publicationRevision`, `publicationVersion`) written by the server; when a
- * stamp exists it must match, otherwise the destination binding is the match.
- * Superseded/failed publications stay in `publications` for history but never
- * produce a delivery row.
+ * `publicationRevision`, `publicationVersion`) written by the server. EVERY
+ * stamp a row supplies must agree with the publication — a row stamped for
+ * a different filing can never match on a weaker field (a `revision` that
+ * happens to coincide is not an identity). Rows with no stamps at all are
+ * legacy and bind by destination alone. Superseded/failed publications stay
+ * in `publications` for history but never produce a delivery row.
  */
 export function liveDeliveries(publications = [], targets = []) {
   const live = (Array.isArray(publications) ? publications : []).filter(
@@ -1216,18 +1268,16 @@ export function liveDeliveries(publications = [], targets = []) {
     const candidates = (Array.isArray(targets) ? targets : []).filter(
       (entry) => entry && entry.destinationBinding === pub.destinationBinding
     );
+    const hasStamp = (entry) =>
+      Boolean(entry.publicationId) || Boolean(entry.publicationVersion) || entry.publicationRevision != null;
+    const stampsAgree = (entry) =>
+      (!entry.publicationId || entry.publicationId === pub.id) &&
+      (!entry.publicationVersion || (pub.version != null && entry.publicationVersion === pub.version)) &&
+      (entry.publicationRevision == null ||
+        (pub.revision != null && entry.publicationRevision === pub.revision));
     const target =
-      candidates.find((entry) => entry.publicationId && entry.publicationId === pub.id) ??
-      candidates.find(
-        (entry) => entry.publicationVersion && pub.version && entry.publicationVersion === pub.version
-      ) ??
-      candidates.find(
-        (entry) => entry.publicationRevision != null && pub.revision != null && entry.publicationRevision === pub.revision
-      ) ??
-      // Legacy rows carry no provenance stamp at all — bind by destination.
-      candidates.find(
-        (entry) => !entry.publicationId && !entry.publicationVersion && entry.publicationRevision == null
-      ) ??
+      candidates.find((entry) => hasStamp(entry) && stampsAgree(entry)) ??
+      candidates.find((entry) => !hasStamp(entry)) ??
       null;
     return {
       publicationId: pub.id,
@@ -1259,6 +1309,12 @@ export function itemPresentation({ state, revision = 0, generation = null, publi
   let phase;
   if (current.some((entry) => ATTENTION_OUTCOMES.has(entry.outcome))) {
     phase = "attention";
+  } else if (current.some((entry) => PENDING_OUTCOMES.has(entry.outcome))) {
+    // A live filing still awaiting approval (or any pending owner work) keeps
+    // the post in the review queue even when a sibling filing is already
+    // scheduled or published — "scheduled on A" must not hide "awaiting
+    // approval on B".
+    phase = "in_review";
   } else if (current.length > 0 && current.every((entry) => entry.outcome === "published")) {
     phase = "published";
   } else if (current.some((entry) => entry.outcome === "scheduled")) {
@@ -1272,7 +1328,7 @@ export function itemPresentation({ state, revision = 0, generation = null, publi
   } else if (ATTENTION_OUTCOMES.has(state)) {
     phase = "attention";
   } else if (EDITABLE_ITEM_STATES.has(state)) {
-    phase = generation === "requested" ? (revision > 0 ? "regenerating" : "queued") : "draft";
+    phase = generationMark(generation) ? (revision > 0 ? "regenerating" : "queued") : "draft";
   } else {
     // Unknown state: never dress it up as a draft.
     phase = "attention";

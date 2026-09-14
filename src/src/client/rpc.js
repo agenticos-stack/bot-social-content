@@ -25,6 +25,12 @@ export function createRpc(gadget) {
     setSelection: (id, selected) => gadget.setSelection(id, selected),
     clearSelection: () => gadget.clearSelection(),
     getMedia: (itemId, mediaId, options) => gadget.getMedia(itemId, mediaId, options),
+    // Accepted AI-generated image bytes — the gadget's own store, chunked
+    // exactly like getMedia so `loadGeneratedImageAsBlobUrl` assembles them.
+    getGeneratedImage: (id, options) => gadget.getGeneratedImage(id, options),
+    // The drawer's JPEG conversion re-delivers through the same acceptance
+    // method the host uses — the stored asset becomes the file that can ship.
+    deliverGeneratedImage: (input) => gadget.deliverGeneratedImage(input),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
     // `itemIds` scopes a re-draft to the named posts; omitted means the
@@ -132,5 +138,34 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
   const blob = new Blob(parts, { type: mime });
   // `total` travels with the URL because the drawer states the size of the
   // frame an owner is looking at, and this is the only place that knows it.
+  return { url: URL.createObjectURL(blob), mime, total: assembled };
+}
+
+/**
+ * The generated-image counterpart of `loadMediaAsBlobUrl` — same chunked
+ * envelope (`getGeneratedImage` mirrors `getMedia`'s shape), same byte-count
+ * check, same caller-owned `blob:` URL contract.
+ */
+export async function loadGeneratedImageAsBlobUrl(rpc, id) {
+  const parts = [];
+  let mime = "application/octet-stream";
+  let expectedChunks = 1;
+  let expectedTotal = null;
+  let chunk = 0;
+  do {
+    const page = await rpc.getGeneratedImage(id, { chunk });
+    if (!page) break;
+    if (page.ok === false) throw new Error(page.message || "This image is not available.");
+    if (page.mime) mime = page.mime;
+    if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
+    if (typeof page.total === "number" && expectedTotal === null) expectedTotal = page.total;
+    parts.push(chunkBytes(page.bytes));
+    chunk += 1;
+  } while (chunk < expectedChunks);
+  const assembled = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  if (expectedTotal !== null && assembled !== expectedTotal) {
+    throw new Error(`This image arrived as ${assembled} of ${expectedTotal} bytes.`);
+  }
+  const blob = new Blob(parts, { type: mime });
   return { url: URL.createObjectURL(blob), mime, total: assembled };
 }

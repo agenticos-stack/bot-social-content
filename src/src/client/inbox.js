@@ -6,7 +6,7 @@
 // filter membership, count and drawer all read the shared `itemPresentation`
 // roll-up from `model.js` — one policy, so a filed or published item can
 // never fall through to "drafting" again.
-import { itemPresentation, PHASE_FILTERS } from "../../model.js";
+import { generationMark, itemPresentation, PHASE_FILTERS } from "../../model.js";
 import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
@@ -273,24 +273,35 @@ function itemWhen(locale, batch, item) {
  * post without opening it; opening carries `{batch, batchItemId}` so the
  * drawer renders this post alone.
  */
-function itemCard(locale, batch, item, ctx, covers) {
-  const state = ctx.state;
-  const snapshot = item.caption ?? item.sourceText ?? "";
+function itemCard(locale, batch, item, state, ctx, covers) {
+  const phase = itemPhase(batch, item);
+  const pending = generationMark(item.generation);
+  const waiting = (phase === "queued" || phase === "regenerating") && pending;
+  // A queued/regenerating card shows what generation has NOT delivered yet —
+  // the source text and photo stay, but only ever labelled as reference,
+  // never dressed up as generated output (the same rule the drawer follows).
+  const waitingLabel = !pending?.needs?.image
+    ? t(locale, "cardWaitingCaption")
+    : !pending?.needs?.caption
+      ? t(locale, "posterPendingGeneration")
+      : t(locale, "cardWaitingPost");
+  const snapshot = waiting ? waitingLabel : item.caption ?? item.sourceText ?? "";
   const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   const selected = Boolean(state?.selected?.[item.batchItemId]);
   return renderPostCard(locale, {
     key: item.batchItemId,
     onOpen: () => ctx.handlers.onInspectBatch(batch, item.batchItemId),
     ariaLabel: snapshot.slice(0, 80) || t(locale, "inboxInspect"),
-    cover: item.coverMediaId ? { itemId: item.itemId, mediaId: item.coverMediaId } : null,
+    cover: !waiting && item.coverMediaId ? { itemId: item.itemId, mediaId: item.coverMediaId } : null,
     glyph: providerGlyph({ provider: item.provider, sourceBinding: item.sourceBinding }, ctx.sources),
     glyphKey: null,
     kicker: item.sourceLabel || t(locale, "drawerSavedWork"),
     title,
     // A one-line snapshot IS the title, in full -- printing it again below
     // as the body was defect 5. Only the part the title truncated or the
-    // later lines it dropped belong here.
-    body: snapshot === title ? "" : snapshot,
+    // later lines it dropped belong here. A waiting card's body is the
+    // SOURCE text — the reference the generation is working from.
+    body: waiting ? item.sourceText ?? "" : snapshot === title ? "" : snapshot,
     chip: itemChip(locale, batch, item),
     selectable: true,
     selected,
@@ -360,7 +371,9 @@ export function renderInbox(root, state, ctx) {
     // gets a card — the batch row itself, same post shape, no cover.
     if (!items.length) return [summaryCard(locale, batch, handlers)];
     const visible = items.filter((item) => itemInFilter(state, batch, item));
-    return visible.map((item) => itemCard(locale, batch, item, ctx, covers));
+    // `state` — not a ctx field — is what carries the authoritative selection
+    // model; a ctx copy used to go missing and every card drew unchecked.
+    return visible.map((item) => itemCard(locale, batch, item, state, ctx, covers));
   });
   root.appendChild(el("section", { class: "sl-inbox", "aria-label": t(locale, "appTitle") }, [
     el("div", { class: "sl-inbox-tabs", role: "group", "aria-label": t(locale, "inboxAll") }, filters.map(([key, label, count]) => el("button", { type: "button", "aria-pressed": String(state.filter === key), class: state.filter === key ? "sl-filter-active" : "", onclick: () => handlers.onInboxFilter(key) }, `${label}${typeof count === "number" && count > 0 ? ` ${count}` : ""}`))),

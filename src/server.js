@@ -87,6 +87,7 @@ import {
   normalizeLedger,
   applyProtectedOverridesToLedger,
   draftOrigin,
+  generationMark,
   itemPresentation,
 
   posterPngConstraints,
@@ -265,7 +266,9 @@ export class Gadget extends DurableObject {
     "listBatchSummaries",
     "readPublishState",
     "scanRuns",
-    "exportAs"
+    "exportAs",
+    "getGeneratedImage",
+    "pendingGeneratedImages"
   ];
 
   constructor(ctx, env) {
@@ -1515,8 +1518,15 @@ export class Gadget extends DurableObject {
       state: "drafting",
       // Per-item durable ask (schema 12): the batch mark is the roll-up; this
       // is what an item's queued phase reads and what scoped regeneration
-      // marks without touching its siblings.
-      generation: "requested"
+      // marks without touching its siblings. The mark carries the request
+      // identity and base revision so a later result can be correlated (or
+      // refused) against THIS ask.
+      generation: JSON.stringify({
+        id: generateId("gen"),
+        base: 0,
+        needs: { caption: true, image: true },
+        at: new Date().toISOString()
+      })
     });
     for (const binding of destinationBindings) {
       this.storage.boundPublication(batchItemId, binding);
@@ -1580,6 +1590,7 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
     const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
+    const generatedImage = this.storage.latestGeneratedMedia(batchItem.id);
     const publications = this.storage.publicationsFor(batchItem.id);
     const targets = batchItem.targets ?? [];
     // §9.A — one presentation policy everywhere. The phase reads live
@@ -1606,7 +1617,10 @@ export class Gadget extends DurableObject {
       targets,
       phase,
       deliveries,
-      generation: batchItem.generation ?? null,
+      // Parsed `{ id, base, needs }` — the client reads `needs` for the
+      // caption/image placeholders; the agent echoes `id` back as
+      // `generationRequest` so its save can be correlated to THIS ask.
+      generation: generationMark(batchItem.generation),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
@@ -1622,12 +1636,28 @@ export class Gadget extends DurableObject {
       // to see (and re-render) that rather than file a post that holds.
       posterStored: currentPoster !== null,
       posterMimeType: currentPoster ? posterMimeType(currentPoster.bytes).mimeType : null,
+      // The accepted AI-generated image for this post, when the
+      // attachment→gadget transfer delivered one. `ready` means its bytes
+      // are stored — `attachmentId` is the platform upload's identity.
+      generatedImage: generatedImage
+        ? {
+            id: generatedImage.id,
+            ready: generatedImage.bytes != null,
+            mimeType: generatedImage.mimeType,
+            altText: generatedImage.altText,
+            attachmentId: generatedImage.attachmentId,
+            deliveredAt: generatedImage.deliveredAt
+          }
+        : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
       originalMediaRefs: latest?.originalMediaRefs ?? [],
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
+      // The owner's explicit visual pick for the latest revision — NULL when
+      // none was ever recorded (see migration 15: NULL ≠ `keep_original`).
+      acceptedVisualMode: latest?.acceptedVisualMode ?? null,
       ledger: latest?.ledger ?? { spans: [], media: [] },
       state: batchItem.state,
       approval: batchItem.version
@@ -1686,8 +1716,13 @@ export class Gadget extends DurableObject {
             : "Every item in this batch has already been submitted."
         };
       }
-      this.storage.setGeneration(batch.id, draftable.map((item) => item.id));
-      return { ok: true, requested: draftable.map((item) => item.id) };
+      // One request id for this ask; each item stamps it plus the revision
+      // it was made against. A still-running older turn that saves later
+      // cannot satisfy or clear this newer request — see
+      // `satisfyItemGeneration`.
+      const request = generateId("gen");
+      this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request);
+      return { ok: true, request, requested: draftable.map((item) => item.id) };
     });
   }
 
@@ -1746,7 +1781,8 @@ export class Gadget extends DurableObject {
     derivedMediaRefs,
     publicationIntent,
     acceptedVisualMode,
-    ledger
+    ledger,
+    generationRequest
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -1766,6 +1802,7 @@ export class Gadget extends DurableObject {
     );
     if (
       acceptedVisualMode !== undefined &&
+      acceptedVisualMode !== null &&
       !["keep_original", "text_poster", "ai_refinement"].includes(acceptedVisualMode)
     ) {
       return {
@@ -1787,9 +1824,19 @@ export class Gadget extends DurableObject {
     const storedAllowed = normalizeRefinementBrief(config?.refinementBrief).allowedChanges;
     const brief = {
       ...refinement,
-      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change)),
-      ...(acceptedVisualMode ? { visualTreatment: acceptedVisualMode } : {})
+      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change))
     };
+    /*
+     * The owner's visual pick is its own revision field — NOT the brief's
+     * `visualTreatment`. `normalizeRefinementBrief` defaults that to
+     * `keep_original` for every brief, so a value stored there can never
+     * tell an explicit choice from no choice; `acceptedVisualMode` stays
+     * NULL on revisions saved before (or without) the picker, which is what
+     * lets submit keep their ship-the-stored-poster behaviour. Omitted
+     * carries the previous pick forward, like the caption; an explicit null
+     * clears it.
+     */
+    const visualMode = acceptedVisualMode === undefined ? (previous?.acceptedVisualMode ?? null) : acceptedVisualMode;
     const overrides =
       protectedOverrides === undefined
         ? (previous?.protectedOverrides ?? [])
@@ -1806,10 +1853,15 @@ export class Gadget extends DurableObject {
      */
     const layout = posterLayout === undefined ? (previous?.posterLayout ?? null) : posterLayout;
     const claims = confirmedClaims === undefined ? (previous?.confirmedClaims ?? []) : confirmedClaims;
+    // Omitted means carried for the caption too — a visual-mode-only save
+    // (accepting a generated image without touching copy) must not store a
+    // NULL caption over the reviewed one. Validation checks the text that
+    // will actually land.
+    const effectiveCaption = caption === undefined ? (previous?.caption ?? null) : caption;
 
     const validation = validateRevisionDraft({
       source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
-      draft: caption,
+      draft: effectiveCaption,
       brief,
       ledger: storedLedger,
       policy: {
@@ -1853,7 +1905,7 @@ export class Gadget extends DurableObject {
       derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
-      caption,
+      caption: effectiveCaption,
       posterLayout: layout,
       confirmedClaims: claims,
       issues: validation.issues,
@@ -1862,24 +1914,37 @@ export class Gadget extends DurableObject {
       originalMediaRefs: originals,
       derivedMediaRefs: derived,
       publicationIntent: intent.intent,
-      ledger: storedLedger
+      ledger: storedLedger,
+      acceptedVisualMode: visualMode
     });
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
-    // The saved revision IS the answer to this item's drafting ask — its own
-    // mark clears; the batch roll-up clears once nothing remains marked.
-    this.storage.clearItemGeneration(batchItemId);
+    // The saved revision answers this item's drafting ask — but only the
+    // parts it actually delivered, and only when correlated: a write that
+    // echoes the mark's own `generationRequest` id satisfies the caption
+    // need (and the image need when a layout came with it); a manual owner
+    // save (no request id) satisfies the caption alone — a pending image
+    // ask must never read as answered by a caption; a mismatched id is a
+    // stale result and satisfies nothing.
+    this.storage.satisfyItemGeneration(batchItemId, {
+      request: typeof generationRequest === "string" ? generationRequest : null,
+      needs: { caption: true, image: Boolean(layout) }
+    });
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
-    return { ok: true, revision: result.revision, issues: validation.issues };
+    // The surviving mark goes back with the ack: a caption save that left an
+    // image ask pending must not let the caller mirror `null` and read the
+    // post as fully drafted.
+    const remaining = generationMark(this.storage.getBatchItem(batchItemId)?.generation);
+    return { ok: true, revision: result.revision, issues: validation.issues, generation: remaining };
   }
 
   savePoster(args) {
     return this.enqueueMutation(() => this.savePosterLocked(args));
   }
 
-  async savePosterLocked({ batchItemId, expectedRevision, template, png }) {
+  async savePosterLocked({ batchItemId, expectedRevision, template, png, generationRequest }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
       return {
@@ -1958,16 +2023,144 @@ export class Gadget extends DurableObject {
       originalMediaRefs: previous?.originalMediaRefs ?? [],
       derivedMediaRefs: previous?.derivedMediaRefs ?? [],
       publicationIntent: previous?.publicationIntent ?? null,
-      ledger: previous?.ledger ?? { spans: [], media: [] }
+      ledger: previous?.ledger ?? { spans: [], media: [] },
+      // A poster materialization is not a visual-mode pick — carry the one
+      // the revision already holds so a re-render can't silently revert it.
+      acceptedVisualMode: previous?.acceptedVisualMode ?? null
     });
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.savePoster(batchItemId, result.revision, template, bytes);
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
-    this.storage.clearItemGeneration(batchItemId);
+    // Poster bytes are image output — they satisfy the mark's image need
+    // (correlated as above), never the caption.
+    this.storage.satisfyItemGeneration(batchItemId, {
+      request: typeof generationRequest === "string" ? generationRequest : null,
+      needs: { image: true }
+    });
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision };
+  }
+
+  // -----------------------------------------------------------------------
+  // generated images — the attachment→gadget acceptance contract
+  // -----------------------------------------------------------------------
+
+  /**
+   * The agent (or a platform transfer) names an image it generated for ONE
+   * batch item — `attachmentId` is the platform upload's identity, carried
+   * on the row through edit/reload/review/publication. NO BYTES arrive here:
+   * they follow through `deliverGeneratedImage`, fetched server-side by
+   * whoever holds the session credential (the dev host today; the shared
+   * contract door for installed gadgets), so the model's tool result never
+   * carries image payloads.
+   */
+  saveGeneratedImage(args) {
+    return this.enqueueMutation(() => this.saveGeneratedImageLocked(args));
+  }
+
+  async saveGeneratedImageLocked({ batchItemId, attachmentId, altText, mimeType, generationRequest }) {
+    const batchItem = this.storage.getBatchItem(batchItemId);
+    if (!batchItem || batchItem.active === false) {
+      return {
+        ok: false,
+        issues: [{ code: "batch_item_unknown", severity: "block", message: `No batch item ${batchItemId}.` }]
+      };
+    }
+    const id = generateId("gm");
+    this.storage.saveGeneratedMedia({
+      id,
+      batchItemId,
+      attachmentId: typeof attachmentId === "string" ? attachmentId : null,
+      altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
+      mimeType: typeof mimeType === "string" ? mimeType : null,
+      // The stamp is the item's CURRENT mark id, read here — a caller echoing
+      // an older request id cannot correlate its delivery to a newer ask.
+      generationRequest: generationMark(batchItem.generation)?.id ?? null
+    });
+    // Registering the asset does not satisfy the mark — only delivered
+    // bytes do (deliverGeneratedImage). The row just records WHICH upload
+    // answers the ask, so a later byte delivery can be correlated.
+    return { ok: true, id };
+  }
+
+  /** Registrations still waiting on bytes — the delivery sweep's read. */
+  async pendingGeneratedImages() {
+    return { pending: this.storage.pendingGeneratedMedia().map((row) => ({
+      id: row.id,
+      batchItemId: row.batchItemId,
+      attachmentId: row.attachmentId,
+      mimeType: row.mimeType,
+      createdAt: row.createdAt
+    })) };
+  }
+
+  /**
+   * Deliver the bytes for a registered generated image. Sniffed, never the
+   * caller's say-so — the same admission rule savePoster runs. A correlated
+   * delivery satisfies the item's `needs.image` mark; a stale or uncorrelated
+   * one still stores the bytes (the owner may keep them) but clears nothing.
+   */
+  deliverGeneratedImage(args) {
+    return this.enqueueMutation(() => this.deliverGeneratedImageLocked(args));
+  }
+
+  async deliverGeneratedImageLocked({ id, png, bytes, mimeType, generationRequest }) {
+    const row = this.storage.getGeneratedMedia(String(id ?? ""));
+    if (!row) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_unknown", severity: "block", message: `No generated image ${id}.` }]
+      };
+    }
+    const payload = toBytes(bytes ?? png);
+    if (!payload) {
+      return {
+        ok: false,
+        issues: [{ code: "invalid_argument", severity: "block", message: "deliverGeneratedImage needs image bytes (Uint8Array, ArrayBuffer or base64 string)." }]
+      };
+    }
+    const format = isPngSignature(payload) ? "image/png" : isJpegSignature(payload) ? "image/jpeg" : null;
+    if (!format) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_not_image", severity: "block", message: "The delivered file is not a PNG or JPEG image." }]
+      };
+    }
+    const stored = this.storage.deliverGeneratedMedia(row.id, { bytes: payload, mimeType: format });
+    /*
+     * Correlation rides on the STORED stamp, never a caller's echo: the
+     * registration recorded which ask it answered, and a delivery clears
+     * `needs.image` only when that ask is still the item's current one. A
+     * registration made with no ask pending — or delivered after its ask
+     * was superseded — keeps its bytes but touches no mark.
+     */
+    if (row.generationRequest) {
+      this.storage.satisfyItemGeneration(row.batchItemId, {
+        request: row.generationRequest,
+        needs: { image: true }
+      });
+    }
+    const batchItem = this.storage.getBatchItem(row.batchItemId);
+    if (batchItem) this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
+    await this.broadcast({ type: "generated_image", batchItemId: row.batchItemId, generatedMediaId: row.id });
+    return { ok: true, id: row.id, byteLength: stored?.byteLength ?? payload.byteLength };
+  }
+
+  /**
+   * Serve stored generated-image bytes to the client, chunked like
+   * `getMedia` — the same response shape `loadMediaAsBlobUrl` assembles.
+   */
+  async getGeneratedImage(id, options = {}) {
+    const row = this.storage.getGeneratedMedia(String(id ?? ""));
+    if (!row || !row.bytes) return { ok: false, code: "media_missing", message: `No stored image for ${id}.` };
+    const chunkIndex = Number.isInteger(options?.chunk) ? options.chunk : 0;
+    const chunkBytes = PREVIEW_CHUNK_BYTES;
+    const total = row.bytes.byteLength;
+    const chunks = Math.max(1, Math.ceil(total / chunkBytes));
+    const start = chunkIndex * chunkBytes;
+    return { mime: row.mimeType ?? "image/png", total, chunk: chunkIndex, chunks, bytes: row.bytes.slice(start, start + chunkBytes) };
   }
 
   /**
@@ -2123,8 +2316,88 @@ export class Gadget extends DurableObject {
       fallbackAltText: sourceMediaAltText(sourceItem)
     });
     let posterShipped = false;
+    /*
+     * An accepted AI-generated image is the visual when this revision was
+     * saved under `ai_refinement` — it ships exactly like a stored poster
+     * (bytes → `uploadMedia` → publisher-addressable URL), with the same
+     * JPEG-only destination rule applied to whatever format was delivered.
+     * `ai_refinement` chosen but no bytes delivered is not "fine": for an
+     * open source that is the same refusal the missing poster gets.
+     */
+    const generatedImage = this.storage.latestGeneratedMedia(batchItemId);
+    const wantsGenerated = revision.acceptedVisualMode === "ai_refinement";
+    if (wantsGenerated && generatedImage?.bytes) {
+      const { mimeType, extension } = posterMimeType(generatedImage.bytes);
+      const jpegOnly = bindings.some((binding) =>
+        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+      );
+      if (jpegOnly && mimeType !== "image/jpeg") {
+        return {
+          ok: false,
+          code: "generated_image_format_stale",
+          message:
+            "The generated image is a PNG, which Instagram's publish container rejects — re-deliver it as JPEG and submit again."
+        };
+      }
+      try {
+        const uploaded = await socialUploadMedia(this.env, {
+          dataBase64: bytesToBase64(generatedImage.bytes),
+          mimeType,
+          filename: `generated-${batchItemId}-r${revision.revision}.${extension}`
+        });
+        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
+          packedMedia = {
+            ok: true,
+            media: [
+              {
+                assetId: uploaded.assetId,
+                url: uploaded.url,
+                kind: "image",
+                // The accepted asset's own alt text is the description;
+                // absent, fall back to the post's source description.
+                altText: generatedImage.altText || sourceMediaAltText(sourceItem),
+                mimeType: uploaded.mimeType ?? mimeType,
+                byteSize: uploaded.byteSize ?? generatedImage.byteLength,
+                width: null,
+                height: null
+              }
+            ]
+          };
+          posterShipped = true;
+        } else {
+          warnings.push({
+            code: "generated_image_not_shipped",
+            message: isDoorRefusal(uploaded) ? uploaded.message : "The generated image upload did not return a publisher-addressable URL — the post carries the source media."
+          });
+        }
+      } catch (error) {
+        warnings.push({
+          code: "generated_image_not_shipped",
+          message: `The generated image could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
+        });
+      }
+    } else if (wantsGenerated && !generatedImage?.bytes) {
+      if (isOpenSource) {
+        return {
+          ok: false,
+          code: "generated_image_required",
+          message: "This post was saved under generated-image mode but no generated image has been delivered — deliver it or save a different visual mode before submitting."
+        };
+      }
+      warnings.push({
+        code: "generated_image_missing",
+        message: "Generated-image mode was chosen but no image bytes are stored — the post carries the source media."
+      });
+    }
     const poster = this.storage.getPoster(batchItemId, revision.revision);
-    if (poster) {
+    // The visual pick is real: `keep_original` ships the source media even
+    // when a poster exists — the drawer's "Source media" pick would be a lie
+    // otherwise. A revision with no recorded pick (NULL — legacy saves and
+    // agent writes that never named a mode) keeps the ship-when-stored
+    // behaviour it was reviewed under.
+    const visualMode = revision.acceptedVisualMode ?? null;
+    const wantsPoster = visualMode !== "ai_refinement" && visualMode !== "keep_original";
+    if (poster && !posterShipped && wantsPoster) {
       // The stored bytes carry their format — sniffed, never assumed: a
       // JPEG renders for Instagram's container, a PNG still ships where a
       // destination accepts it.
@@ -2194,7 +2467,7 @@ export class Gadget extends DurableObject {
           message: `The poster could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
         });
       }
-    } else if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
+    } else if (wantsPoster && revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
       warnings.push({
         code: "poster_not_shipped",
         message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
@@ -2204,7 +2477,7 @@ export class Gadget extends DurableObject {
       return {
         ok: false,
         code: "poster_required",
-        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs the generated poster. Render the poster for this post, or publish from an account you own."
+        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs a generated visual (the text poster or an accepted generated image). Produce one for this post, or publish from an account you own."
       };
     }
     if (!packedMedia.ok) {

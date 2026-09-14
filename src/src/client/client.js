@@ -31,11 +31,11 @@ import {
 import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { classifyRefreshOutcome } from "../../refresh-outcome.js";
-import { createRpc, loadMediaAsBlobUrl } from "./rpc.js";
+import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { computePosterLayout, drawPoster, renderPosterImage } from "./poster.js";
-import { confirmUnsavedNavigation } from "./navigation.js";
-import { detectProtectedLiterals, itemPresentation } from "../../model.js";
+import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
+import { detectProtectedLiterals, generationMark, itemPresentation } from "../../model.js";
 import {
   clearInboxSelection,
   createInboxState,
@@ -923,14 +923,24 @@ function App() {
     let items = Array.isArray(batch.items) ? batch.items : [];
     let activeId = items.find((item) => item.id === itemId)?.id ?? items[0]?.id ?? null;
     const activeItem = () => items.find((item) => item.id === activeId) ?? null;
+    // Always recompute — a cached `item.phase` taken before a save left a
+    // saved draft labelled "queued" once its generation mark cleared.
     const phaseOf = (item) =>
-      item?.phase ?? itemPresentation({ state: item?.state, revision: item?.revision ?? 0, generation: item?.generation }).phase;
+      itemPresentation({
+        state: item?.state,
+        revision: item?.revision ?? 0,
+        generation: item?.generation,
+        publications: item?.publications ?? [],
+        targets: item?.targets ?? []
+      }).phase;
 
     // Unsaved caption text survives sibling switches inside this drawer and
     // never leaves it — a post's buffer is only committed by that post's own
     // Save/Review, or by the close guard's explicit "save and leave".
     const draftCaptions = new Map(); // batchItemId -> unsaved caption text
     const itemNotes = new Map();     // batchItemId -> live note element (current render)
+    const visualChoices = new Map(); // batchItemId -> staged visualTreatment the owner picked
+    const generatedUrls = new Map(); // generatedMediaId -> live blob: URL (revoked on redraw/close)
     const stages = [];
     let closing = false;
     let saving = false;
@@ -973,14 +983,31 @@ function App() {
     };
 
     /**
+     * The pick the drawer DISPLAYS for a revision that never recorded one:
+     * what submit would actually ship — a stored poster when bytes exist at
+     * this revision, else the source media. `acceptedVisualMode` NULL is
+     * "nobody picked", not "keep_original" (migration 15), so defaulting the
+     * radio to the shipping answer keeps the checked box truthful.
+     */
+    const displayedVisual = (item) =>
+      item?.acceptedVisualMode ?? (item?.posterStored ? "text_poster" : "keep_original");
+
+    /**
      * Poster bytes exist only when the client renders them — render and
      * persist them for ONE item. A stored poster in a format the renderer
      * no longer produces (a PNG saved before the JPEG switch) is
      * re-rendered here rather than filed into a provider hold.
      */
     const materializePoster = async (item) => {
-      if (!item.posterLayout) return { ok: true };
-      if (item.posterStored && item.posterMimeType === "image/jpeg") return { ok: true };
+      // Only a revision whose visual pick ships the poster needs poster
+      // bytes — materializing one for `ai_refinement`/`keep_original` would
+      // append a revision carrying pixels the post will never use. No pick
+      // recorded (null) keeps the legacy ship-the-stored-poster behaviour.
+      if (item.acceptedVisualMode === "ai_refinement" || item.acceptedVisualMode === "keep_original") {
+        return { ok: true, revision: item.revision ?? 0 };
+      }
+      if (!item.posterLayout) return { ok: true, revision: item.revision ?? 0 };
+      if (item.posterStored && item.posterMimeType === "image/jpeg") return { ok: true, revision: item.revision ?? 0 };
       let png;
       try {
         png = await renderPosterImage(item.posterLayout.template, {
@@ -996,14 +1023,27 @@ function App() {
         template: item.posterLayout.template, png
       });
       if (stored && stored.ok === false) return { ok: false, refusal: stored };
-      return { ok: true };
+      return { ok: true, revision: stored?.revision ?? null };
     };
 
     /** One `saveRevisions` for the named items only. Per-item issues land on that item's own note line. */
     const saveItems = async (ids) => {
       const dirty = ids
-        .map((idToSave) => ({ item: items.find((entry) => entry.id === idToSave), caption: draftCaptions.get(idToSave) }))
-        .filter((entry) => entry.item && entry.caption !== undefined && entry.caption !== (entry.item.caption || ""));
+        .map((idToSave) => {
+          const item = items.find((entry) => entry.id === idToSave);
+          const caption = draftCaptions.get(idToSave);
+          const visual = visualChoices.get(idToSave);
+          // Compare against what the radio showed — an item with no recorded
+          // pick displays the mode its content would actually ship under, so
+          // re-picking the displayed choice sends nothing.
+          const currentVisual = item ? displayedVisual(item) : "keep_original";
+          return {
+            item,
+            caption: caption !== undefined && caption !== (item?.caption || "") ? caption : undefined,
+            visual: visual !== undefined && visual !== currentVisual ? visual : undefined
+          };
+        })
+        .filter((entry) => entry.item && (entry.caption !== undefined || entry.visual !== undefined));
       if (!dirty.length) return true;
       saving = true;
       for (const entry of dirty) {
@@ -1015,7 +1055,8 @@ function App() {
           revisions: dirty.map((entry) => ({
             batchItemId: entry.item.id,
             expectedRevision: entry.item.revision,
-            caption: entry.caption
+            ...(entry.caption !== undefined ? { caption: entry.caption } : {}),
+            ...(entry.visual !== undefined ? { acceptedVisualMode: entry.visual } : {})
           }))
         });
         let allOk = true;
@@ -1024,10 +1065,16 @@ function App() {
           const note = itemNotes.get(entry.item.id);
           if (one?.ok) {
             entry.item.revision = one.revision;
-            entry.item.caption = entry.caption;
-            // The server clears the item's generation mark on save — mirror
-            // it so the phase stops reading as queued without a refetch.
-            entry.item.generation = null;
+            if (entry.caption !== undefined) entry.item.caption = entry.caption;
+            if (entry.visual !== undefined) {
+              entry.item.acceptedVisualMode = entry.visual;
+              visualChoices.delete(entry.item.id);
+            }
+            // The server may keep a partial mark (a pending image ask is not
+            // answered by a caption) — mirror whatever it reports, and drop
+            // the cached phase so it recomputes off the new fields.
+            entry.item.generation = one.generation ?? null;
+            entry.item.phase = null;
             draftCaptions.delete(entry.item.id);
             if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
           } else {
@@ -1047,37 +1094,90 @@ function App() {
     const dirtyItemIds = () =>
       items.filter((item) => {
         const draft = draftCaptions.get(item.id);
-        return draft !== undefined && draft !== (item.caption || "");
+        if (draft !== undefined && draft !== (item.caption || "")) return true;
+        const visual = visualChoices.get(item.id);
+        return visual !== undefined && visual !== displayedVisual(item);
       }).map((item) => item.id);
+
+    /**
+     * The one exit guard every drawer dismissal runs — Close, Escape,
+     * Review and Re-draft all call it. Dirty buffers are an explicit
+     * keep/discard/save decision: reviewing one post can never silently
+     * save or discard another's edits, and a failed save keeps the editor
+     * and its text.
+     */
+    const requestExit = async () => {
+      if (closing || saving) return false;
+      const dirty = dirtyItemIds();
+      if (!dirty.length) return true;
+      const decision = await confirmUnsavedNavigation(leaveDialog, locale);
+      if (decision === "keep") return false;
+      if (decision === "save" && !(await saveItems(dirty))) return false;
+      // "discard" must actually drop the buffers — leaving them would let a
+      // later saveItems (e.g. Review's own) resurrect text the owner chose
+      // to throw away. The staged visual choice is part of the same buffer.
+      if (decision === "discard") for (const id of dirty) {
+        draftCaptions.delete(id);
+        visualChoices.delete(id);
+      }
+      return true;
+    };
 
     /**
      * Review this ONE post: save its caption if dirty, materialize its
      * poster bytes when missing or stale, then resume the wizard on the
-     * FINAL acknowledged revision. The refetch after savePoster is the
-     * stale-snapshot fix — resuming on the pre-poster batch carried a
-     * revision the stored poster did not belong to.
+     * FINAL acknowledged revision. The refetch after savePoster is a
+     * REQUIRED read — an acknowledged revision-2 poster can never enter
+     * review as revision 1, so a lost response keeps the drawer open with
+     * an explanation rather than handing the wizard a stale snapshot.
+     * "Review post" IS the retry: it re-reads canonical state and never
+     * duplicates a save or a submission.
      */
     const reviewPost = async (item) => {
       if (saving) return;
+      if (!(await requestExit())) return;
       if (!(await saveItems([item.id]))) return;
+      const note = () => itemNotes.get(item.id);
+      const readFailed = () => {
+        const line = note();
+        if (line) line.textContent = t(locale, "drawerReviewReadFailed");
+        announce(t(locale, "drawerReviewReadFailed"), "");
+      };
       let fresh;
       try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
       let current = fresh?.items?.find((entry) => entry.id === item.id);
-      if (!current || !isEditableItem(current)) {
+      if (!current) { readFailed(); return; }
+      if (!isEditableItem(current)) {
+        // Filed (or retired) while the owner looked — refresh the drawer to
+        // the canonical rows rather than review a post that no longer edits.
+        items = fresh.items;
+        redraw();
         announce(t(locale, "batchUnavailable"), "");
         return;
       }
       const materialized = await materializePoster(current);
       if (!materialized.ok) {
-        announce(materialized.refusal ? refusalMessage(materialized.refusal) : materialized.error?.message ?? t(locale, "genericError"), "");
+        const message = materialized.refusal ? refusalMessage(materialized.refusal) : materialized.error?.message ?? t(locale, "genericError");
+        const line = note();
+        if (line) line.textContent = message;
+        announce(message, "");
         return;
       }
-      try { fresh = await rpc.getBatch(batch.id); } catch { /* keep the pre-poster read */ }
-      current = fresh?.items?.find((entry) => entry.id === item.id) ?? current;
-      draftCaptions.clear();
+      try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
+      current = fresh?.items?.find((entry) => entry.id === item.id) ?? null;
+      // The wizard gets the read AFTER the poster write — never the
+      // pre-poster snapshot, and never a revision older than the write that
+      // was just acknowledged.
+      if (!current || (materialized.revision != null && (current.revision ?? 0) < materialized.revision)) {
+        readFailed();
+        return;
+      }
+      draftCaptions.delete(item.id);
+      closing = true;
       batchDialog.close();
-      wizard = resumeBatch(wizard, { ...(fresh ?? {}), id: batch.id, items: [current] });
+      wizard = resumeBatch(wizard, { ...fresh, id: batch.id, items: [current] });
       if (!wizard.batch?.items?.length) {
+        closing = false;
         announce(t(locale, "batchUnavailable"), "");
         return;
       }
@@ -1089,18 +1189,12 @@ function App() {
     };
 
     const requestClose = async () => {
-      if (closing || saving) return;
-      const dirty = dirtyItemIds();
-      if (!dirty.length) {
-        closing = true;
-        batchDialog.close();
-        return;
-      }
-      const decision = await confirmUnsavedNavigation(leaveDialog, locale);
-      if (decision === "keep") return;
-      if (decision === "save" && !(await saveItems(dirty))) return;
+      if (!(await requestExit())) return;
       closing = true;
       draftCaptions.clear();
+      visualChoices.clear();
+      for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
+      generatedUrls.clear();
       batchDialog.close();
     };
 
@@ -1174,6 +1268,8 @@ function App() {
 
     const redraw = () => {
       for (const mediaStage of stages.splice(0)) mediaStage.dispose();
+      for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
+      generatedUrls.clear();
       itemNotes.clear();
       const item = activeItem();
       if (!item) {
@@ -1203,15 +1299,132 @@ function App() {
 
       // Generated output — PRIMARY. A missing layout or a not-yet-drafted
       // item gets an explicit pending slot; the source photo never stands
-      // in as output.
+      // in as output. An accepted AI-generated image is a real alternative
+      // visual: the owner picks which ships (`acceptedVisualMode` on the
+      // revision), and the choice persists through the same saveRevisions
+      // path as the caption.
       const poster = posterCanvas(item);
+      const generated = item.generatedImage ?? null;
+      const currentVisual = visualChoices.get(item.id) ?? displayedVisual(item);
+      const mediaSlot = el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${item.posterLayout?.template === "1080x1080" ? "1 / 1" : "4 / 5"}; max-width: 320px;` });
+      if (currentVisual === "ai_refinement" && generated?.ready) {
+        const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
+        const forId = generated.id;
+        loadGeneratedImageAsBlobUrl(rpc, forId)
+          .then(async ({ url, mime }) => {
+            generatedUrls.set(forId, url);
+            img.src = url;
+            /*
+             * JPEG conversion at the one place a canvas exists: Instagram's
+             * publish container rejects PNG, and the agent-side attachment
+             * pipeline delivers whatever format the image tool produced. When
+             * a bound destination is JPEG-only and the stored bytes are PNG,
+             * convert through the canvas and re-deliver — the stored asset is
+             * then the file that can actually ship, not just the file that
+             * arrived. A conversion failure leaves the delivered PNG on
+             * screen; submit's format refusal is the backstop, not this.
+             */
+            const jpegOnly = (item.destinationBindings ?? []).some((binding) =>
+              (summary?.destinations ?? []).some((d) => (d.destinationBinding ?? d.binding) === binding && d.provider === "instagram"));
+            if (!jpegOnly || mime !== "image/png") return;
+            try {
+              const jpegBlob = await new Promise((resolveConvert, rejectConvert) => {
+                const probe = new Image();
+                probe.onload = () => {
+                  const canvas = document.createElement("canvas");
+                  canvas.width = probe.naturalWidth;
+                  canvas.height = probe.naturalHeight;
+                  const ctx = canvas.getContext("2d");
+                  if (!ctx) { rejectConvert(new Error("no 2d context")); return; }
+                  ctx.drawImage(probe, 0, 0);
+                  canvas.toBlob((result) => (result ? resolveConvert(result) : rejectConvert(new Error("canvas.toBlob returned no blob"))), "image/jpeg", 0.92);
+                };
+                probe.onerror = () => rejectConvert(new Error("generated image did not decode"));
+                probe.src = url;
+              });
+              const buffer = await jpegBlob.arrayBuffer();
+              const redelivered = await rpc.deliverGeneratedImage({ id: forId, bytes: new Uint8Array(buffer), mimeType: "image/jpeg" });
+              if (redelivered?.ok) generated.mimeType = "image/jpeg";
+            } catch (error) {
+              console.error("generated image JPEG conversion failed:", error);
+            }
+          })
+          .catch(() => {
+            img.replaceWith(el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedImageFailed")));
+          });
+        replace(mediaSlot, [img]);
+      } else if (currentVisual === "ai_refinement" && generated) {
+        replace(mediaSlot, [el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedPending"))]);
+      } else if (currentVisual === "keep_original") {
+        replace(mediaSlot, [el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerVisualSource"))]);
+      } else {
+        replace(mediaSlot, [poster || el("span", { class: "sl-pc-media-empty" }, t(locale, isQueued ? "posterPendingGeneration" : "posterPending"))]);
+      }
+      const visualPicker = generated || item.posterLayout
+        ? el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "drawerVisualChoice") }, [
+            generated
+              ? el("label", { class: "sl-dest-row" }, [
+                  el("input", {
+                    type: "radio",
+                    name: `visual-${item.id}`,
+                    checked: currentVisual === "ai_refinement",
+                    disabled: !generated.ready || !editable || saving,
+                    onchange: () => {
+                      visualChoices.set(item.id, "ai_refinement");
+                      redraw();
+                    }
+                  }),
+                  t(locale, "drawerVisualGenerated"),
+                  generated.ready ? null : el("span", { class: "sl-dest-tag" }, t(locale, "drawerGeneratedPendingTag"))
+                ])
+              : null,
+            item.posterLayout
+              ? el("label", { class: "sl-dest-row" }, [
+                  el("input", {
+                    type: "radio",
+                    name: `visual-${item.id}`,
+                    checked: currentVisual === "text_poster",
+                    disabled: !editable || saving,
+                    onchange: () => {
+                      visualChoices.set(item.id, "text_poster");
+                      redraw();
+                    }
+                  }),
+                  t(locale, "drawerVisualPoster")
+                ])
+              : null,
+            el("label", { class: "sl-dest-row" }, [
+              el("input", {
+                type: "radio",
+                name: `visual-${item.id}`,
+                checked: currentVisual === "keep_original",
+                disabled: !editable || saving,
+                onchange: () => {
+                  visualChoices.set(item.id, "keep_original");
+                  redraw();
+                }
+              }),
+              t(locale, "drawerVisualSourceOption")
+            ])
+          ])
+        : null;
       const outputSection = el("section", { class: "sl-drawer-section" }, [
         el("h3", null, t(locale, "drawerGeneratedOutput")),
-        el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${item.posterLayout?.template === "1080x1080" ? "1 / 1" : "4 / 5"}; max-width: 320px;` }, [
-          poster || el("span", { class: "sl-pc-media-empty" }, t(locale, isQueued ? "posterPendingGeneration" : "posterPending"))
-        ]),
+        mediaSlot,
+        visualPicker,
+        generated?.ready && generated.altText
+          ? el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: generated.altText }))
+          : null,
         isQueued
-          ? el("p", { class: "sl-field-note", role: "status" }, t(locale, phase === "regenerating" ? "drawerRegeneratingNote" : "drawerWaitingNote"))
+          ? el("p", { class: "sl-field-note", role: "status" }, (() => {
+              // Caption-ready vs image-ready are different states: a saved
+              // caption with a pending image asks must not read as "still
+              // queued for everything".
+              const mark = generationMark(item.generation);
+              if (mark && mark.needs.image && !mark.needs.caption) return t(locale, "drawerWaitingImageNote");
+              if (mark && !mark.needs.image && mark.needs.caption) return t(locale, "drawerWaitingCaptionNote");
+              return t(locale, phase === "regenerating" ? "drawerRegeneratingNote" : "drawerWaitingNote");
+            })())
           : null,
         editable
           ? el("div", null, [
@@ -1291,6 +1504,9 @@ function App() {
             el("button", {
               type: "button", class: "sl-secondary sl-drawer-regen",
               onclick: async () => {
+                // Same exit guard as Close/Review — a re-draft that drops a
+                // dirty caption without asking is the audit's defect 2.
+                if (!(await requestExit())) return;
                 try {
                   const result = await rpc.requestGeneration(batch.id, [item.id]);
                   if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
@@ -1298,6 +1514,8 @@ function App() {
                   announce(error instanceof Error ? error.message : String(error), "");
                   return;
                 }
+                closing = true;
+                draftCaptions.clear();
                 batchDialog.close();
                 announce(t(locale, "drawerRegenerateNote"), "");
                 try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
@@ -1574,39 +1792,57 @@ function App() {
     const entries = selectedInboxItems(inboxState);
     if (!entries.length) return;
     const batchCache = new Map();
-    const fetchBatch = async (batchId) => {
+    const fetchBatch = async (batchId, fresh = false) => {
+      if (fresh) batchCache.delete(batchId);
       if (!batchCache.has(batchId)) {
         batchCache.set(batchId, await rpc.getBatch(batchId).catch(() => null));
       }
       return batchCache.get(batchId);
     };
+    const labelOf = (entry, item) => item?.sourceItem?.sourceLabel || entry.itemId || entry.batchItemId;
     const eligible = [];
     const blocked = [];
     for (const entry of entries) {
       const containing = await fetchBatch(entry.batchId);
       const item = containing?.items?.find((candidate) => candidate.id === entry.batchItemId);
-      const label = item?.sourceItem?.sourceLabel || entry.itemId || entry.batchItemId;
       if (!item || item.active === false) {
-        blocked.push(t(locale, "reviewBlockedUnavailable", { name: label }));
+        blocked.push(t(locale, "reviewBlockedUnavailable", { name: labelOf(entry, item) }));
       } else if (!isEditableItem(item)) {
-        blocked.push(t(locale, "reviewBlockedFiled", { name: label }));
+        blocked.push(t(locale, "reviewBlockedFiled", { name: labelOf(entry, item) }));
       } else if ((item.revision ?? 0) === 0) {
-        blocked.push(t(locale, "reviewBlockedNoDraft", { name: label }));
+        blocked.push(t(locale, "reviewBlockedNoDraft", { name: labelOf(entry, item) }));
       } else {
         eligible.push({ batchId: entry.batchId, item });
       }
     }
     if (!eligible.length) {
+      // Nothing proceeds — and the selection stays exactly as the owner
+      // left it, so a retry after fixing the blocked posts is one click.
       inboxState = setInboxNotice(inboxState, t(locale, "reviewNoneEligible", { total: entries.length, names: blocked.join(" · ") }));
       renderCurrentView();
       return;
     }
+    if (blocked.length) {
+      // Mixed eligibility is an explicit decision, never a silent
+      // narrowing: name the blocked posts, then let the owner confirm the
+      // eligible subset actually proceeds.
+      const decision = await confirmReviewSubset(leaveDialog, locale, {
+        ready: eligible.length,
+        total: entries.length,
+        blocked
+      });
+      if (decision !== "proceed") return;
+    }
     // Poster bytes must exist before submit — materialize them here, per
     // item, then re-read so each post's Publish card carries the revision
     // the stored poster actually belongs to (the stale-snapshot fix, on the
-    // bulk path).
+    // bulk path). `acknowledged` records the revision each write returned.
+    const acknowledged = new Map();
     for (const { batchId, item } of eligible) {
-      if (!item.posterLayout || (item.posterStored && item.posterMimeType === "image/jpeg")) continue;
+      if (!item.posterLayout || (item.posterStored && item.posterMimeType === "image/jpeg")) {
+        acknowledged.set(item.id, item.revision ?? 0);
+        continue;
+      }
       try {
         const png = await renderPosterImage(item.posterLayout.template, {
           headline: item.posterLayout.headline, subline: item.posterLayout.subline,
@@ -1621,28 +1857,44 @@ function App() {
           announce(refusalMessage(stored), "");
           return;
         }
-        batchCache.delete(batchId);
+        acknowledged.set(item.id, stored?.revision ?? null);
       } catch (error) {
         announce(error instanceof Error ? error.message : String(error), "");
         return;
       }
     }
+    // Final reads are REQUIRED — an acknowledged poster write must never
+    // enter review as the revision before it. An item that cannot be
+    // re-read (or rereads older than its own acknowledged write) stays
+    // selected with an explicit reason rather than silently dropping out.
     const items = [];
+    const lost = [];
     for (const { batchId, item } of eligible) {
-      const containing = await fetchBatch(batchId);
+      const containing = await fetchBatch(batchId, true);
       const fresh = containing?.items?.find((candidate) => candidate.id === item.id);
-      if (fresh && isEditableItem(fresh) && (fresh.revision ?? 0) > 0) items.push(fresh);
+      const floor = acknowledged.get(item.id);
+      if (fresh && isEditableItem(fresh) && (fresh.revision ?? 0) > 0 && (floor == null || (fresh.revision ?? 0) >= floor)) {
+        items.push({ ...fresh, batchId });
+      } else {
+        lost.push({ batchItemId: item.id, reason: t(locale, "reviewReadFailed", { name: labelOf({ batchItemId: item.id, itemId: item.itemId }, item) }) });
+      }
     }
     if (!items.length) {
-      inboxState = setInboxNotice(inboxState, t(locale, "reviewNoneEligible", { total: entries.length, names: blocked.join(" · ") }));
+      inboxState = setInboxNotice(inboxState, t(locale, "reviewNoneEligible", { total: entries.length, names: [...blocked, ...lost.map((entry) => entry.reason)].join(" · ") }));
       renderCurrentView();
       return;
     }
-    inboxState = clearInboxSelection(inboxState);
-    inboxState = setInboxNotice(inboxState, null);
-    if (blocked.length) announce(t(locale, "reviewPartialNotice", { n: items.length, blocked: blocked.join(" · ") }), "");
+    // Only the posts actually entering review leave the selection; blocked
+    // and unreadable ones stay selected so the owner can retry them.
+    const entered = new Set(items.map((item) => item.id));
+    let next = { ...inboxState.selected };
+    for (const id of Object.keys(next)) if (entered.has(id)) delete next[id];
+    inboxState = { ...inboxState, selected: next, notice: null };
+    if (lost.length || blocked.length) {
+      announce(t(locale, "reviewPartialNotice", { n: items.length, blocked: [...blocked, ...lost.map((entry) => entry.reason)].join(" · ") }), "");
+    }
     // The wizard's batch.id is only the fallback for items missing their
-    // own batchId — every projected item carries one now.
+    // own batchId — every projected item carries its own through.
     wizard = resumeBatch(wizard, { id: items[0].batchId, items });
     if (!wizard.batch?.items?.length) {
       announce(t(locale, "batchUnavailable"), "");
