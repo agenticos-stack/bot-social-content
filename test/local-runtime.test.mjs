@@ -112,7 +112,7 @@ test('browser bridge carries image bytes to generated and derived image saves', 
     // that, and over the local session's 64 KB request cap.
     assert.ok(Math.max(...sent) < png.byteLength * 1.5, `largest request ${Math.max(...sent)} bytes`);
   } finally {
-    await session?.close?.();
+    await session?.dispose();
     await rm(root, {recursive:true, force:true});
   }
 });
