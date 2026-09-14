@@ -269,6 +269,8 @@ export function submitItemEnabled(state, batchItemId, policy, destinations = [])
   if (!item || state.submitting || state.submittingByItem?.[batchItemId]) return false;
   if (state.conflicts && Object.hasOwn(state.conflicts, batchItemId)) return false;
   if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
+  // A generated image that has not landed cannot be what the owner approves.
+  if (generatedVisualBlocked(item, state.drafts[batchItemId])) return false;
   // A destination the summary no longer offers — or still lists but whose
   // grant the server has read as gone — is not a choice the picker could
   // have made: a binding left over from a since-revoked destination counts
@@ -676,6 +678,34 @@ function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
  * Returns `null` when the item has no poster layout yet, so the caller can
  * fall back to an identifying line instead of an empty box.
  */
+/** The visual mode a revision files: the owner's draft pick, else what was saved. */
+export function acceptedVisualOf(item, draft) {
+  return draft?.acceptedVisualMode ?? item?.acceptedVisualMode ?? (item?.posterStored ? "text_poster" : "keep_original");
+}
+
+/** True when the accepted visual is a generated image whose bytes are not stored yet. */
+export function generatedVisualBlocked(item, draft) {
+  return acceptedVisualOf(item, draft) === "ai_refinement" && item?.generatedImage?.ready !== true;
+}
+
+function acceptedVisualNode(locale, item, draft, handlers) {
+  const mode = acceptedVisualOf(item, draft);
+  if (mode === "ai_refinement") {
+    const generated = item.generatedImage;
+    if (generated?.ready !== true || typeof handlers?.loadGeneratedImage !== "function") {
+      return el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "reviewGeneratedNotReady"));
+    }
+    const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
+    handlers
+      .loadGeneratedImage(generated.id)
+      .then(({ url }) => { img.src = url; })
+      .catch(() => img.replaceWith(el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedImageFailed"))));
+    return img;
+  }
+  if (mode === "keep_original") return el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerVisualSource"));
+  return posterCanvas(locale, item);
+}
+
 function posterCanvas(locale, item) {
   const layout = item.posterLayout;
   if (!layout?.template) return null;
@@ -795,7 +825,10 @@ export function renderPublish(root, state, ctx) {
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
     const enabled = submitItemEnabled(state, item.id, policy, destinations);
-    const poster = posterCanvas(locale, item);
+    // F03: the slot shows the visual this revision will FILE — the accepted
+    // generated image when that is the choice — not whatever poster layout
+    // happens to exist. The drawer and review read the same field.
+    const poster = acceptedVisualNode(locale, item, state.drafts[item.id], handlers);
     // The slot keeps the ratio it ships in whether or not a poster exists
     // yet, so the caption beside it does not jump as the owner moves
     // between posts. 1080x1080 is the only square template; every other
@@ -813,7 +846,10 @@ export function renderPublish(root, state, ctx) {
             // Revision 0 is not a version an owner has -- it means nothing
             // has been saved yet. "Version 0" reads like a debug line; say
             // what it means instead. 1 and up keep "Version {n}".
-            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "inboxNoSavedRevision"))
+            // A bound row with revision 0 has never been filed here. That is a
+            // fact about this destination, not about the post, which may well
+            // have saved revisions.
+            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "publishNotSubmittedHere"))
           ]),
           stateBadge(locale, outcome),
           target?.receiptUrl

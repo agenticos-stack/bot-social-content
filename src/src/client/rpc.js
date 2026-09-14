@@ -109,7 +109,9 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
     // header note: a throw from a facet method breaks the Durable Object's
     // output gate). Re-thrown here, at the browser boundary, so the
     // existing `.catch()` callers keep working unchanged.
-    if (page.ok === false) throw new Error(page.message || "This media is not available.");
+    // The code travels with the sentence: the stage chooses its recovery
+    // action from `code`, never by reading the message.
+    if (page.ok === false) throw Object.assign(new Error(page.message || "This media is not available."), { code: page.code ?? null });
     if (page.mime) mime = page.mime;
     if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
     if (typeof page.total === "number" && expectedTotal === null) expectedTotal = page.total;

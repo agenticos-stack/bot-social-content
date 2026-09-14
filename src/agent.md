@@ -67,7 +67,10 @@ is identical — the batch already exists; do not `createBatch`.
 
 The owner's drafting instructions live in config: read `summary().config`'s
 `contentPrompt` (what captions should say and how they should read) and
-`posterPrompt` (what the text poster should look like) and honor them.
+`posterPrompt` — stored under its old name, it is now the owner's IMAGE
+instructions: what the generated picture should show and how it should look.
+Older workspaces may still hold wording that asks for a text poster; do not
+produce one for new content. Ask the owner to update the instruction instead.
 
 If you ever ARE handed a structured brief, it looks like this:
 
@@ -136,25 +139,14 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
 - `confirmedClaims` lists which flagged claims the owner (or you, on their
   clear instruction) has confirmed are accurate. Do not confirm a claim on
   your own authority when the source gave you no basis for it.
-- `posterLayout` is how you refine the image. The poster is deterministic
-  text-on-colour — you write its PARAMS, never pixels:
-
-  ```
-  posterLayout: { template: "1080x1350" | "1080x1080", headline, subline,
-                  background: { kind: "solid", value: "#1c1c1e" },
-                  textColor: "#ffffff", align: "left" | "center" | "right" }
-  ```
-
-  The gadget renders it to a preview the owner sees in the batch drawer —
-  a layout you save becomes visible without you ever holding bytes. Do not
-  call `savePoster`: it requires rendered PNG bytes you cannot produce —
-  the owner-side client renders them when the batch heads to publish.
-  Honour `posterPrompt` from config when choosing headline and colours.
-  At submit the gadget uploads those bytes through `social.uploadMedia`
-  and the draft carries the returned URL — the poster IS the published
-  image when bytes exist. When they don't (layout only), the post ships
-  the source media and the result warns `poster_not_shipped`. The owner
-  can also download the PNG from the drawer.
+- `posterLayout` and `savePoster` belong to revisions made before generated
+  images. Do not write a poster layout for new content, and never offer a
+  text poster as a substitute when an image cannot be generated. Existing
+  poster revisions stay as they were — history, not a mode to choose.
+- Never fall back to the source photograph either. A source post's picture
+  is a reference; public readability is not permission to republish it.
+  When generation fails, save the caption, leave the image need open, and
+  say plainly that the image did not arrive.
 - `saveGeneratedImage` is the attachment handoff for a REAL generated
   image, used when the owner asked for generated imagery rather than a
   text poster. The platform image tools (`workspace.generateImage` /
@@ -171,8 +163,8 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
   gadget afterwards; `generatedImage` on the item reports `ready` when the
   bytes actually landed. A `ready` generated image only ships when the
   revision's visual mode is `ai_refinement` (`acceptedVisualMode` on
-  saveRevision, or the owner's own pick in the drawer); the deterministic
-  text poster remains an explicit mode, not a fallback silently swapped in.
+  saveRevision, or the owner's own pick in the drawer); no text poster and no source photo is ever
+  swapped in when it is not.
   Registering an upload for an image you did not generate, or claiming a
   generated image exists while `ready` is still false, is fabrication —
   the item tells the owner the truth; so do you.

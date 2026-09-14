@@ -74,9 +74,14 @@
       if(!response.ok)throw new Error(result?.error?.message || 'That permission was not granted.');
       grantRequest=null;grantStatus='confirm';persistToAssistant=false;
       dialog?.close();
-      // The host swapped the isolate onto the new doors; reload the canvas so
-      // it reads them rather than the setup state it drew before the grant.
-      frameGeneration++;
+      // The host swapped the isolate onto the new doors. Tell the canvas
+      // instead of reloading it: a reload threw away the open drawer, the
+      // frames already loaded, the selection and any unsaved caption, which
+      // is exactly what an owner granting from a blocked frame is in the
+      // middle of. The canvas re-reads its door status and retries only the
+      // frame that asked.
+      const granted=grantRequest?.requirementKey;
+      port?.postMessage({event:{type:'doors_changed',requirementKey:granted}});
     }catch(error){
       // The refusal stays on screen until the owner cancels or tries again.
       grantStatus='failed';

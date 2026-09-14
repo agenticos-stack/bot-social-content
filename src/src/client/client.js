@@ -165,6 +165,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  */
 .sl-icon-action { width:var(--sl-h-control); height:var(--sl-h-control); border:0; border-radius:var(--sl-radius-control); background:transparent; color:var(--sl-muted); display:grid; place-items:center; cursor:pointer; flex-shrink:0; }
 .sl-icon-action svg { width:18px; height:18px; display:block; }
+.sl-icon-action.is-busy svg { animation: sl-spin 900ms linear infinite; }
+.sl-icon-action.is-busy:disabled { color:var(--sl-ink-soft, currentColor); cursor:progress; }
+@keyframes sl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sl-icon-action.is-busy svg { animation: none; opacity: .55; } }
+.sl-stage-thumb[data-state="refused"] { outline: 1px dashed var(--sl-line-strong); }
+.sl-stage-thumb[data-state="held"] .sl-stage-thumb-n::after { content: " ✓"; }
+.sl-stage-read { margin: 0 0 0 8px; align-self: center; font-size: 12px; color: var(--sl-ink-soft, inherit); }
 .sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
 .sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
@@ -737,6 +744,30 @@ function App() {
    * the sandbox forwards it to the host, which is how a developer sees it —
    * but it is no longer the only place the sentence exists.
    */
+  // Refresh is re-rendered on every state change; keep keyboard focus on it.
+  let refreshBusy = false;
+  function refocusRefresh(hadFocus) {
+    if (!hadFocus) return;
+    const next = viewHost.querySelector?.(".sl-refresh-action");
+    if (next && typeof next.focus === "function") next.focus();
+  }
+
+  /*
+   * Media stages that are on screen, so a host `doors_changed` event can hand
+   * the consent/activation change to the one frame that asked for it.
+   */
+  const liveStages = new Set();
+  function mediaStageFor(target) {
+    const stage = createMediaStage(rpc, target, locale, {
+      onGrantFetch: () => window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "metered_fetch" }, "*"),
+      onRecheck: () => refreshSummary()
+    });
+    const dispose = stage.dispose;
+    stage.dispose = () => { liveStages.delete(stage); dispose(); };
+    liveStages.add(stage);
+    return stage;
+  }
+
   function announce(title, body, action) {
     console.log(`[social-localization] ${title}: ${body || ""}`);
     if (announceTimer) clearTimeout(announceTimer);
@@ -800,7 +831,7 @@ function App() {
     const body = el("div", { class: "sl-preview-scroll" });
 
     if (activePreviewStage) activePreviewStage.dispose();
-    activePreviewStage = createMediaStage(rpc, item, locale);
+    activePreviewStage = mediaStageFor(item);
 
     replace(body, [
       el("div", { class: "sl-preview-stage-wrap" }, [
@@ -1365,7 +1396,7 @@ function App() {
       } else {
         replace(mediaSlot, [poster || el("span", { class: "sl-pc-media-empty" }, t(locale, isQueued ? "posterPendingGeneration" : "posterPending"))]);
       }
-      const visualPicker = generated || item.posterLayout
+      const visualPicker = generated || item.posterStored
         ? el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "drawerVisualChoice") }, [
             generated
               ? el("label", { class: "sl-dest-row" }, [
@@ -1383,7 +1414,9 @@ function App() {
                   generated.ready ? null : el("span", { class: "sl-dest-tag" }, t(locale, "drawerGeneratedPendingTag"))
                 ])
               : null,
-            item.posterLayout
+            // A text poster is history, not a new output: offered only when
+            // this post already stored one, so a legacy revision stays reviewable.
+            item.posterStored
               ? el("label", { class: "sl-dest-row" }, [
                   el("input", {
                     type: "radio",
@@ -1489,7 +1522,7 @@ function App() {
         ? el("section", { class: "sl-drawer-section" }, [
             el("h3", null, t(locale, "drawerSourceReference")),
             (() => {
-              const mediaStage = createMediaStage(rpc, sourceItem, locale);
+              const mediaStage = mediaStageFor(sourceItem);
               stages.push(mediaStage);
               return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
             })(),
@@ -1917,6 +1950,8 @@ function App() {
 
   // --- Wizard (publish / result) handlers -------------------------------------
   const wizardHandlers = {
+    // Review draws the same accepted generated image the drawer shows.
+    loadGeneratedImage: (id) => loadGeneratedImageAsBlobUrl(rpc, id),
     // --- Publish step: the send decision is per item, made at submit -------
     onToggleBinding: (id, binding) => {
       wizard = togglePublishBinding(wizard, id, binding);
@@ -2101,13 +2136,28 @@ function App() {
           type: 'button', 'aria-pressed': String(section === key), onclick: () => { activeSection = key; renderCurrentView(); }
         }, label)),
         el('div', { class: 'sl-main-actions' }, [
-          el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'refresh'), 'aria-label': t(locale, 'refresh'), disabled: collectionState.loading || inboxState.loading,
-            onclick: async () => {
-              if (section === 'sources') return collectionHandlers.onRefresh();
-              inboxState = setInboxLoading(inboxState, true); renderCurrentView();
-              try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); }
-              catch (error) { inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') }; }
-              renderCurrentView();
+          el('button', { type: 'button', class: `sl-icon-action sl-refresh-action${refreshBusy ? ' is-busy' : ''}`,
+            title: t(locale, refreshBusy ? 'refreshing' : 'refresh'), 'aria-label': t(locale, refreshBusy ? 'refreshing' : 'refresh'),
+            'aria-busy': String(refreshBusy), disabled: refreshBusy || collectionState.loading || inboxState.loading,
+            onclick: async (event) => {
+              // One request at a time; the icon spins only while it is live
+              // and stops on every way it can settle.
+              if (refreshBusy) return;
+              const hadFocus = event?.currentTarget === document.activeElement;
+              refreshBusy = true; renderCurrentView(); refocusRefresh(hadFocus);
+              try {
+                if (section === 'sources') { await collectionHandlers.onRefresh(); return; }
+                inboxState = setInboxLoading(inboxState, true); renderCurrentView(); refocusRefresh(hadFocus);
+                try {
+                  inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+                  announce(t(locale, 'inboxRefreshed'), '');
+                } catch (error) {
+                  inboxState = { ...inboxState, loading: false, error: error instanceof Error ? error.message : t(locale, 'genericError') };
+                  announce(t(locale, 'refreshFailedTitle'), error instanceof Error ? error.message : '');
+                }
+              } finally {
+                refreshBusy = false; renderCurrentView(); refocusRefresh(hadFocus);
+              }
             }
           }, icon('refresh')),
           el('button', { type: 'button', class: 'sl-icon-action', title: t(locale, 'settingsOpen'), 'aria-label': t(locale, 'settingsOpen'), onclick: collectionHandlers.onOpenSettings }, icon('settings'))
@@ -2365,6 +2415,15 @@ function App() {
   }
 
   async function handleOperation(event) {
+    if (event?.type === "doors_changed") {
+      // Re-read what the runtime now reports, in place. Nothing re-renders
+      // the drawer, so loaded frames, selection and unsaved edits stay; only
+      // a frame that was waiting on this answer is fetched again.
+      await refreshSummary();
+      if (!summary?.configured) { await runSetup(); return; }
+      for (const stage of liveStages) stage.onDoorsChanged();
+      return;
+    }
     if(event?.type==='drafts_changed'){
       await refreshSummary();
       inboxState=setInboxSummaries(inboxState,await rpc.listBatchSummaries({limit:50}));

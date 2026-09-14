@@ -16,18 +16,9 @@ import { t } from "./i18n.js";
 /**
  * How tall a frame may draw, as a LENGTH.
  *
- * The rule this replaces was `height: clamp(140px, 28dvh, 260px)` on the
- * container with `width/height: 100%` on the image, and it did not do what it
- * reads like: the image kept its intrinsic ratio (measured live at 589x1045
- * inside a 591x246 box), `object-fit: contain` never had anything to fit, and
- * the container's `overflow: hidden` cut a band out of the middle. Nine of the
- * twelve posts a real account produced are portrait, so the band was usually a
- * horizontal slice through the subject's face.
- *
  * A percentage max-height on a centred flex or grid item resolves against a
- * containing block that depends on the item, which is exactly how that
- * happened. A length cannot fail that way, so the cap is stated in `px` and
- * `dvh` and the stage sizes itself around it.
+ * containing block that depends on the item, which cut a band out of the
+ * middle of portrait frames. A length cannot fail that way.
  */
 const FRAME_MAX = "min(600px, 68dvh)";
 
@@ -39,50 +30,57 @@ function readableBytes(total) {
   return `${(total / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * One post's frames, in the order the provider listed them.
- *
- * `item.media[0]` was the whole of this. Two of the twelve posts in a real
- * account are carousels of three and five frames, and the owner was choosing
- * between posts by looking at the first frame of each.
- */
+/** One post's frames, in the order the provider listed them. */
 function framesOf(item) {
   const list = Array.isArray(item?.media) ? item.media : [];
   return list.filter((entry) => entry && entry.id !== undefined && entry.id !== null);
 }
 
 /**
+ * What a refused frame offers, chosen from the server's `code` — never from
+ * its sentence. Permission and activation are different owner situations: one
+ * needs a yes, the other already has one and needs the session to start.
+ * A gone source is explained, not retried. An uncertain answer is re-checked
+ * without claiming anything was denied.
+ */
+const REFUSALS = {
+  fetch_permission_required: { title: "drawerMediaPermissionTitle", body: "drawerMediaPermissionBody", action: "grant", label: "drawerMediaGrant" },
+  fetch_activation_failed: { title: "drawerMediaActivationTitle", body: "drawerMediaActivationBody", action: "recheck", label: "drawerMediaActivationRetry" },
+  fetch_transient: { title: "drawerMediaTransientTitle", body: null, action: "retry", label: "drawerMediaRetry" },
+  source_unavailable: { title: "drawerMediaUnavailableTitle", body: "drawerMediaUnavailableBody", action: "retry", label: "drawerMediaCheckAgain" },
+  fetch_uncertain: { title: "drawerMediaUncertainTitle", body: "drawerMediaUncertainBody", action: "retry", label: "drawerMediaCheckAgain" }
+};
+const DEFAULT_REFUSAL = { title: "drawerMediaRefusedTitle", body: null, action: "retry", label: "drawerMediaRetry" };
+
+/**
  * Builds the stage for one item and starts fetching its first frame.
  *
- * Returns `{ node, strip, dispose }`. `dispose()` revokes every blob URL this
- * stage minted — one per frame that was actually fetched, not one per stage,
- * which is what the single `activePreviewBlobUrl` in client.js could hold.
+ * `options.onGrantFetch()` asks the host for public-fetch consent (the canvas
+ * only asks; the host confirms). `options.onRecheck()` re-reads the runtime's
+ * door status. Neither fetches anything by itself.
+ *
+ * Returns `{ node, strip, frameCount, onDoorsChanged, frameStates, dispose }`.
+ * `onDoorsChanged()` retries ONLY the frame the owner asked permission for,
+ * and only when it is still waiting on that answer — never every frame of the
+ * carousel, because each one is a metered read.
  */
-export function createMediaStage(rpc, item, locale) {
+export function createMediaStage(rpc, item, locale, options = {}) {
   const frames = framesOf(item);
   const urls = new Map();     // media id -> blob URL, for frames already fetched
-  const facts = new Map();    // media id -> { total, mime }, reported by getMedia
+  const facts = new Map();    // media id -> { total }, reported by getMedia
+  const states = new Map();   // media id -> { status: "fetching"|"held"|"refused", code, message }
   const inFlight = new Map(); // media id -> promise, so a re-click does not refetch
   let index = 0;
   let live = true;
+  let awaitingGrantFor = null;
 
   const surface = el("div", { class: "sl-stage-surface" });
   const kindChip = el("span", { class: "sl-stage-chip sl-stage-kind" });
   const countChip = el("span", { class: "sl-stage-chip sl-stage-count" });
   const stage = el("div", { class: "sl-stage" }, [surface, kindChip, countChip]);
   const strip = el("div", { class: "sl-stage-strip", role: "tablist", "aria-label": t(locale, "drawerFrames") });
+  const readNote = el("p", { class: "sl-stage-read", role: "status" });
 
-  /*
-   * FETCHING IS NOT UNAVAILABLE.
-   *
-   * This drawer used to be built holding the sentence "Preview not available"
-   * and only replaced it when the bytes arrived, with a bare
-   * `.catch(console.error)` behind it. A fetch in progress, a fetch that
-   * failed, and a post with no picture at all were three different things
-   * rendering as one — and the one they rendered as was a lie about two of
-   * them. Each has its own state here, and a refusal carries the sentence
-   * `getMedia` returned rather than a generic one.
-   */
   function showFetching() {
     replace(surface, [
       el("div", { class: "sl-stage-state" }, [
@@ -92,28 +90,35 @@ export function createMediaStage(rpc, item, locale) {
     ]);
   }
 
-  function showRefusal(message) {
+  function showRefusal(key, code, message) {
+    const shape = REFUSALS[code] ?? DEFAULT_REFUSAL;
+    const waiting = awaitingGrantFor === key;
+    const run = () => {
+      if (shape.action === "grant") {
+        awaitingGrantFor = key;
+        options.onGrantFetch?.();
+        showRefusal(key, code, message);
+        return;
+      }
+      if (shape.action === "recheck") {
+        awaitingGrantFor = key;
+        Promise.resolve(options.onRecheck?.()).finally(() => retry(key));
+        return;
+      }
+      retry(key);
+    };
     replace(surface, [
       el("div", { class: "sl-stage-state" }, [
-        el("strong", null, t(locale, "drawerMediaRefusedTitle")),
-        el("p", null, message || t(locale, "drawerMediaRefusedBody")),
-        el("button", {
-          type: "button",
-          class: "sl-stage-retry",
-          onclick: () => { inFlight.delete(frameKey(index)); show(index); }
-        }, t(locale, "drawerMediaRetry"))
+        el("strong", null, t(locale, shape.title)),
+        el("p", null, shape.body ? t(locale, shape.body) : message || t(locale, "drawerMediaRefusedBody")),
+        waiting && shape.action === "grant"
+          ? el("p", { role: "status" }, t(locale, "drawerMediaWaitingGrant"))
+          : null,
+        el("button", { type: "button", class: "sl-stage-retry", onclick: run }, t(locale, shape.label))
       ])
     ]);
   }
 
-  /*
-   * Quiet, not absent. A genuinely image-less post used to get the same
-   * dark full-height slab as a fetch in progress or a refusal — the loudest
-   * thing in the drawer, for the one state that is neither loading nor
-   * wrong. The stage keeps its footprint (min-height, aspect ratio) so the
-   * caption below it does not jump as the owner moves between posts; only
-   * the treatment changes, to a small muted note on the ordinary surface.
-   */
   function showEmpty() {
     stage.classList.add("sl-stage-empty");
     replace(surface, [
@@ -124,14 +129,6 @@ export function createMediaStage(rpc, item, locale) {
     ]);
   }
 
-  /*
-   * The frame, whole, on a neutral ground.
-   *
-   * A blurred copy of the same blob used to sit behind it, filling the width a
-   * portrait picture left over in a 640px sheet. The sheet is 440 now — cut to
-   * the shape the media actually is — so there is no gap to fill, and the
-   * picture is the only thing on the stage.
-   */
   function showFrame(url, frame) {
     replace(surface, [
       el("img", {
@@ -144,19 +141,36 @@ export function createMediaStage(rpc, item, locale) {
     kindChip.textContent = frameLabel(frame);
   }
 
-  function frameKey(at) {
-    const frame = frames[at];
-    return frame ? String(frame.id) : "";
-  }
-
-  /** What this frame is, in the provider's own terms plus what was fetched. */
+  /**
+   * What this frame is. A video is a cover image and nothing more: the stage
+   * draws a still, and nothing here (or in the agent) has watched the motion
+   * or heard the audio, so the label says so rather than "video".
+   */
   function frameLabel(frame) {
-    const parts = [];
-    if (frame?.kind === "video") parts.push(t(locale, "drawerStillFrame"));
-    else parts.push(t(locale, "drawerFormatImageShort"));
+    const parts = [t(locale, frame?.kind === "video" ? "drawerCoverOnly" : "drawerFormatImageShort")];
     const size = readableBytes(facts.get(String(frame?.id))?.total);
     if (size) parts.push(size);
     return parts.join(" · ");
+  }
+
+  /** The strip and the read count say which frames this session actually holds. */
+  function paintStates() {
+    for (const [position, button] of [...strip.children].entries()) {
+      const state = states.get(String(frames[position]?.id))?.status;
+      const key = state === "held" ? "drawerFrameStateHeld" : state === "refused" ? "drawerFrameStateBlocked" : "drawerFrameStateUnread";
+      button.setAttribute("aria-label", t(locale, key, { n: position + 1 }));
+      button.setAttribute("data-state", state ?? "unread");
+      button.setAttribute("aria-selected", String(position === index));
+    }
+    const held = [...states.values()].filter((entry) => entry.status === "held").length;
+    readNote.textContent = frames.length > 1 ? t(locale, "drawerFramesRead", { read: held, total: frames.length }) : "";
+  }
+
+  function retry(key) {
+    inFlight.delete(key);
+    states.delete(key);
+    const at = frames.findIndex((frame) => String(frame.id) === key);
+    if (at >= 0) show(at);
   }
 
   async function show(at) {
@@ -165,15 +179,18 @@ export function createMediaStage(rpc, item, locale) {
     const frame = frames[index];
     const key = String(frame.id);
     countChip.textContent = t(locale, "drawerFrameCount", { n: index + 1, total: frames.length });
-    for (const [position, button] of [...strip.children].entries()) {
-      button.setAttribute("aria-selected", String(position === index));
-    }
+    paintStates();
 
     if (urls.has(key)) { showFrame(urls.get(key), frame); return; }
+    const known = states.get(key);
     kindChip.textContent = frameLabel(frame);
+    // A refused frame stays refused until the owner acts — moving between
+    // frames must not quietly spend another metered read.
+    if (known?.status === "refused") { showRefusal(key, known.code, known.message); return; }
     showFetching();
 
     if (!inFlight.has(key)) {
+      states.set(key, { status: "fetching" });
       inFlight.set(key, loadMediaAsBlobUrl(rpc, item.id, key, "preview"));
     }
     const requested = index;
@@ -182,32 +199,30 @@ export function createMediaStage(rpc, item, locale) {
       if (!live) { URL.revokeObjectURL(url); return; }
       urls.set(key, url);
       facts.set(key, { total });
-      // The owner may have moved on while this was in flight; keep the bytes,
-      // draw only if this is still the frame on screen.
+      states.set(key, { status: "held" });
+      if (awaitingGrantFor === key) awaitingGrantFor = null;
+      paintStates();
       if (index === requested) showFrame(url, frame);
     } catch (error) {
       inFlight.delete(key);
-      if (!live || index !== requested) return;
-      showRefusal(error instanceof Error ? error.message : String(error));
+      if (!live) return;
+      const code = error && typeof error === "object" ? error.code ?? null : null;
+      const message = error instanceof Error ? error.message : String(error);
+      states.set(key, { status: "refused", code, message });
+      paintStates();
+      if (index !== requested) return;
+      showRefusal(key, code, message);
     }
   }
 
-  /*
-   * The strip says which frames the gadget is holding.
-   *
-   * Each frame is its own round trip through the door, so a five-frame
-   * carousel is five fetches and they are not made up front. A frame that has
-   * not been fetched says so rather than showing an empty box that reads like
-   * a frame with nothing in it.
-   */
   if (frames.length > 1) {
-    for (const [position, frame] of frames.entries()) {
+    for (const [position] of frames.entries()) {
       const button = el("button", {
         type: "button",
         role: "tab",
         class: "sl-stage-thumb",
         "aria-selected": String(position === 0),
-        "aria-label": t(locale, "drawerFrameNumber", { n: position + 1 }),
+        "aria-label": t(locale, "drawerFrameStateUnread", { n: position + 1 }),
         onclick: () => show(position),
         onkeydown: (event) => {
           if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -228,6 +243,8 @@ export function createMediaStage(rpc, item, locale) {
       type: "button", class: "sl-stage-nav sl-stage-next",
       "aria-label": t(locale, "drawerFrameNext"), onclick: () => show(index + 1)
     }, "›"));
+    // Beside the frames, not among them: the strip holds one control per frame.
+    stage.appendChild(readNote);
   }
 
   if (frames.length) show(0);
@@ -237,6 +254,18 @@ export function createMediaStage(rpc, item, locale) {
     node: stage,
     strip: frames.length > 1 ? strip : null,
     frameCount: frames.length,
+    /** Consent or activation changed: retry the one frame waiting on it, nothing else. */
+    onDoorsChanged() {
+      if (!live || !awaitingGrantFor) return false;
+      const key = awaitingGrantFor;
+      const state = states.get(key);
+      if (state?.status !== "refused") return false;
+      retry(key);
+      return true;
+    },
+    frameStates() {
+      return frames.map((frame) => ({ id: String(frame.id), status: states.get(String(frame.id))?.status ?? "unread" }));
+    },
     dispose() {
       live = false;
       for (const url of urls.values()) URL.revokeObjectURL(url);

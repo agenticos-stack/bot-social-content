@@ -250,7 +250,9 @@ describe("generated image at submit", () => {
     expect(created).toEqual([]);
   });
 
-  it("an owned source with generated mode chosen but no bytes warns and ships the source media", async () => {
+  // Product decision 2026-09-14: a generated-image revision never quietly
+  // ships the source photograph instead — for an owned source too.
+  it("an owned source with generated mode chosen but no bytes refuses and files nothing", async () => {
     const created: unknown[] = [];
     const uploaded: unknown[] = [];
     const { ctx } = sqliteContext();
@@ -259,10 +261,9 @@ describe("generated image at submit", () => {
     await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement" });
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).not.toMatchObject({ ok: false });
+    expect(result).toMatchObject({ ok: false, code: "generated_image_required" });
     expect(uploaded).toEqual([]);
-    expect((created[0] as any).media[0]).toMatchObject({ assetId: "source-media", url: "https://cdn.example.test/original.jpg" });
-    expect((result as any).warnings?.some((warning: any) => warning.code === "generated_image_missing")).toBe(true);
+    expect(created).toEqual([]);
   });
 
   it("keep_original ships the source media even when a poster is stored for the revision", async () => {

@@ -308,23 +308,51 @@ export async function fetchMedia(env, binding, media, rendition, origin) {
     return { outcome: "unknown", message: "That media has no fetchable URL." };
   }
   if (origin === "open") {
+    /*
+     * FIVE ANSWERS, NOT ONE SENTENCE. "Not granted" used to cover a missing
+     * consent, a consent the runtime never activated, a broken RPC and an
+     * expired CDN link, so an owner who had already said yes was asked again.
+     * Consent is read from the runtime's own projection; a door's absence is
+     * only a denial when that projection says so.
+     */
     const door = env && typeof env === "object" ? env[FETCH_DOOR_KEY] : null;
+    const consent = env && typeof env === "object" && env.__consent && typeof env.__consent === "object" ? env.__consent : null;
+    const consented = consent ? consent[FETCH_DOOR_KEY] === true : null;
+    if (consented === false) {
+      return { outcome: "refused", code: "fetch_permission_required", message: "Reading this frame needs permission to fetch public posts." };
+    }
     if (!door || typeof door.fetch_media !== "function") {
-      return { outcome: "unknown", message: "Public account fetching is not granted for this workspace." };
+      return consented === true
+        ? { outcome: "refused", code: "fetch_activation_failed", message: "Permission is saved, but public fetching has not started in this session." }
+        : { outcome: "unknown", code: "fetch_uncertain", message: "Could not confirm whether public fetching is available here." };
     }
     let result;
     try {
       result = await door.fetch_media({ url, rendition });
     } catch (error) {
       // The door refuses by value, so reaching here means the RPC itself broke.
-      return { outcome: "failed_safe", message: error instanceof Error ? error.message : String(error) };
+      return { outcome: "failed_safe", code: "fetch_transient", message: error instanceof Error ? error.message : String(error) };
     }
     if (!result || result.ok !== true) {
-      return { outcome: "failed_safe", message: (result && result.message) || "The fetch door refused." };
+      return { ...fetchRefusal(result), message: (result && result.message) || "The fetch door refused." };
     }
     return { outcome: "confirmed", data: { mime: result.mime, bytes: result.bytes, byteLength: result.byteLength } };
   }
-  return callConnector(env, binding, "fetch_media", [{ url, rendition }]);
+  const response = await callConnector(env, binding, "fetch_media", [{ url, rendition }]);
+  return response.outcome === "confirmed" ? response : { ...response, ...fetchRefusal(response) };
+}
+
+/**
+ * The owner-facing class of a refused fetch, from the door's structured
+ * answer only. A door that states a `code` for a gone source is believed; an
+ * `unknown` outcome is uncertain, never a denial; anything else refused is
+ * treated as retryable, because retrying one frame is safe and cheap to undo.
+ */
+const SOURCE_GONE_CODES = new Set(["not_found", "gone", "expired", "source_unavailable"]);
+function fetchRefusal(result) {
+  if (result && SOURCE_GONE_CODES.has(result.code)) return { outcome: "failed_safe", code: "source_unavailable" };
+  if (result && result.outcome === "unknown") return { outcome: "unknown", code: "fetch_uncertain" };
+  return { outcome: "failed_safe", code: "fetch_transient" };
 }
 
 /** `env.workspace.notify({ title, body, href })` — TASK-104. Never throws; logs and continues. */

@@ -1342,7 +1342,7 @@ export class Gadget extends DurableObject {
     // answered 403 — into "No thumb media", which sends a reader looking at
     // the item instead of at the reason.
     if (response.outcome !== "confirmed" || !response.data) {
-      return { refused: { code: response.outcome ?? "unknown", message: response.message ?? "The media could not be fetched." } };
+      return { refused: { code: response.code ?? response.outcome ?? "fetch_uncertain", message: response.message ?? "The media could not be fetched." } };
     }
 
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
@@ -2397,29 +2397,33 @@ export class Gadget extends DurableObject {
           };
           posterShipped = true;
         } else {
-          warnings.push({
+          // Refused, not warned: filing on would ship the source photo in place
+          // of the generated image the owner reviewed.
+          return {
+            ok: false,
             code: "generated_image_not_shipped",
-            message: isDoorRefusal(uploaded) ? uploaded.message : "The generated image upload did not return a publisher-addressable URL — the post carries the source media."
-          });
+            message: isDoorRefusal(uploaded) ? uploaded.message : "The generated image could not be prepared for publishing. Nothing was filed; try submitting again."
+          };
         }
       } catch (error) {
-        warnings.push({
-          code: "generated_image_not_shipped",
-          message: `The generated image could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
-        });
-      }
-    } else if (wantsGenerated && !generatedImage?.bytes) {
-      if (isOpenSource) {
         return {
           ok: false,
-          code: "generated_image_required",
-          message: "This post was saved under generated-image mode but no generated image has been delivered — deliver it or save a different visual mode before submitting."
+          code: "generated_image_not_shipped",
+          message: `The generated image could not be uploaded (${errorMessage(error)}). Nothing was filed; try submitting again.`
         };
       }
-      warnings.push({
-        code: "generated_image_missing",
-        message: "Generated-image mode was chosen but no image bytes are stored — the post carries the source media."
-      });
+    } else if (wantsGenerated && !generatedImage?.bytes) {
+      /*
+       * Generated-image mode with no stored image is refused for EVERY source,
+       * not only an open one. Shipping the source photograph instead was a
+       * silent substitution: the owner reviewed a generated image and would
+       * have approved someone's reference picture.
+       */
+      return {
+        ok: false,
+        code: "generated_image_required",
+        message: "This post was saved with a generated image, but that image has not arrived yet. Wait for it, or save a different visual, before submitting."
+      };
     }
     const poster = this.storage.getPoster(batchItemId, revision.revision);
     // The visual pick is real: `keep_original` ships the source media even
