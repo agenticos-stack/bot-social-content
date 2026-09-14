@@ -309,11 +309,20 @@ function itemCard(locale, batch, item, state, ctx, covers) {
   const snapshot = waiting ? waitingLabel : item.caption ?? item.sourceText ?? "";
   const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   const selected = Boolean(state?.selected?.[item.batchItemId]);
+  // The cover is the ACCEPTED OUTPUT when the projection names one. `null`
+  // means the server says there is none yet; `undefined` means this
+  // projection does not report it, so nothing is claimed either way and the
+  // source photo appears only labelled as reference.
+  const output = item.outputThumbnail?.generatedMediaId ? item.outputThumbnail : null;
+  const noOutput = item.outputThumbnail === null;
+  const reference = !output && !waiting && !noOutput && item.coverMediaId ? { itemId: item.itemId, mediaId: item.coverMediaId } : null;
   return renderPostCard(locale, {
     key: item.batchItemId,
     onOpen: () => ctx.handlers.onInspectBatch(batch, item.batchItemId),
     ariaLabel: snapshot.slice(0, 80) || t(locale, "inboxInspect"),
-    cover: !waiting && item.coverMediaId ? { itemId: item.itemId, mediaId: item.coverMediaId } : null,
+    cover: output ? { generatedMediaId: output.generatedMediaId } : reference,
+    coverLabel: reference ? t(locale, "cardReferenceLabel") : null,
+    placeholder: !output && (noOutput || waiting) ? t(locale, "cardNoAcceptedOutput") : null,
     glyph: providerGlyph({ provider: item.provider, sourceBinding: item.sourceBinding }, ctx.sources),
     glyphKey: null,
     kicker: item.sourceLabel || t(locale, "drawerSavedWork"),
@@ -337,14 +346,15 @@ function itemCard(locale, batch, item, state, ctx, covers) {
 }
 
 /** A batch summary that arrived before its items projection (or an empty batch) still gets a card — the batch row itself, same post shape, no cover. */
-function summaryCard(locale, batch, handlers) {
+function summaryCard(locale, batch, handlers, covers) {
   const previewText = batch.preview?.caption ?? batch.preview?.sourceText ?? "";
   const previewTitle = previewText.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   return renderPostCard(locale, {
     key: batch.id,
     onOpen: () => handlers.onInspectBatch(batch, batch.preview?.batchItemId ?? null),
     ariaLabel: t(locale, "inboxInspect"),
-    cover: null,
+    cover: batch.preview?.outputThumbnail?.generatedMediaId ? { generatedMediaId: batch.preview.outputThumbnail.generatedMediaId } : null,
+    placeholder: batch.preview?.outputThumbnail === null ? t(locale, "cardNoAcceptedOutput") : null,
     glyph: "•",
     kicker: batch.preview?.sourceLabel || t(locale, "drawerSavedWork"),
     title: previewTitle,
@@ -356,7 +366,7 @@ function summaryCard(locale, batch, handlers) {
       el("span", null, batch.preview?.caption ? t(locale, "inboxSnapshotDraft") : t(locale, "inboxSnapshotSource")),
       el("span", null, Number.isInteger(batch.preview?.revision) ? t(locale, "drawerRevision", { n: batch.preview.revision }) : t(locale, "inboxNoSavedRevision"))
     ])
-  });
+  }, covers);
 }
 
 /**
@@ -379,7 +389,7 @@ function selectionDock(locale, state, handlers) {
 }
 
 export function renderInbox(root, state, ctx) {
-  const { locale, handlers, loadCover } = ctx;
+  const { locale, handlers, loadCover, loadGeneratedCover } = ctx;
   const covers = [];
   const totals = state.totals ?? {};
   const filters = [
@@ -390,7 +400,7 @@ export function renderInbox(root, state, ctx) {
     const items = Array.isArray(batch.items) ? batch.items : [];
     // A summary built before the items projection (or an empty batch) still
     // gets a card — the batch row itself, same post shape, no cover.
-    if (!items.length) return [summaryCard(locale, batch, handlers)];
+    if (!items.length) return [summaryCard(locale, batch, handlers, covers)];
     const visible = items.filter((item) => itemInFilter(state, batch, item));
     // `state` — not a ctx field — is what carries the authoritative selection
     // model; a ctx copy used to go missing and every card drew unchecked.
@@ -404,5 +414,5 @@ export function renderInbox(root, state, ctx) {
     selectionDock(locale, state, handlers),
     state.error ? el("p", { class: "sl-wizard-error", role: "alert" }, state.error) : null
   ]));
-  if (typeof loadCover === "function") fillCovers(covers, loadCover);
+  if (typeof loadCover === "function") fillCovers(covers, loadCover, loadGeneratedCover);
 }

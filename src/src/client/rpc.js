@@ -28,9 +28,9 @@ export function createRpc(gadget) {
     // Accepted AI-generated image bytes — the gadget's own store, chunked
     // exactly like getMedia so `loadGeneratedImageAsBlobUrl` assembles them.
     getGeneratedImage: (id, options) => gadget.getGeneratedImage(id, options),
-    // The drawer's JPEG conversion re-delivers through the same acceptance
-    // method the host uses — the stored asset becomes the file that can ship.
-    deliverGeneratedImage: (input) => gadget.deliverGeneratedImage(input),
+    // A JPEG copy of an accepted PNG is a NEW derived asset — accepted bytes
+    // are never re-delivered. Accepting it is a separate saveRevision.
+    saveDerivedGeneratedImage: (input) => gadget.saveDerivedGeneratedImage(input),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
     // `itemIds` scopes a re-draft to the named posts; omitted means the

@@ -11,6 +11,7 @@
 // together, so there is one screen with the real preview on it, not a
 // summary screen followed by the screen with the controls.
 
+import { needsJpegCopy } from "./image-acceptance.js";
 import { detectProtectedLiterals, validateRevisionDraft } from "../../model.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
@@ -766,7 +767,7 @@ function acceptedVisualNode(locale, item, draft, handlers) {
     loadReviewImage(item, handlers);
     const entry = reviewImages.get(reviewImageKey(item));
     if (entry?.status === "ready") {
-      return el("img", { class: "sl-pc-canvas", src: entry.url, alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
+      return el("img", { class: "sl-pc-canvas", src: entry.url, alt: item.altText || generated.altText || t(locale, "drawerGeneratedImageAlt") });
     }
     if (entry?.status === "failed") {
       return el("div", { class: "sl-pc-media-empty", role: "alert" }, [
@@ -992,7 +993,24 @@ export function renderPublish(root, state, ctx) {
       ? el("div", { class: "sl-wizard-error", role: "alert" }, [
           // A missing grant is said in the owner's language with its way out;
           // every other refusal keeps the server's own sentence.
-          el("p", null, error.code === "publisher_not_granted" ? t(locale, "publisherNotGrantedBody") : error.message),
+          el("p", null, error.code === "publisher_not_granted"
+            ? t(locale, "publisherNotGrantedBody")
+            : error.code === "generated_image_review_required"
+              ? t(locale, "reviewImageReviewRequired")
+              : error.code === "generated_image_format_stale"
+                ? t(locale, "reviewImageFormatStale")
+                : error.message),
+          // The server cannot vouch for which image was accepted: the owner
+          // looks at it and accepts it again, as a new revision.
+          error.code === "generated_image_review_required" && typeof handlers.onReacceptImage === "function"
+            ? el("button", {
+                type: "button",
+                class: "sl-secondary",
+                "data-action": "reaccept-image",
+                disabled: handlers.imageAcceptanceState?.(item.id)?.status === "accepting",
+                onclick: () => handlers.onReacceptImage(item.id)
+              }, t(locale, "reviewReacceptImage"))
+            : null,
           // REQ-017's opt-in is the refusal's own button — the owner takes it
           // deliberately, and nothing else retries with `createNewVersion`.
           error.code === "duplicate_active"
@@ -1004,6 +1022,35 @@ export function renderPublish(root, state, ctx) {
             ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onGrantPublishing(item.id) }, t(locale, "publisherGrantAction"))
             : null
         ])
+      : null;
+
+    // A PNG accepted image bound for a JPEG-only destination the owner has
+    // chosen HERE (destinations may be picked after drafting): prepare a
+    // JPEG copy, then accept it as a new revision. Never automatic.
+    const acceptance = handlers.imageAcceptanceState?.(item.id) ?? { status: "idle" };
+    const jpegNeeded = typeof handlers.onPrepareJpeg === "function" && (
+      needsJpegCopy(item, { bindings: choice.bindings ?? [], destinations, visualMode: acceptedVisualOf(item, draft) }) ||
+      error?.code === "generated_image_format_stale");
+    const jpegBlock = jpegNeeded
+      ? el("div", { class: "sl-guidance sl-jpeg-copy", role: "status" }, [
+          el("p", null, t(locale, "reviewJpegNeeded")),
+          acceptance.status === "ready" || acceptance.status === "accepting"
+            ? el("button", {
+                type: "button", class: "sl-primary", "data-action": "accept-jpeg",
+                disabled: acceptance.status === "accepting",
+                onclick: () => handlers.onAcceptJpeg(item.id)
+              }, t(locale, "reviewUseJpeg", { n: (item.revision ?? 0) + 1 }))
+            : el("button", {
+                type: "button", class: "sl-secondary", "data-action": "prepare-jpeg",
+                disabled: acceptance.status === "preparing",
+                onclick: () => handlers.onPrepareJpeg(item.id)
+              }, t(locale, acceptance.status === "preparing" ? "reviewPreparingJpeg" : "reviewPrepareJpeg")),
+          acceptance.status === "ready" ? el("p", { class: "sl-field-note" }, t(locale, "reviewJpegReady")) : null,
+          acceptance.message ? el("p", { class: "sl-field-note", role: "alert" }, acceptance.message) : null
+        ])
+      : null;
+    const altLine = acceptedVisualOf(item, draft) === "ai_refinement" && item.altText
+      ? el("p", { class: "sl-field-note sl-review-alt" }, t(locale, "reviewAltText", { alt: item.altText }))
       : null;
 
     // ONE card: the poster as it will ship, the caption beside it, then
@@ -1032,12 +1079,14 @@ export function renderPublish(root, state, ctx) {
         // decided on. A quiet way back, not another primary.
         el("div", { class: "sl-pc-caption" }, [
           el("p", null, draft.caption || item.caption || ""),
+          altLine,
           el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onEditCaption(item.id) }, t(locale, "editCaption"))
         ]),
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
         picker,
         renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
         renderApprovalNote(),
+        jpegBlock,
         refusal,
         // A hairline, a reassurance on the left, submit on the right --
         // the item's own submit is this card's one primary. It renders

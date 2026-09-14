@@ -12,7 +12,7 @@
 // projection only: a request is "waiting" until the item says otherwise, and
 // no failure is ever shown that the projection did not report.
 
-import { el } from "./dom.js";
+import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
 import { generationMark } from "../../model.js";
@@ -74,19 +74,47 @@ export function renderDrawerTablist(locale, { active, onSelect }) {
 // ---------------------------------------------------------------------------
 
 /**
- * `buffers` = `{ caption?: string, imageId?: string, instructions?: { image?, caption? } }`
+ * `buffers` = `{ caption?: string, altText?: string, imageId?: string, instructions?: { image?, caption? } }`
  * for ONE item. Returns which parts differ from the saved item.
  */
 export function dirtyParts(item, buffers = {}) {
   const caption = buffers.caption !== undefined && buffers.caption !== (item?.caption || "");
+  const altText = buffers.altText !== undefined && buffers.altText !== (item?.altText || "");
   const visual = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
+  const instructions = dirtyInstructionParts(item, buffers).length > 0;
+  return { caption, altText, visual, instructions, any: caption || altText || visual || instructions };
+}
+
+/** Which instruction parts (of `parts`) carry an unsaved edit. */
+export function dirtyInstructionParts(item, buffers = {}, parts = ["image", "caption"]) {
   const saved = item?.instructionOverrides ?? {};
-  const instructions = ["image", "caption"].some((part) => {
+  return parts.filter((part) => {
     const draft = buffers.instructions?.[part];
     if (draft === undefined) return false;
     return normalizeOverride(draft) !== normalizeOverride(saved[part]);
   });
-  return { caption, visual, instructions, any: caption || visual || instructions };
+}
+
+/** The parts a pending generation request still owes, from the projection's mark. */
+export function pendingParts(item) {
+  const mark = generationMark(item?.generation);
+  if (!mark) return [];
+  return ["image", "caption"].filter((part) => mark.needs[part]);
+}
+
+/**
+ * A generated caption that arrived while the owner holds an unsaved caption
+ * of their own: `{ caption, revision }` when the saved caption changed under a
+ * dirty buffer that differs from it, otherwise null. Never decides for the
+ * owner — the buffer stays until they choose.
+ */
+export function captionConflictFor(previous, fresh, buffer = {}) {
+  if (!fresh || buffer.caption === undefined) return null;
+  const before = previous?.caption || "";
+  const after = fresh.caption || "";
+  if (before === after) return null;
+  if (buffer.caption === before || buffer.caption === after) return null;
+  return { caption: after, revision: fresh.revision ?? 0 };
 }
 
 function normalizeOverride(value) {
@@ -100,24 +128,66 @@ function normalizeOverride(value) {
  */
 export function revisionEntryFor(item, buffers = {}) {
   const dirty = dirtyParts(item, buffers);
-  if (!dirty.caption && !dirty.visual) return null;
+  if (!dirty.caption && !dirty.visual && !dirty.altText) return null;
   return {
     batchItemId: item.id,
     expectedRevision: item.revision ?? 0,
     ...(dirty.caption ? { caption: buffers.caption } : {}),
+    // An emptied alt text clears it (null); omitted carries the saved one forward.
+    ...(dirty.altText ? { altText: buffers.altText.trim() ? buffers.altText : null } : {}),
     ...(dirty.visual ? { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId } : {})
   };
 }
 
-/** The `saveInstructionOverrides` input for this item's unsaved instruction edits, or null. */
-export function instructionPatchFor(item, buffers = {}) {
-  if (!dirtyParts(item, buffers).instructions) return null;
+/**
+ * The `saveInstructionOverrides` input for this item's unsaved instruction
+ * edits, or null. `parts` narrows it (generation saves only the parts it is
+ * about to use, leaving an unrelated edit unsaved).
+ */
+export function instructionPatchFor(item, buffers = {}, parts = ["image", "caption"]) {
+  const dirty = dirtyInstructionParts(item, buffers, parts);
+  if (!dirty.length) return null;
   const patch = { batchItemId: item.id };
-  for (const part of ["image", "caption"]) {
-    const draft = buffers.instructions?.[part];
-    if (draft !== undefined) patch[part] = normalizeOverride(draft);
-  }
+  for (const part of dirty) patch[part] = normalizeOverride(buffers.instructions[part]);
   return patch;
+}
+
+/**
+ * A small modal decision in the shared dialog: `choices` = `[{ value, label, primary? }]`.
+ * Resolves to the chosen value, or `"cancel"` on Escape/close. One pending
+ * decision per dialog — a second ask waits on the first.
+ */
+const pendingChoices = new WeakMap();
+export function confirmDrawerChoice(dialog, { title, body, choices }) {
+  const pending = pendingChoices.get(dialog);
+  if (pending) return pending;
+  let settle;
+  const decision = new Promise((resolve) => { settle = resolve; });
+  pendingChoices.set(dialog, decision);
+  let done = false;
+  const finish = (value) => {
+    if (done) return;
+    done = true;
+    dialog.removeEventListener("cancel", onCancel);
+    dialog.removeEventListener("close", onClose);
+    pendingChoices.delete(dialog);
+    if (dialog.open) dialog.close();
+    settle(value);
+  };
+  const onCancel = (event) => { event.preventDefault?.(); finish("cancel"); };
+  const onClose = () => finish("cancel");
+  replace(dialog, [
+    el("div", { class: "sl-preview-sheet" }, [
+      el("header", { class: "sl-preview-head" }, [el("strong", null, title)]),
+      el("div", { class: "sl-preview-scroll" }, (Array.isArray(body) ? body : [body]).filter(Boolean).map((line) => el("p", null, line))),
+      el("footer", { class: "sl-preview-actions" }, choices.map((choice) =>
+        el("button", { type: "button", class: choice.primary ? "sl-primary" : "sl-secondary", "data-choice": choice.value, onclick: () => finish(choice.value) }, choice.label)))
+    ])
+  ]);
+  dialog.addEventListener("cancel", onCancel);
+  dialog.addEventListener("close", onClose);
+  if (!dialog.open) dialog.showModal();
+  return decision;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +246,8 @@ export function footerState(locale, item, { buffers = {}, saving = false } = {})
 
 /**
  * ctx: `{ editable, saving, buffers, loadImage(generated, img, onFail), highlighted,
- * noteRef(el), onCaptionInput(value), onStageImage(id|null), onRequestPart("image"|"caption") }`.
+ * noteRef(el), onCaptionInput(value), onAltTextInput(value), onStageImage(id|null),
+ * onRequestPart("image"|"caption"), captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use") }`.
  */
 export function renderOutputPanel(locale, item, ctx) {
   const buffers = ctx.buffers ?? {};
@@ -221,6 +292,16 @@ export function renderOutputPanel(locale, item, ctx) {
           el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageNone"))
         ]),
     facts(accepted),
+    // The server cannot vouch for which image this revision accepted: say so
+    // and let the owner accept it again explicitly (a new revision).
+    accepted && item.acceptedGeneratedMediaProvenance === "unknown"
+      ? el("div", { class: "sl-guidance sl-provenance-unknown", role: "note" }, [
+          el("p", null, t(locale, "reviewImageReviewRequired")),
+          editable && accepted.ready === true
+            ? el("button", { type: "button", class: "sl-secondary", "data-action": "reaccept-image", disabled: ctx.saving, onclick: () => ctx.onReacceptImage?.(accepted.id) }, t(locale, "reviewReacceptImage"))
+            : null
+        ])
+      : null,
     !accepted && item.acceptedVisualMode === "keep_original"
       ? el("p", { class: "sl-field-note" }, t(locale, "drawerLegacySource"))
       : !accepted && (item.acceptedVisualMode === "text_poster" || (item.acceptedVisualMode == null && item.posterStored))
@@ -236,7 +317,7 @@ export function renderOutputPanel(locale, item, ctx) {
         ]),
         figure(candidate, "drawerCandidatePending", "sl-output-frame-candidate"),
         facts(candidate),
-        el("p", { class: "sl-field-note" }, t(locale, staged === candidate.id ? "drawerCandidateStaged" : "drawerCandidateNote")),
+        el("p", { class: "sl-field-note" }, t(locale, staged === candidate.id ? "drawerCandidateStaged" : candidate.status === "legacy" ? "drawerCandidateLegacy" : "drawerCandidateNote")),
         candidate.ready && editable
           ? staged === candidate.id
             ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
@@ -248,24 +329,63 @@ export function renderOutputPanel(locale, item, ctx) {
   const imageStatusLine =
     imgState === "requested" ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerImageRequested")) : null;
 
-  const partButton = (part, labelKey, keepsKey, requested) =>
-    editable
-      ? el("div", { class: "sl-part-action" }, [
-          el("button", {
-            type: "button",
-            class: "sl-secondary",
-            "data-part": part,
-            disabled: ctx.saving || requested,
-            title: requested ? t(locale, "drawerPartAlreadyRequested") : t(locale, keepsKey),
-            onclick: () => ctx.onRequestPart?.(part)
-          }, t(locale, labelKey)),
-          el("span", { class: "sl-field-note" }, t(locale, requested ? "drawerPartAlreadyRequested" : keepsKey))
-        ])
-      : null;
+  // One request at a time per post: while a part is outstanding, the OTHER
+  // part's button stays pressable but says what is pending, and pressing it
+  // asks before anything replaces that request.
+  const outstanding = pendingParts(item);
+  const partButton = (part, labelKey, keepsKey, requested) => {
+    if (!editable) return null;
+    // A pending request (including the one every new post starts with) is
+    // never replaced silently: the button stays pressable and asks first.
+    const other = outstanding.find((entry) => entry !== part) ?? null;
+    const note = requested
+      ? t(locale, "drawerPartAlreadyRequested")
+      : other
+        ? t(locale, other === "image" ? "drawerPartOtherPendingImage" : "drawerPartOtherPendingCaption")
+        : t(locale, keepsKey);
+    return el("div", { class: "sl-part-action" }, [
+      el("button", {
+        type: "button",
+        class: "sl-secondary",
+        "data-part": part,
+        "data-pending": other && !requested ? other : null,
+        "data-requested": requested ? "true" : null,
+        disabled: ctx.saving,
+        title: note,
+        onclick: () => ctx.onRequestPart?.(part)
+      }, t(locale, labelKey)),
+      el("span", { class: "sl-field-note" }, note)
+    ]);
+  };
+
+  // Alt text belongs to the revision: edited here, saved with Save, carried to Review.
+  let altField = null;
+  if (editable && (accepted || staged)) {
+    const altInput = el("textarea", {
+      id: "sl-drawer-alt-text",
+      class: "sl-drawer-caption sl-alt-text-input",
+      rows: "2",
+      placeholder: t(locale, "drawerAltTextPlaceholder")
+    });
+    altInput.value = buffers.altText ?? item.altText ?? "";
+    altInput.classList.toggle("sl-dirty", altInput.value !== (item.altText || ""));
+    altInput.addEventListener("input", () => {
+      altInput.classList.toggle("sl-dirty", altInput.value !== (item.altText || ""));
+      ctx.onAltTextInput?.(altInput.value);
+    });
+    altField = el("div", { class: "sl-field sl-alt-text" }, [
+      el("label", { for: "sl-drawer-alt-text" }, t(locale, "drawerAltTextLabel")),
+      altInput,
+      el("p", { class: "sl-field-note" }, t(locale, "drawerAltTextNote"))
+    ]);
+  } else if (item.altText) {
+    altField = el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: item.altText }));
+  }
 
   const imageSection = el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-output-image-title" }, [
     el("h3", { id: "sl-output-image-title" }, t(locale, "drawerOutputImage")),
     el("div", { class: "sl-output-images" }, [acceptedBlock, candidateBlock]),
+    altField,
     imageStatusLine,
     partButton("image", "drawerRegenerateImage", "drawerRegenerateImageKeeps", imgState === "requested" || imgState === "generating")
   ]);
@@ -275,6 +395,7 @@ export function renderOutputPanel(locale, item, ctx) {
     const note = el("p", { class: "sl-field-note", role: "status" });
     ctx.noteRef?.(note);
     const textarea = el("textarea", {
+      id: "sl-drawer-caption-input",
       class: "sl-drawer-caption",
       rows: "5",
       "aria-labelledby": "sl-output-caption-title",
@@ -286,7 +407,19 @@ export function renderOutputPanel(locale, item, ctx) {
       textarea.classList.toggle("sl-dirty", textarea.value !== (item.caption || ""));
       ctx.onCaptionInput?.(textarea.value);
     });
+    const conflict = ctx.captionConflict
+      ? el("div", { class: "sl-caption-conflict", role: "status" }, [
+          el("strong", null, t(locale, "drawerCaptionConflictTitle")),
+          el("p", { class: "sl-field-note" }, t(locale, "drawerCaptionConflictBody")),
+          el("p", { class: "sl-drawer-caption-preview sl-caption-conflict-text" }, ctx.captionConflict.caption),
+          el("div", { class: "sl-drawer-footer-actions" }, [
+            el("button", { type: "button", class: "sl-secondary", "data-conflict": "keep", onclick: () => ctx.onResolveCaptionConflict?.("keep") }, t(locale, "drawerCaptionConflictKeep")),
+            el("button", { type: "button", class: "sl-primary", "data-conflict": "use", onclick: () => ctx.onResolveCaptionConflict?.("use") }, t(locale, "drawerCaptionConflictUse"))
+          ])
+        ])
+      : null;
     captionBody = [
+      conflict,
       ctx.highlighted ? el("p", { class: "sl-drawer-caption-preview" }, [ctx.highlighted]) : null,
       el("div", { class: "sl-field sl-drawer-composer" }, [textarea, note])
     ];
@@ -386,22 +519,42 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
         : null
     ]);
   };
-  const used = generationMark(item.generation)?.instructions ?? generationMark(item.lastGeneration)?.instructions ?? null;
-  const usedAt = item.generation?.at ?? item.lastGeneration?.at ?? null;
+  // Three different snapshots, each only when the projection carries it:
+  // what produced the ACCEPTED output (recorded on the accepted asset or its
+  // revision), what the PENDING request was made under, and — when neither
+  // names the accepted output — what the last completed request used.
+  const snapshot = (instructions, heading) =>
+    el("div", { class: "sl-instructions-used" }, [
+      el("strong", null, heading),
+      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${instructions.image || t(locale, "drawerInstructionsNoDefault")}`),
+      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${instructions.caption || t(locale, "drawerInstructionsNoDefault")}`)
+    ]);
+  const currentRevision = (Array.isArray(item.revisionHistory) ? item.revisionHistory : []).find((entry) => entry.revision === item.revision);
+  const acceptedUsed = item.generatedImage?.instructions ?? currentRevision?.instructions ?? null;
+  const pending = generationMark(item.generation);
+  const last = generationMark(item.lastGeneration);
+  // Saved text-poster wording is explained, never rewritten for the owner.
+  const legacyWording = [saved.image, defaults.image].some((text) => typeof text === "string" && LEGACY_POSTER_WORDING.test(text));
   return el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-instructions-title" }, [
     el("h3", { id: "sl-instructions-title" }, t(locale, "drawerTabInstructions")),
     el("p", { class: "sl-field-note" }, t(locale, "drawerInstructionsNote")),
+    legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null,
     part("image", "drawerInstructionsImage"),
     part("caption", "drawerInstructionsCaption"),
-    used
-      ? el("div", { class: "sl-instructions-used" }, [
-          el("strong", null, usedAt ? t(locale, "drawerInstructionsLastUsed", { time: whenLabel(locale, usedAt) }) : t(locale, "drawerHistoryInstructions")),
-          el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${used.image || t(locale, "drawerInstructionsNoDefault")}`),
-          el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${used.caption || t(locale, "drawerInstructionsNoDefault")}`)
-        ])
+    acceptedUsed ? snapshot(acceptedUsed, t(locale, "drawerInstructionsAcceptedUsed")) : null,
+    pending?.instructions
+      ? snapshot(pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"))
+      : null,
+    !acceptedUsed && !pending && last?.instructions
+      ? snapshot(last.instructions, last.at ? t(locale, "drawerInstructionsLastUsed", { time: whenLabel(locale, last.at) }) : t(locale, "drawerHistoryInstructions"))
       : null
   ]);
 }
+
+// Display-only: whether saved instruction text still asks for the retired
+// text-poster output, so the owner is told to rewrite it. Never routes or
+// decides anything.
+const LEGACY_POSTER_WORDING = /text[\s_-]*poster|文字海報/i;
 
 // ---------------------------------------------------------------------------
 // 4. History
@@ -424,15 +577,24 @@ const VISUAL_KEYS = {
   keep_original: "drawerHistoryVisualSource"
 };
 
+// Only `failed_safe` is a confirmed "nothing went out"; a plain failure or an
+// unknown outcome never claims that.
 const OUTCOME_GUIDANCE_KEYS = {
   held: "drawerHistoryOutcomeHeld",
   failed: "drawerHistoryOutcomeFailed",
-  failed_safe: "drawerHistoryOutcomeFailed",
+  failed_safe: "drawerHistoryOutcomeFailedSafe",
   unknown: "drawerHistoryOutcomeUnknown"
 };
 
+const IMAGE_STATUS_KEYS = {
+  accepted: "drawerHistoryImageAccepted",
+  candidate: "drawerHistoryImageCandidate",
+  superseded: "drawerHistoryImageSuperseded",
+  legacy: "drawerHistoryImageLegacy"
+};
+
 /**
- * ctx: `{ destinationLabel(binding), stateLabel(outcome), posterCanvas? }`.
+ * ctx: `{ destinationLabel(binding), stateLabel(outcome), editable?, onUseImage?(id) }`.
  * A receipt link appears only when the delivery row carries `receiptUrl`;
  * nothing here builds a permalink.
  */
@@ -478,7 +640,16 @@ export function renderHistoryPanel(locale, item, ctx = {}) {
       .filter(Boolean)
       .join(" — ");
     const fallbackGuidance = OUTCOME_GUIDANCE_KEYS[delivery.outcome] ? t(locale, OUTCOME_GUIDANCE_KEYS[delivery.outcome]) : null;
-    const checked = delivery.checkedAt ?? delivery.lastCheckedAt ?? null;
+    const checked = delivery.checkedAt ?? delivery.lastCheckedAt ?? publication?.lastCheckedAt ?? null;
+    const receipt = publication?.receipt ?? null;
+    const receiptUrl = delivery.receiptUrl ?? receipt?.url ?? null;
+    const receiptIds = receipt && (receipt.postId || receipt.version != null)
+      ? [
+          receipt.postId ? t(locale, "drawerHistoryReceiptPost", { id: receipt.postId }) : null,
+          receipt.version != null ? t(locale, "drawerHistoryReceiptVersion", { version: receipt.version }) : null,
+          receipt.providerId ? t(locale, "drawerHistoryReceiptProvider", { id: receipt.providerId }) : null
+        ].filter(Boolean).join(" · ")
+      : null;
     return el("div", { class: "sl-target-row sl-history-delivery" }, [
       el("div", { class: "sl-who" }, [
         el("strong", null, label(delivery.destinationBinding)),
@@ -487,9 +658,10 @@ export function renderHistoryPanel(locale, item, ctx = {}) {
       el("span", { class: `sl-state-badge sl-state-${delivery.outcome}` }, stateLabel(delivery.outcome)),
       scheduleLine(intent) ? el("p", { class: "sl-field-note sl-history-schedule" }, scheduleLine(intent)) : null,
       approvalLine(delivery) ? el("p", { class: "sl-field-note" }, approvalLine(delivery)) : null,
-      delivery.receiptUrl
-        ? el("a", { class: "sl-receipt", href: delivery.receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
-        : el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryNoReceipt")),
+      receiptUrl
+        ? el("a", { class: "sl-receipt", href: receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
+        : receiptIds ? null : el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryNoReceipt")),
+      receiptIds ? el("p", { class: "sl-field-note sl-history-receipt" }, receiptIds) : null,
       checked ? el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryChecked", { time: whenLabel(locale, checked) })) : null,
       !checked && delivery.filedAt ? el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryFiledAt", { time: whenLabel(locale, delivery.filedAt) })) : null,
       guidance || fallbackGuidance ? el("p", { class: "sl-guidance" }, guidance || fallbackGuidance) : null
@@ -537,14 +709,25 @@ export function renderHistoryPanel(locale, item, ctx = {}) {
           ].join(""))
         : null,
       images.length
-        ? el("ul", { class: "sl-history-list" }, images.map((image) => el("li", null, t(locale, "drawerHistoryImageRow", {
-            time: whenLabel(locale, image.createdAt),
-            state: [
-              t(locale, image.ready ? "drawerHistoryImageReady" : "drawerHistoryImageWaiting"),
-              image.id === item.generatedImage?.id ? t(locale, "drawerHistoryImageAccepted") : null,
-              image.stale ? t(locale, "drawerHistoryImageStale") : null
-            ].filter(Boolean).join(" · ")
-          }))))
+        ? el("ul", { class: "sl-history-list" }, images.map((image) => {
+            const status = IMAGE_STATUS_KEYS[image.status] ? image.status : image.id === item.generatedImage?.id ? "accepted" : null;
+            // An earlier image stays history; bringing it back is the owner's
+            // explicit choice and becomes a new revision when saved.
+            const reusable = ctx.editable === true && image.ready === true && (image.status === "superseded" || image.status === "legacy") && image.id !== item.generatedImage?.id;
+            return el("li", { "data-image-status": status }, [
+              t(locale, "drawerHistoryImageRow", {
+                time: whenLabel(locale, image.createdAt),
+                state: [
+                  t(locale, image.ready ? "drawerHistoryImageReady" : "drawerHistoryImageWaiting"),
+                  status ? t(locale, IMAGE_STATUS_KEYS[status]) : null,
+                  image.stale ? t(locale, "drawerHistoryImageStale") : null
+                ].filter(Boolean).join(" · ")
+              }),
+              reusable
+                ? el("button", { type: "button", class: "sl-secondary sl-history-use-image", "data-image-id": image.id, onclick: () => ctx.onUseImage?.(image.id) }, t(locale, "drawerHistoryUseImage"))
+                : null
+            ]);
+          }))
         : null
     ]));
   }

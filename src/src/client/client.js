@@ -33,12 +33,17 @@ import { resolveLocale, t } from "./i18n.js";
 import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
+import { createImageAcceptance } from "./image-acceptance.js";
 import { newGrantRequestId, parseGadgetGrantResultMessage } from "../../grant-request.js";
 import { renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
 import {
   DRAWER_FOOTER_HINT_ID,
+  captionConflictFor,
+  confirmDrawerChoice,
+  dirtyInstructionParts,
   dirtyParts,
+  pendingParts,
   drawerPanelId,
   drawerTabId,
   footerState,
@@ -733,6 +738,18 @@ function App() {
     coverUrls.set(key, pending);
     return pending;
   }
+  // Content covers that show accepted OUTPUT come from the gadget's generated
+  // store, cached by promise for the same reason as source covers.
+  const generatedCoverUrls = new Map();
+  function loadGeneratedCover(generatedMediaId) {
+    const existing = generatedCoverUrls.get(generatedMediaId);
+    if (existing) return existing;
+    const pending = loadGeneratedImageAsBlobUrl(rpc, generatedMediaId)
+      .then(({ url }) => url)
+      .catch((error) => { generatedCoverUrls.delete(generatedMediaId); throw error; });
+    generatedCoverUrls.set(generatedMediaId, pending);
+    return pending;
+  }
 
   const locale = resolveLocale(document.documentElement.lang);
   let announceTimer = null;
@@ -748,15 +765,15 @@ function App() {
    * accumulate, and Escape would stack one unsaved-changes guard per drawer
    * ever opened.
    */
-  let drawerSession = null; // { requestClose, stages, previous } for the open drawer
+  let drawerSession = null; // { requestClose, refresh, dispose, previous } for the open drawer
   batchDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     drawerSession?.requestClose();
   });
   batchDialog.addEventListener("close", () => {
     const session = drawerSession;
+    session?.dispose?.();
     drawerSession = null;
-    for (const mediaStage of session?.stages ?? []) mediaStage.dispose();
     if (session?.previous instanceof HTMLElement) session.previous.focus();
   });
 
@@ -1050,10 +1067,55 @@ function App() {
     const patchBuffer = (id, patch) => buffers.set(id, { ...bufferOf(id), ...patch });
     const itemNotes = new Map();     // batchItemId -> live note element (current render)
     const generatedUrls = new Map(); // generatedMediaId -> live blob: URL (revoked on redraw/close)
-    const stages = [];
+    // One reference stage per post for this drawer session, kept across
+    // section switches (its node is re-attached, never rebuilt) so the frame,
+    // loaded/blocked state and any recovery in progress survive. Disposed when
+    // the post leaves the drawer, its source item changes, or the drawer ends.
+    const stages = new Map(); // batchItemId -> { key, stage }
+    // A generated caption that arrived over the owner's unsaved caption.
+    const captionConflicts = new Map(); // batchItemId -> { caption, revision }
     let activeTab = "output";
     let closing = false;
     let saving = false;
+    let live = true;      // false once this drawer closed or another replaced it
+    let readToken = 0;    // monotonically increasing: only the newest read may land
+    let session = null;
+
+    const sourceKeyOf = (item) => {
+      const source = item?.sourceItem;
+      return source ? `${source.id ?? ""}::${(source.media ?? []).map((media) => media?.id).join(",")}` : null;
+    };
+    const stageFor = (item) => {
+      const key = sourceKeyOf(item);
+      const held = stages.get(item.id);
+      if (held && held.key === key) return held.stage;
+      held?.stage.dispose();
+      const stage = mediaStageFor(item.sourceItem);
+      stages.set(item.id, { key, stage });
+      return stage;
+    };
+
+    /** Merge a fresh read: saved output replaces the projection, owner buffers stay. */
+    const applyFresh = (freshItems) => {
+      for (const next of freshItems) {
+        const previous = items.find((entry) => entry.id === next.id);
+        const conflict = captionConflictFor(previous, next, bufferOf(next.id));
+        if (conflict) captionConflicts.set(next.id, conflict);
+        else if (captionConflicts.has(next.id)) {
+          const draft = bufferOf(next.id).caption;
+          if (draft === undefined || draft === (next.caption || "")) captionConflicts.delete(next.id);
+        }
+      }
+      items = freshItems;
+      if (!items.some((entry) => entry.id === activeId)) activeId = items[0]?.id ?? null;
+      for (const [id, held] of stages) {
+        const owner = items.find((entry) => entry.id === id);
+        if (!owner || sourceKeyOf(owner) !== held.key) {
+          held.stage.dispose();
+          stages.delete(id);
+        }
+      }
+    };
 
     /*
      * What must survive a rewrite, marked where the owner is looking at the
@@ -1104,9 +1166,12 @@ function App() {
     };
 
     const refetchItems = async () => {
+      const token = ++readToken;
       try {
         const fresh = await rpc.getBatch(batch.id);
-        if (fresh?.items) { items = fresh.items; return true; }
+        // A newer read started, or the drawer ended: this answer is stale.
+        if (!live || token !== readToken) return false;
+        if (fresh?.items) { applyFresh(fresh.items); return true; }
       } catch (error) {
         console.error(error);
       }
@@ -1143,10 +1208,12 @@ function App() {
             if (one?.ok) {
               job.item.revision = one.revision;
               if (job.entry.caption !== undefined) job.item.caption = job.entry.caption;
+              if (job.entry.altText !== undefined) job.item.altText = job.entry.altText;
               job.item.generation = one.generation ?? null;
               job.item.phase = null;
-              const { caption: _caption, imageId: _imageId, ...rest } = bufferOf(job.item.id);
+              const { caption: _caption, imageId: _imageId, altText: _altText, ...rest } = bufferOf(job.item.id);
               buffers.set(job.item.id, rest);
+              captionConflicts.delete(job.item.id);
               if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
             } else {
               allOk = false;
@@ -1221,7 +1288,7 @@ function App() {
       let current = fresh?.items?.find((entry) => entry.id === item.id);
       if (!current) { readFailed(); return; }
       if (!isEditableItem(current)) {
-        items = fresh.items;
+        applyFresh(fresh.items);
         redraw();
         announce(t(locale, "batchUnavailable"), "");
         return;
@@ -1242,6 +1309,7 @@ function App() {
       }
       buffers.delete(item.id);
       closing = true;
+      session.dispose();
       batchDialog.close();
       wizard = resumeBatch(wizard, { ...fresh, id: batch.id, items: [current] });
       if (!wizard.batch?.items?.length) {
@@ -1257,19 +1325,80 @@ function App() {
       if (!(await requestExit())) return;
       closing = true;
       buffers.clear();
-      for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
-      generatedUrls.clear();
+      session.dispose();
       batchDialog.close();
+    };
+
+    const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
+
+    /** Explicit consent before a new request supersedes an outstanding one. */
+    const confirmReplacePending = async (pendingList) => {
+      const replacesImage = pendingList.includes("image");
+      const choice = await confirmDrawerChoice(leaveDialog, {
+        title: t(locale, "drawerReplacePendingTitle"),
+        body: t(locale, "drawerReplacePendingBody", { part: partName(replacesImage ? "image" : "caption") }),
+        choices: [
+          { value: "cancel", label: t(locale, "drawerDecisionCancel") },
+          { value: "replace", label: t(locale, replacesImage ? "drawerReplacePendingImage" : "drawerReplacePendingCaption"), primary: true }
+        ]
+      });
+      return choice === "replace";
     };
 
     /**
      * "Regenerate image" / "Rewrite caption": a scoped request for ONE part
-     * of THIS post. The drawer stays open on the refreshed projection; the
-     * other part and every unsaved buffer are left alone. Rewriting the
-     * caption over an unsaved caption edit asks first.
+     * of THIS post. Before anything is requested:
+     * - an outstanding request for another part is replaced only on an
+     *   explicit confirm (`replace: true`), never silently;
+     * - unsaved instructions for the requested part are saved first, or the
+     *   owner explicitly generates with the saved ones (edits kept), or cancels;
+     * - rewriting the caption over an unsaved caption edit asks.
+     * Unrelated unsaved work is left alone.
      */
     const requestPart = async (item, part) => {
       if (saving) return;
+      const parts = [part];
+      const needs = { [part]: true };
+      let supersede = false;
+      // Any outstanding part — the other one, the same one, or the request a
+      // new post starts with — is replaced only on an explicit confirm.
+      const outstanding = pendingParts(item);
+      if (outstanding.length) {
+        if (!(await confirmReplacePending(outstanding))) return;
+        supersede = true;
+      }
+      const unsavedInstructions = dirtyInstructionParts(item, bufferOf(item.id), parts);
+      if (unsavedInstructions.length) {
+        const choice = await confirmDrawerChoice(leaveDialog, {
+          title: t(locale, "drawerInstructionsDecisionTitle"),
+          body: t(locale, "drawerInstructionsDecisionBody", { part: partName(part) }),
+          choices: [
+            { value: "cancel", label: t(locale, "drawerDecisionCancel") },
+            { value: "saved", label: t(locale, "drawerInstructionsUseSaved") },
+            { value: "save", label: t(locale, "drawerInstructionsSaveAndGenerate"), primary: true }
+          ]
+        });
+        if (choice !== "save" && choice !== "saved") return;
+        if (choice === "save") {
+          const patch = instructionPatchFor(item, bufferOf(item.id), parts);
+          let saved;
+          try { saved = await rpc.saveInstructionOverrides(patch); } catch (error) {
+            saved = { ok: false, message: error instanceof Error ? error.message : String(error) };
+          }
+          if (!live) return;
+          if (!saved?.ok) {
+            // The edits stay; nothing is requested.
+            announce(refusalMessage(saved ?? {}) || t(locale, "drawerInstructionsSaveFailed"), "");
+            return;
+          }
+          const { batchItemId: _id, ...savedParts } = patch;
+          item.instructionOverrides = saved.instructionOverrides ?? { ...(item.instructionOverrides ?? {}), ...savedParts };
+          if (saved.effectiveInstructions) item.effectiveInstructions = saved.effectiveInstructions;
+          const remaining = { ...(bufferOf(item.id).instructions ?? {}) };
+          for (const entry of unsavedInstructions) delete remaining[entry];
+          patchBuffer(item.id, { instructions: remaining });
+        }
+      }
       if (part === "caption" && dirtyParts(item, bufferOf(item.id)).caption) {
         const decision = await confirmUnsavedNavigation(leaveDialog, locale);
         if (decision === "keep") return;
@@ -1279,13 +1408,24 @@ function App() {
           buffers.set(item.id, rest);
         }
       }
+      const send = (withReplace) =>
+        rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
       try {
-        const result = await rpc.requestGeneration(batch.id, [item.id], { needs: { [part]: true } });
+        let result = await send(supersede);
+        if (result && result.ok === false && result.code === "generation_pending" && !supersede) {
+          const owed = ["image", "caption"].filter((entry) => result.pending?.needs?.[entry]);
+          if (!live || !(await confirmReplacePending(owed.length ? owed : [part]))) {
+            if (await refetchItems()) redraw();
+            return;
+          }
+          result = await send(true);
+        }
         if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
       } catch (error) {
         announce(error instanceof Error ? error.message : String(error), "");
         return;
       }
+      if (!live) return;
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1298,43 +1438,18 @@ function App() {
     const footerEl = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
 
     /*
-     * The accepted image is drawn from the gadget's own bytes. JPEG conversion
-     * lives here, at the one place a canvas exists: Instagram's publish
-     * container rejects PNG, so a PNG accepted for a JPEG-only destination is
-     * converted and re-delivered. A conversion failure leaves the delivered
-     * PNG on screen; submit's format refusal is the backstop.
+     * The accepted image is drawn from the gadget's own bytes. Nothing here
+     * converts or re-delivers it: accepted bytes are immutable, and a JPEG
+     * copy for a JPEG-only destination is prepared deliberately at Review
+     * (see image-acceptance.js) as a new asset and a new revision.
      */
-    const loadImage = (item) => (generated, img, onFail) => {
+    const loadImage = () => (generated, img, onFail) => {
       const forId = generated.id;
       loadGeneratedImageAsBlobUrl(rpc, forId)
-        .then(async ({ url, mime }) => {
+        .then(({ url }) => {
+          if (!live) { URL.revokeObjectURL(url); return; }
           generatedUrls.set(forId, url);
           img.src = url;
-          if (forId !== item.generatedImage?.id) return;
-          const jpegOnly = (item.destinationBindings ?? []).some((binding) =>
-            (summary?.destinations ?? []).some((d) => (d.destinationBinding ?? d.binding) === binding && d.provider === "instagram"));
-          if (!jpegOnly || mime !== "image/png") return;
-          try {
-            const jpegBlob = await new Promise((resolveConvert, rejectConvert) => {
-              const probe = new Image();
-              probe.onload = () => {
-                const canvas = document.createElement("canvas");
-                canvas.width = probe.naturalWidth;
-                canvas.height = probe.naturalHeight;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) { rejectConvert(new Error("no 2d context")); return; }
-                ctx.drawImage(probe, 0, 0);
-                canvas.toBlob((result) => (result ? resolveConvert(result) : rejectConvert(new Error("canvas.toBlob returned no blob"))), "image/jpeg", 0.92);
-              };
-              probe.onerror = () => rejectConvert(new Error("generated image did not decode"));
-              probe.src = url;
-            });
-            const buffer = await jpegBlob.arrayBuffer();
-            const redelivered = await rpc.deliverGeneratedImage({ id: forId, bytes: new Uint8Array(buffer), mimeType: "image/jpeg" });
-            if (redelivered?.ok) generated.mimeType = "image/jpeg";
-          } catch (error) {
-            console.error("generated image JPEG conversion failed:", error);
-          }
         })
         .catch(() => onFail());
     };
@@ -1393,7 +1508,7 @@ function App() {
     };
 
     const redraw = () => {
-      for (const mediaStage of stages.splice(0)) mediaStage.dispose();
+      if (!live) return;
       for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
       generatedUrls.clear();
       itemNotes.clear();
@@ -1427,7 +1542,13 @@ function App() {
                 type: "button",
                 "aria-pressed": String(entry.id === activeId),
                 "aria-selected": String(entry.id === activeId),
-                onclick: () => { activeId = entry.id; redraw(); }
+                onclick: () => {
+                  activeId = entry.id;
+                  // A read in flight was taken for the previous post's view:
+                  // it must not land, but the drawer still owes a refresh.
+                  if (refreshing) { readToken += 1; rerun = true; }
+                  redraw();
+                }
               }, t(locale, "drawerPostNofM", { n: index + 1, total: items.length }))))
           : null,
         renderDrawerTablist(locale, { active: activeTab, onSelect: selectTab })
@@ -1436,12 +1557,7 @@ function App() {
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
-        let stage = null;
-        if (item.sourceItem) {
-          stage = mediaStageFor(item.sourceItem);
-          stages.push(stage);
-        }
-        panel = renderReferencePanel(locale, item, { stage });
+        panel = renderReferencePanel(locale, item, { stage: item.sourceItem ? stageFor(item) : null });
       } else if (activeTab === "instructions") {
         panel = renderInstructionsPanel(locale, item, {
           editable,
@@ -1458,6 +1574,13 @@ function App() {
         });
       } else if (activeTab === "history") {
         panel = renderHistoryPanel(locale, item, {
+          editable,
+          onUseImage: (mediaId) => {
+            patchBuffer(item.id, { imageId: mediaId });
+            activeTab = "output";
+            redraw();
+            announce(t(locale, "drawerHistoryImageStaged"), "");
+          },
           destinationLabel,
           stateLabel: (outcome) => publicationStateSummary(locale, outcome)
         });
@@ -1472,6 +1595,39 @@ function App() {
           onCaptionInput: (value) => {
             patchBuffer(item.id, { caption: value });
             redrawFooter();
+          },
+          onAltTextInput: (value) => {
+            patchBuffer(item.id, { altText: value });
+            redrawFooter();
+          },
+          captionConflict: captionConflicts.get(item.id) ?? null,
+          onReacceptImage: async (mediaId) => {
+            if (saving) return;
+            saving = true;
+            redrawFooter();
+            let result;
+            try {
+              result = await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: mediaId }] });
+            } catch (error) {
+              result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+            } finally {
+              saving = false;
+            }
+            const one = result?.results?.[0] ?? result;
+            if (!one?.ok) announce((one?.issues || []).map((issue) => issue.message).join(" ") || refusalMessage(one ?? {}) || t(locale, "saveFailed"), "");
+            if (!live) return;
+            await refetchItems();
+            redraw();
+          },
+          onResolveCaptionConflict: (choice) => {
+            // "use": the new saved caption wins and the local buffer is
+            // discarded. "keep": the buffer stays, dirty against it.
+            if (choice === "use") {
+              const { caption: _caption, ...rest } = bufferOf(item.id);
+              buffers.set(item.id, rest);
+            }
+            captionConflicts.delete(item.id);
+            redraw();
           },
           onStageImage: (mediaId) => {
             if (mediaId) patchBuffer(item.id, { imageId: mediaId });
@@ -1499,6 +1655,59 @@ function App() {
       redrawFooter();
     };
 
+    /** Redraw after a live read, keeping focus, caret and scroll where the owner left them. */
+    const redrawPreserving = () => {
+      const focused = document.activeElement;
+      const focusId = typeof focused?.id === "string" && focused.id ? focused.id : null;
+      const caret = focusId && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+      const scrollTop = bodyEl.scrollTop;
+      redraw();
+      if (typeof scrollTop === "number") bodyEl.scrollTop = scrollTop;
+      if (!focusId) return;
+      const next = document.getElementById?.(focusId);
+      if (!next || next === focused) return;
+      next.focus?.();
+      if (caret) { try { next.setSelectionRange?.(caret[0], caret[1]); } catch { /* not a text control */ } }
+    };
+
+    /*
+     * LIVE UPDATES. Host events (`revision`, `generated_image`,
+     * `drafts_changed`, and reconciliation after re-subscribing) re-read this
+     * batch through `getBatch`. Events that arrive while a read is in flight
+     * collapse into one follow-up read; each read carries a token so only the
+     * newest can land, and nothing lands after the drawer ended.
+     */
+    let refreshing = null;
+    let rerun = false;
+    const refresh = (event) => {
+      if (!live) return Promise.resolve();
+      if (event?.batchItemId && !items.some((entry) => entry.id === event.batchItemId)) return Promise.resolve();
+      if (event?.batchId && event.batchId !== batch.id) return Promise.resolve();
+      if (refreshing) { rerun = true; return refreshing; }
+      refreshing = (async () => {
+        try {
+          do {
+            rerun = false;
+            if ((await refetchItems()) && live) redrawPreserving();
+          } while (rerun && live);
+        } finally {
+          refreshing = null;
+        }
+      })();
+      return refreshing;
+    };
+
+    const dispose = () => {
+      if (!live) return;
+      live = false;
+      readToken += 1;
+      for (const held of stages.values()) held.stage.dispose();
+      stages.clear();
+      for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
+      generatedUrls.clear();
+      if (drawerSession === session) drawerSession = null;
+    };
+
     redraw();
 
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [
@@ -1522,7 +1731,11 @@ function App() {
     batchDialog.setAttribute("aria-labelledby", "sl-drawer-title");
     // The shared dialog's close/cancel listeners delegate here — one
     // registration, one session, see buildPreviewDialog above.
-    drawerSession = { requestClose, stages, previous };
+    session = { requestClose, refresh, dispose, previous, batchId: batch.id };
+    // Opening another post ends the previous drawer session: its reads and
+    // stages must not outlive it.
+    if (drawerSession && drawerSession !== session) drawerSession.dispose?.();
+    drawerSession = session;
     if (!batchDialog.open) batchDialog.showModal();
     // Focus moves into the drawer, onto the active section's tab.
     document.getElementById?.(drawerTabId(activeTab))?.focus?.();
@@ -1864,7 +2077,46 @@ function App() {
   }
 
   // --- Wizard (publish / result) handlers -------------------------------------
+  // Review-time decisions that make a new revision: a JPEG copy of a PNG for a
+  // JPEG-only destination, and re-accepting an image whose provenance the
+  // server cannot vouch for.
+  const imageAcceptance = createImageAcceptance({
+    rpc,
+    loadImage: (id) => loadGeneratedImageAsBlobUrl(rpc, id),
+    onChange: () => { if (wizard.step === "publish") renderCurrentView(); }
+  });
+  const reviewItem = (id) => wizard.batch?.items.find((entry) => entry.id === id) ?? null;
+  const rereadReviewItem = async (id) => {
+    const item = reviewItem(id);
+    if (!item) return;
+    const refreshed = await rpc.getBatch(item.batchId ?? wizard.batch.id);
+    const fresh = refreshed?.items?.find((entry) => entry.id === id);
+    if (fresh) wizard = { ...wizard, batch: { ...wizard.batch, items: wizard.batch.items.map((entry) => (entry.id === id ? fresh : entry)) } };
+  };
+  const settleAcceptance = async (id, saved) => {
+    if (!saved) return;
+    if (isRefusal(saved)) {
+      wizard = setPublishError(wizard, id, { code: saved.code, message: refusalMessage(saved) });
+    } else {
+      wizard = setPublishError(wizard, id, null);
+      try { await rereadReviewItem(id); } catch (error) { console.error(error); }
+    }
+    renderCurrentView();
+  };
   const wizardHandlers = {
+    imageAcceptanceState: (id) => imageAcceptance.state(id),
+    onPrepareJpeg: async (id) => {
+      const item = reviewItem(id);
+      if (item) await imageAcceptance.prepare(item);
+    },
+    onAcceptJpeg: async (id) => {
+      const item = reviewItem(id);
+      if (item) await settleAcceptance(id, await imageAcceptance.accept(item));
+    },
+    onReacceptImage: async (id) => {
+      const item = reviewItem(id);
+      if (item) await settleAcceptance(id, await imageAcceptance.reaccept(item));
+    },
     // Review draws the same accepted generated image the drawer shows.
     loadGeneratedImage: (id) => loadGeneratedImageAsBlobUrl(rpc, id),
     // A review image finished loading, decoding or failing: redraw so the
@@ -2086,7 +2338,7 @@ function App() {
       const taken = takenSourceIds();
       const draftableCount = selectedIds(collectionState).filter((id) => !taken.has(id)).length;
       if (section === 'sources') renderCollection(body, collectionState, { locale, summary, handlers: collectionHandlers, loadCover, draftableCount });
-      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, loadCover, sources: summary?.sources });
+      else renderInbox(body, inboxState, { locale, handlers: collectionHandlers, loadCover, loadGeneratedCover, sources: summary?.sources });
       replace(viewHost, [navigation, body]);
       return;
     }
@@ -2350,11 +2602,32 @@ function App() {
     }
   }
 
+  // Subscribing again (after the network returns) may have missed events, so
+  // every re-subscription reconciles: the open drawer and the list re-read.
+  const liveClientId = Math.random().toString(36).slice(2);
+  let liveSubscribed = false;
+  async function establishLiveUpdates() {
+    await rpc.subscribe(new GadgetSubscriber(), { clientId: liveClientId });
+    if (liveSubscribed) await handleOperation({ type: "reconnected" });
+    liveSubscribed = true;
+  }
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("online", () => { if (liveSubscribed) establishLiveUpdates().catch((error) => console.error(error)); });
+  }
+
   async function handleOperation(event) {
-    if(event?.type==='drafts_changed'){
-      await refreshSummary();
-      inboxState=setInboxSummaries(inboxState,await rpc.listBatchSummaries({limit:50}));
-      if(!wizard.batch)renderCurrentView();
+    // Saved work changed: the open drawer re-reads its batch (state-preserving)
+    // and the Content list refreshes its summaries.
+    if (["revision", "generated_image", "drafts_changed", "review_requested", "reconnected"].includes(event?.type)) {
+      const drawerRefresh = drawerSession?.refresh?.(event) ?? null;
+      try {
+        await refreshSummary();
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+        if (!wizard.batch) renderCurrentView();
+      } catch (error) {
+        console.error(error);
+      }
+      await drawerRefresh;
       return;
     }
     if (!event || event.type !== "scan") return;
@@ -2377,7 +2650,7 @@ function App() {
       } else {
         await runSetup();
       }
-      await rpc.subscribe(new GadgetSubscriber(), { clientId: Math.random().toString(36).slice(2) });
+      await establishLiveUpdates();
     } catch (error) {
       console.error(error);
       replace(viewHost, [el("p", null, t(locale, "genericError"))]);

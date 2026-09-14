@@ -99,11 +99,18 @@ describe("Output section", () => {
     expect(view.parts).toEqual(["image", "caption"]);
   });
 
-  it("marks only the requested part as waiting — an image request leaves the caption action available", () => {
+  it("marks only the requested part as waiting, and neither button replaces it silently", () => {
     const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }));
     expect(view.root.textContent).toContain("New image requested — waiting for the agent.");
-    expect(buttonNamed(view.root, "Regenerate image")!.disabled).toBe(true);
-    expect(buttonNamed(view.root, "Rewrite caption")!.disabled).toBe(false);
+    // Both stay pressable: pressing asks before replacing the pending request
+    // (a new post starts with one), and each says what is pending.
+    const image = buttonNamed(view.root, "Regenerate image")!;
+    const caption = buttonNamed(view.root, "Rewrite caption")!;
+    expect(image.disabled).toBe(false);
+    expect(image.getAttribute("data-requested")).toBe("true");
+    expect(caption.disabled).toBe(false);
+    expect(caption.getAttribute("data-pending")).toBe("image");
+    expect(view.root.textContent).toContain("An image request is still pending for this post.");
     // The accepted image is still drawn while the new one is requested.
     expect(view.loads).toEqual(["gm_a"]);
   });
@@ -197,9 +204,11 @@ describe("History section", () => {
     expect(root.textContent).toContain("Scheduled for 2026-09-16 10:30 (Asia/Hong_Kong)");
     expect(root.textContent).toContain("No provider receipt yet.");
     expect(all(root, (e) => e.tagName === "A")).toHaveLength(0);
-    // The failed earlier filing stays visible with an owner-safe explanation.
+    // The failed earlier filing stays visible with an owner-safe explanation
+    // that does not claim nothing went out — only failed_safe confirms that.
     expect(root.textContent).toContain("Destination B");
-    expect(root.textContent).toContain("nothing was published to this destination");
+    expect(root.textContent).toContain("the publisher did not confirm what happened");
+    expect(root.textContent).not.toContain("nothing was published");
     expect(root.textContent).toContain("Version 2");
   });
 
