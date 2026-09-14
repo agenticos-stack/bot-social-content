@@ -1330,29 +1330,60 @@ function App() {
      * The one exit guard every drawer dismissal runs — Close, Escape and
      * Review call it. Unsaved caption, staged image and instruction edits
      * are one decision: keep editing, discard, or save and leave.
+     *
+     * One policy for every continuation (Close, Review, generation): a save
+     * acknowledges only the field versions it submitted, so an edit typed
+     * while it was in flight stays buffered and dirty. After every await the
+     * guard looks again; a newer edit is shown and asked about afresh — an
+     * earlier "save and leave" never authorizes discarding later input.
+     * Resolves true only when nothing unsaved remains and this drawer is live.
      */
     const requestExit = async () => {
       if (closing || saving) return false;
-      const dirty = dirtyItemIds();
-      if (!dirty.length) return true;
-      const decision = await confirmUnsavedNavigation(leaveDialog, locale);
-      if (decision === "keep") return false;
-      if (decision === "save" && !(await saveItems(dirty))) return false;
-      // "discard" must actually drop the buffers, so a later save (Review's
-      // own) cannot resurrect what the owner threw away.
-      if (decision === "discard") for (const id of dirty) dropBufferFields(id, Object.keys(bufferOf(id)));
-      return true;
+      for (;;) {
+        if (!live) return false;
+        const dirty = dirtyItemIds();
+        if (!dirty.length) return true;
+        const decision = await confirmUnsavedNavigation(leaveDialog, locale);
+        if (!live || decision === "keep") return false;
+        // "discard" must actually drop the buffers, so a later save (Review's
+        // own) cannot resurrect what the owner threw away.
+        if (decision === "discard") {
+          for (const id of dirty) dropBufferFields(id, Object.keys(bufferOf(id)));
+          continue;
+        }
+        const saved = await saveItems(dirty);
+        if (!live) return false;
+        // Show what the acknowledgment left: newer edits, still dirty.
+        redrawPreserving();
+        if (!saved) return false;
+      }
+    };
+
+    /** After an await: a drawer holding newer unsaved edits stays open and asks again. */
+    const settleNewerEdits = async () => {
+      if (!live) return false;
+      if (!dirtyItemIds().length) return true;
+      redrawPreserving();
+      return requestExit();
     };
 
     /**
      * Review this ONE post: save its buffer, materialize a legacy poster when
      * one is still what ships, then resume the wizard on the FINAL
      * acknowledged revision (a required reread — never a stale snapshot).
+     * Edits typed during any of those awaits stop Review before the drawer
+     * is disposed; they are shown dirty and asked about, and a resolved
+     * decision re-reads rather than reviewing an older snapshot.
      */
     const reviewPost = async (item) => {
       if (saving) return;
       if (dirtyItemIds().some((id) => id !== item.id) && !(await requestExit())) return;
-      if (!(await saveItems([item.id]))) return;
+      if (!live) return;
+      if (!(await saveItems([item.id]))) {
+        if (live) redrawPreserving();
+        return;
+      }
       const note = () => itemNotes.get(item.id);
       const readFailed = () => {
         const line = note();
@@ -1360,30 +1391,39 @@ function App() {
         announce(t(locale, "drawerReviewReadFailed"), "");
       };
       let fresh;
-      try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
-      let current = fresh?.items?.find((entry) => entry.id === item.id);
-      if (!current) { readFailed(); return; }
-      if (!isEditableItem(current)) {
-        applyFresh(fresh.items);
-        redraw();
-        announce(t(locale, "batchUnavailable"), "");
-        return;
+      let current;
+      for (;;) {
+        if (!(await settleNewerEdits())) return;
+        try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
+        if (!live) return;
+        current = fresh?.items?.find((entry) => entry.id === item.id);
+        if (!current) { readFailed(); return; }
+        if (!isEditableItem(current)) {
+          applyFresh(fresh.items);
+          redraw();
+          announce(t(locale, "batchUnavailable"), "");
+          return;
+        }
+        const materialized = await materializePoster(current);
+        if (!live) return;
+        if (!materialized.ok) {
+          const message = materialized.refusal ? refusalMessage(materialized.refusal) : materialized.error?.message ?? t(locale, "genericError");
+          const line = note();
+          if (line) line.textContent = message;
+          announce(message, "");
+          return;
+        }
+        try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
+        if (!live) return;
+        current = fresh?.items?.find((entry) => entry.id === item.id) ?? null;
+        if (!current || (materialized.revision != null && (current.revision ?? 0) < materialized.revision)) {
+          readFailed();
+          return;
+        }
+        // Immediately before disposal: nothing typed during the reads.
+        if (!dirtyItemIds().length) break;
       }
-      const materialized = await materializePoster(current);
-      if (!materialized.ok) {
-        const message = materialized.refusal ? refusalMessage(materialized.refusal) : materialized.error?.message ?? t(locale, "genericError");
-        const line = note();
-        if (line) line.textContent = message;
-        announce(message, "");
-        return;
-      }
-      try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
-      current = fresh?.items?.find((entry) => entry.id === item.id) ?? null;
-      if (!current || (materialized.revision != null && (current.revision ?? 0) < materialized.revision)) {
-        readFailed();
-        return;
-      }
-      buffers.delete(item.id);
+      buffers.clear();
       closing = true;
       session.dispose();
       batchDialog.close();
@@ -1399,6 +1439,8 @@ function App() {
 
     const requestClose = async () => {
       if (!(await requestExit())) return;
+      // requestExit rechecked after its last await; nothing unsaved remains.
+      if (!live || dirtyItemIds().length) return;
       closing = true;
       buffers.clear();
       session.dispose();
@@ -1456,30 +1498,44 @@ function App() {
         });
         if (choice !== "save" && choice !== "saved") return;
         if (choice === "save") {
-          const patch = instructionPatchFor(item, bufferOf(item.id), parts);
+          // The submitted snapshot: generation runs on exactly what this
+          // save acknowledged; instructions typed meanwhile stay dirty.
+          const snapshot = snapshotBuffer(item.id);
+          const patch = instructionPatchFor(item, snapshot.buffer, parts);
           let saved;
+          saving = true;
+          redrawFooter();
           try { saved = await rpc.saveInstructionOverrides(patch); } catch (error) {
             saved = { ok: false, message: error instanceof Error ? error.message : String(error) };
+          } finally {
+            saving = false;
           }
           if (!live) return;
           if (!saved?.ok) {
             // The edits stay; nothing is requested.
+            redrawPreserving();
             announce(refusalMessage(saved ?? {}) || t(locale, "drawerInstructionsSaveFailed"), "");
             return;
           }
           const { batchItemId: _id, ...savedParts } = patch;
-          item.instructionOverrides = saved.instructionOverrides ?? { ...(item.instructionOverrides ?? {}), ...savedParts };
-          if (saved.effectiveInstructions) item.effectiveInstructions = saved.effectiveInstructions;
-          const remaining = { ...(bufferOf(item.id).instructions ?? {}) };
-          for (const entry of unsavedInstructions) delete remaining[entry];
-          patchBuffer(item.id, { instructions: remaining });
+          for (const target of new Set([item, items.find((entry) => entry.id === item.id)].filter(Boolean))) {
+            target.instructionOverrides = saved.instructionOverrides ?? { ...(target.instructionOverrides ?? {}), ...savedParts };
+            if (saved.effectiveInstructions) target.effectiveInstructions = saved.effectiveInstructions;
+          }
+          acknowledgeFields(item.id, snapshot, unsavedInstructions.map((entry) => `instructions.${entry}`));
+          redrawPreserving();
         }
       }
-      if (part === "caption" && dirtyParts(item, bufferOf(item.id)).caption) {
+      // Rewriting the caption over an unsaved caption edit asks, and asks
+      // again for a caption typed while the chosen save was in flight.
+      while (part === "caption" && dirtyParts(item, bufferOf(item.id)).caption) {
         const decision = await confirmUnsavedNavigation(leaveDialog, locale);
-        if (decision === "keep") return;
-        if (decision === "save" && !(await saveItems([item.id]))) return;
-        if (decision === "discard") dropBufferFields(item.id, ["caption"]);
+        if (!live || decision === "keep") return;
+        if (decision === "discard") { dropBufferFields(item.id, ["caption"]); continue; }
+        const ok = await saveItems([item.id]);
+        if (!live) return;
+        redrawPreserving();
+        if (!ok) return;
       }
       const send = (withReplace) =>
         rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
