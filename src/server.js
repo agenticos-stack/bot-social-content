@@ -87,6 +87,9 @@ import {
   normalizeLedger,
   applyProtectedOverridesToLedger,
   draftOrigin,
+  generationMark,
+  effectiveInstructions,
+  itemPresentation,
 
   posterPngConstraints,
   validatePosterLayout,
@@ -94,6 +97,8 @@ import {
   normalizeOpenInstagramPosts,
   publicationMedia,
   isPublisherAddressableUrl,
+  posterAltText,
+  sourceMediaAltText,
   resolveOpenSource,
   openSourceBinding
 } from "./model.js";
@@ -110,6 +115,7 @@ import { consentAllowsFetch } from "./grant-request.js";
 import {
   FETCH_DOOR_KEY,
   FIXED_DOOR_KEYS as FIXED_DOOR_KEY_LIST,
+  bindingGranted,
   doorGrantStatus,
   fetchMedia,
   isDoorRefusal,
@@ -238,6 +244,15 @@ const PROVIDERS = {
   facebook: { list: listFacebookPagePosts, normalize: normalizeFacebookPagePosts }
 };
 
+/**
+ * Providers whose image publish container accepts JPEG only, per their own
+ * media documentation — Instagram's `image_url` container rejects PNG. A
+ * stored poster in another format would file clean here and then hold at
+ * `media_not_ready` when the provider's container refused it; submitting it
+ * is refused up front instead, naming the re-render that fixes it.
+ */
+const JPEG_ONLY_IMAGE_PROVIDERS = new Set(["instagram"]);
+
 export class Gadget extends DurableObject {
   static hooks = {
     scan: "Reads each granted source for new posts on the armed cadence and stores what changed."
@@ -253,8 +268,11 @@ export class Gadget extends DurableObject {
     "listBatchSummaries",
     "readPublishState",
     "scanRuns",
-    "exportAs"
+    "exportAs",
+    "getGeneratedImage",
+    "pendingGeneratedImages"
   ];
+  // saveDerivedGeneratedImage is a mutation, deliberately not listed above.
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -341,6 +359,11 @@ export class Gadget extends DurableObject {
       const mediaLimits = description?.mediaLimits;
       return {
         binding: row.binding,
+        // The row is history — it proves the binding was configured once,
+        // never that the grant still lives. `granted` is the live check the
+        // picker needs so a revoked destination is shown as unavailable
+        // instead of offered as a send target that can only fail at submit.
+        granted: bindingGranted(this.env, row.binding),
         origin: row.origin ?? "binding",
         displayName: row.displayName ?? null,
         lastServedBy: row.lastServedBy ?? null,
@@ -462,6 +485,17 @@ export class Gadget extends DurableObject {
       for (const row of schedules) {
         const cancelled = await scheduleCancel(this.env, row.id);
         if (cancelled?.cancelled !== true) return { ok: false, message: "Monitoring is paused. Resolve the existing schedule before applying a new cadence." };
+      }
+      // Scan cadence is optional at open (draft first); turning monitoring on
+      // is the operation that needs it. Refused by value, naming the
+      // requirement, so the canvas can ask the host for exactly that grant.
+      if (!doorGrantStatus(this.env).schedule) {
+        return {
+          ok: false,
+          code: "schedule_not_granted",
+          requirementKey: "schedule",
+          message: "Grant the scan cadence before turning monitoring on."
+        };
       }
       const schedule = await scheduleCreate(this.env, SCAN_HOOK_NAME, config.cadence);
       if (!schedule?.id) return { ok: false, message: "Monitoring is not enabled. Complete the schedule decision in the workspace, then retry." };
@@ -1310,7 +1344,7 @@ export class Gadget extends DurableObject {
     // answered 403 — into "No thumb media", which sends a reader looking at
     // the item instead of at the reason.
     if (response.outcome !== "confirmed" || !response.data) {
-      return { refused: { code: response.outcome ?? "unknown", message: response.message ?? "The media could not be fetched." } };
+      return { refused: { code: response.code ?? response.outcome ?? "fetch_uncertain", message: response.message ?? "The media could not be fetched." } };
     }
 
     const raw = toBytes(response.data.bytes ?? response.data.base64 ?? response.data);
@@ -1500,7 +1534,27 @@ export class Gadget extends DurableObject {
       // only. What a caller still sends is recorded as `bound` publications
       // instead — a default the submit picker reads, not a send (TASK-005).
       destinationBindings: [],
-      state: "drafting"
+      state: "drafting",
+      // Per-item durable ask (schema 12): the batch mark is the roll-up; this
+      // is what an item's queued phase reads and what scoped regeneration
+      // marks without touching its siblings. The mark carries the request
+      // identity and base revision so a later result can be correlated (or
+      // refused) against THIS ask.
+      generation: JSON.stringify({
+        id: generateId("gen"),
+        base: 0,
+        // Requested (immutable) vs remaining (mutable) — see setGeneration.
+        scope: { caption: true, image: true },
+        needs: { caption: true, image: true },
+        at: new Date().toISOString(),
+        // The same snapshot requestGeneration stamps: the instructions this
+        // first ask was made under, so the drawer can say what produced the
+        // output even when the owner never pressed Regenerate.
+        instructions: (() => {
+          const effective = effectiveInstructions(this.storage.getConfig(), null);
+          return { image: effective.image.text, caption: effective.caption.text };
+        })()
+      })
     });
     for (const binding of destinationBindings) {
       this.storage.boundPublication(batchItemId, binding);
@@ -1563,14 +1617,82 @@ export class Gadget extends DurableObject {
       disclaimers: config?.disclaimers,
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
+    const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
+    /*
+     * The ACCEPTED image is the one the current revision pinned — never
+     * "whatever registered last", which a late or newer registration could
+     * swap without the revision changing. A newer non-stale registration is
+     * surfaced separately as the candidate, so "new image in progress" never
+     * replaces what the owner reviewed.
+     */
+    const pinnedImage =
+      latest?.acceptedVisualMode === "ai_refinement" && latest.acceptedGeneratedMediaId
+        ? this.storage.getGeneratedMedia(latest.acceptedGeneratedMediaId)
+        : null;
+    const generatedImage = pinnedImage && pinnedImage.batchItemId === batchItem.id ? pinnedImage : null;
+    // Candidate or legacy only — a superseded result is history, never offered.
+    const candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id);
+    const generatedCandidate =
+      candidateRow && candidateRow.id !== generatedImage?.id && (!generatedImage || candidateRow.seq > generatedImage.seq)
+        ? candidateRow
+        : null;
+    const publications = this.storage.publicationsFor(batchItem.id);
+    const targets = batchItem.targets ?? [];
+    // §9.A — one presentation policy everywhere. The phase reads live
+    // publications plus their canonical outcomes at the CURRENT revision; a
+    // superseded filing can no longer make a published post read as held.
+    const { phase, deliveries } = itemPresentation({
+      state: batchItem.state,
+      revision: batchItem.currentRevision,
+      generation: batchItem.generation,
+      publications,
+      targets
+    });
     return {
       id: batchItem.id,
+      batchId: batchItem.batchId,
+      itemId: batchItem.itemId,
+      active: batchItem.active,
       sourceItem,
       protectedSpans,
       destinationBindings,
       // TASK-009: where it went — one row per destination this item was sent
       // to (or is pointed at, in the `bound` state).
-      publications: this.storage.publicationsFor(batchItem.id),
+      publications,
+      targets,
+      phase,
+      deliveries,
+      // Parsed `{ id, base, needs }` — the client reads `needs` for the
+      // caption/image placeholders; the agent echoes `id` back as
+      // `generationRequest` so its save can be correlated to THIS ask.
+      generation: generationMark(batchItem.generation),
+      // The most recent request's mark, kept after it clears — its needs,
+      // time and the effective instructions it was made under.
+      lastGeneration: generationMark(batchItem.lastGeneration),
+      // This post's own instruction overrides (`{ image, caption }`, null =
+      // saved default) and what a request would use right now.
+      instructionOverrides: instructionOverridesOf(batchItem),
+      effectiveInstructions: effectiveInstructions(config, batchItem.instructionOverrides),
+      // Every saved revision, oldest first — history, not editable state.
+      revisionHistory: this.storage.listRevisions(batchItem.id).map((revision) => ({
+        revision: revision.revision,
+        createdAt: revision.createdAt ?? null,
+        acceptedVisualMode: revision.acceptedVisualMode,
+        acceptedGeneratedMediaId: revision.acceptedGeneratedMediaId,
+        acceptedGeneratedMediaProvenance: revision.acceptedGeneratedMediaProvenance,
+        // "generation" | "owner_explicit" | null (no pin, or pre-18 row).
+        acceptanceSource: revision.acceptanceSource,
+        altText: revision.altText,
+        publicationIntent: revision.publicationIntent
+      })),
+      // Registered generated images, newest first, without bytes.
+      generatedHistory: this.storage
+        .listGeneratedMediaFor(batchItem.id)
+        .map((row) => ({
+          ...projectGeneratedMedia(row, row.status),
+          ready: row.ready,
+          createdAt: row.createdAt
+        })),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
@@ -1579,15 +1701,44 @@ export class Gadget extends DurableObject {
       revision: batchItem.currentRevision,
       caption: latest?.caption ?? null,
       posterLayout: latest?.posterLayout ?? null,
-      // Whether rendered PNG bytes already exist at this revision — the
-      // client materializes once per revision, never on every view.
-      posterStored: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null,
+      // Whether rendered bytes already exist at this revision — the client
+      // materializes once per revision, never on every view. The format is
+      // exposed too: a stored PNG predates the JPEG the renderer produces,
+      // and a destination whose container accepts JPEG only needs the owner
+      // to see (and re-render) that rather than file a post that holds.
+      posterStored: currentPoster !== null,
+      posterMimeType: currentPoster ? posterMimeType(currentPoster.bytes).mimeType : null,
+      // The AI-generated image the CURRENT revision accepted (pinned under
+      // `ai_refinement`). `ready` means its bytes are stored; `digest` is the
+      // delivered bytes' fingerprint; `attachmentId` the platform upload.
+      generatedImage: generatedImage ? projectGeneratedMedia(generatedImage, "accepted") : null,
+      // "recorded" | "unknown" | null. "unknown" is a pin migration 16 guessed:
+      // filing refuses `generated_image_review_required` until re-accepted.
+      acceptedGeneratedMediaProvenance: latest?.acceptedGeneratedMediaProvenance ?? null,
+      // The owner's alt text on the current revision (null = none written).
+      altText: latest?.altText ?? null,
+      // Content thumbnail: the current revision's accepted, delivered asset
+      // with recorded provenance — never the source image.
+      outputThumbnail:
+        generatedImage?.bytes && latest?.acceptedGeneratedMediaProvenance === "recorded"
+          ? { generatedMediaId: generatedImage.id, mimeType: generatedImage.mimeType ?? null }
+          : null,
+      // The newest non-stale registration that is NOT the accepted one —
+      // pending (`ready: false`) or ready to be picked with
+      // `saveRevision({ acceptedVisualMode: "ai_refinement",
+      // acceptedGeneratedMediaId })`. Never ships until a revision pins it.
+      generatedCandidate: generatedCandidate
+        ? projectGeneratedMedia(generatedCandidate, this.storage.generatedMediaStatuses(batchItem.id)(generatedCandidate))
+        : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
       originalMediaRefs: latest?.originalMediaRefs ?? [],
       derivedMediaRefs: latest?.derivedMediaRefs ?? [],
       publicationIntent: latest?.publicationIntent ?? normalizePublicationIntent(undefined).intent,
+      // The owner's explicit visual pick for the latest revision — NULL when
+      // none was ever recorded (see migration 15: NULL ≠ `keep_original`).
+      acceptedVisualMode: latest?.acceptedVisualMode ?? null,
       ledger: latest?.ledger ?? { spans: [], media: [] },
       state: batchItem.state,
       approval: batchItem.version
@@ -1619,21 +1770,143 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * The owner pressed Regenerate: re-arm the batch's durable generation
-   * mark so the agent's next turn re-drafts it. Refuses when the batch is
-   * unknown or has nothing left to draft (all items submitted).
+   * The owner pressed Regenerate: re-arm the durable generation mark so the
+   * agent's next turn re-drafts it. `batchItemIds` scopes the ask to exactly
+   * those posts (§9.D — one post's re-draft must not silently regenerate its
+   * siblings); omitted, every still-draftable item is marked, as before.
+   * Refuses when the batch is unknown or the named items have nothing left
+   * to draft (already submitted).
    */
-  requestGeneration(batchId) {
+  requestGeneration(batchId, batchItemIds = undefined, options = undefined) {
     return this.enqueueMutation(() => {
+      /*
+       * `options.needs` — `{ image?: boolean, caption?: boolean }` — asks for
+       * ONE part: "Regenerate image" keeps the caption, "Rewrite caption"
+       * keeps the accepted image. Omitted, both parts are asked for, as
+       * before. The mark stamps exactly these needs and the effective
+       * instructions (saved defaults, or this post's overrides) the request
+       * was made under.
+       */
+      let needs = null;
+      const replace = options && typeof options === "object" && options.replace === true;
+      if (options !== undefined && options !== null) {
+        const raw = typeof options === "object" ? options.needs : undefined;
+        if (raw !== undefined) {
+          const valid =
+            raw !== null &&
+            typeof raw === "object" &&
+            Object.keys(raw).every((key) => ["image", "caption"].includes(key)) &&
+            [raw.image, raw.caption].every((value) => value === undefined || typeof value === "boolean") &&
+            (raw.image === true || raw.caption === true);
+          if (!valid) {
+            return {
+              ok: false,
+              code: "generation_needs_invalid",
+              message: "Ask for the image, the caption, or both — `needs` takes { image, caption } booleans with at least one true."
+            };
+          }
+          needs = { image: raw.image === true, caption: raw.caption === true };
+        }
+      }
       const batch = this.storage.getBatch(String(batchId));
       if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
-      const draftable = this.storage.listBatchItems(batch.id).some((item) =>
-        ["drafting", "expired"].includes(item.state));
-      if (!draftable) {
-        return { ok: false, code: "nothing_to_draft", message: "Every item in this batch has already been submitted." };
+      const items = this.storage.listBatchItems(batch.id);
+      const scoped = Array.isArray(batchItemIds)
+        ? new Set(batchItemIds.filter((id) => typeof id === "string" && id).slice(0, 50))
+        : null;
+      const draftable = items.filter(
+        (item) => item.active && ["drafting", "expired"].includes(item.state) && (!scoped || scoped.has(item.id))
+      );
+      if (!draftable.length) {
+        return {
+          ok: false,
+          code: "nothing_to_draft",
+          message: scoped
+            ? "None of the selected posts can be drafted again — each is already filed."
+            : "Every item in this batch has already been submitted."
+        };
       }
-      this.storage.setGeneration(batch.id);
-      return { ok: true };
+      /*
+       * Explicit serialization (audit 5ccaff1): an item whose mark still has
+       * outstanding work is refused by value, naming that request, unless the
+       * caller passes `replace: true` — then the old mark is superseded (its
+       * results become stale history). Never merged, never silently dropped.
+       * All-or-nothing: one conflicting item refuses the whole call.
+       */
+      const pendingItems = draftable
+        .map((item) => ({ item, mark: generationMark(item.generation) }))
+        .filter(({ mark }) => mark && (mark.needs.image || mark.needs.caption))
+        .map(({ item, mark }) => ({ batchItemId: item.id, requestId: mark.id, scope: mark.scope, needs: mark.needs }));
+      if (pendingItems.length && !replace) {
+        const [first] = pendingItems;
+        return {
+          ok: false,
+          code: "generation_pending",
+          message:
+            "A generation request for this post is still in progress. Wait for it, or replace it — replacing turns its results into history.",
+          pending: { requestId: first.requestId, scope: first.scope, needs: first.needs },
+          pendingItems
+        };
+      }
+      // One request id for this ask; each item stamps it plus the revision
+      // it was made against. A still-running older turn that saves later
+      // cannot satisfy or clear this newer request — see
+      // `satisfyItemGeneration`.
+      const request = generateId("gen");
+      const config = this.storage.getConfig();
+      this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request, {
+        needs,
+        instructionsFor: (item) => {
+          const effective = effectiveInstructions(config, item.instructionOverrides);
+          return { image: effective.image.text, caption: effective.caption.text };
+        }
+      });
+      return {
+        ok: true,
+        request,
+        requested: draftable.map((item) => item.id),
+        needs: needs ?? { image: true, caption: true },
+        ...(pendingItems.length ? { replaced: pendingItems.map(({ batchItemId, requestId }) => ({ batchItemId, requestId })) } : {})
+      };
+    });
+  }
+
+  /**
+   * The owner's own image/caption instructions for ONE post. Each key:
+   * omitted keeps the stored override, a string replaces it, null or blank
+   * resets to the saved default. Nothing is generated or rewritten here — a
+   * change applies to the NEXT request the owner makes, and an approved
+   * revision stays exactly as it was reviewed.
+   */
+  saveInstructionOverrides(input) {
+    return this.enqueueMutation(() => {
+      const batchItemId = typeof input?.batchItemId === "string" ? input.batchItemId : "";
+      const batchItem = batchItemId ? this.storage.getBatchItem(batchItemId) : null;
+      if (!batchItem) {
+        return { ok: false, code: "batch_item_unknown", message: "This post is no longer available." };
+      }
+      const current = batchItem.instructionOverrides ?? {};
+      const next = {};
+      for (const key of ["image", "caption"]) {
+        const value = input[key];
+        if (value === undefined) next[key] = current[key] ?? null;
+        else if (value === null) next[key] = null;
+        else if (typeof value === "string") next[key] = value.slice(0, 4000);
+        else {
+          return {
+            ok: false,
+            code: "instruction_override_invalid",
+            message: "An instruction override is text, or null to use the saved default."
+          };
+        }
+      }
+      this.storage.setInstructionOverrides(batchItemId, next);
+      const saved = this.storage.getBatchItem(batchItemId);
+      return {
+        ok: true,
+        instructionOverrides: instructionOverridesOf(saved),
+        effectiveInstructions: effectiveInstructions(this.storage.getConfig(), saved.instructionOverrides)
+      };
     });
   }
 
@@ -1692,13 +1965,32 @@ export class Gadget extends DurableObject {
     derivedMediaRefs,
     publicationIntent,
     acceptedVisualMode,
-    ledger
+    ledger,
+    generationRequest,
+    acceptedGeneratedMediaId,
+    altText
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
       return {
         ok: false,
         issues: [{ code: "batch_item_unknown", severity: "block", message: `No batch item ${batchItemId}.` }]
+      };
+    }
+    // Late work from a superseded ask must not overwrite the newer draft.
+    const staleIssue = staleGenerationIssue(batchItem, generationRequest);
+    if (staleIssue) return { ok: false, issues: [staleIssue] };
+    const partIssue = unrequestedPartIssue(this.storage, batchItem, {
+      generationRequest,
+      caption,
+      acceptedVisualMode,
+      acceptedGeneratedMediaId
+    });
+    if (partIssue) return { ok: false, issues: [partIssue] };
+    if (altText !== undefined && altText !== null && (typeof altText !== "string" || altText.length > 1000)) {
+      return {
+        ok: false,
+        issues: [{ code: "alt_text_invalid", severity: "block", message: "Alt text is text of at most 1000 characters, or null to clear it." }]
       };
     }
 
@@ -1712,6 +2004,7 @@ export class Gadget extends DurableObject {
     );
     if (
       acceptedVisualMode !== undefined &&
+      acceptedVisualMode !== null &&
       !["keep_original", "text_poster", "ai_refinement"].includes(acceptedVisualMode)
     ) {
       return {
@@ -1733,9 +2026,19 @@ export class Gadget extends DurableObject {
     const storedAllowed = normalizeRefinementBrief(config?.refinementBrief).allowedChanges;
     const brief = {
       ...refinement,
-      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change)),
-      ...(acceptedVisualMode ? { visualTreatment: acceptedVisualMode } : {})
+      allowedChanges: refinement.allowedChanges.filter((change) => storedAllowed.includes(change))
     };
+    /*
+     * The owner's visual pick is its own revision field — NOT the brief's
+     * `visualTreatment`. `normalizeRefinementBrief` defaults that to
+     * `keep_original` for every brief, so a value stored there can never
+     * tell an explicit choice from no choice; `acceptedVisualMode` stays
+     * NULL on revisions saved before (or without) the picker, which is what
+     * lets submit keep their ship-the-stored-poster behaviour. Omitted
+     * carries the previous pick forward, like the caption; an explicit null
+     * clears it.
+     */
+    const visualMode = acceptedVisualMode === undefined ? (previous?.acceptedVisualMode ?? null) : acceptedVisualMode;
     const overrides =
       protectedOverrides === undefined
         ? (previous?.protectedOverrides ?? [])
@@ -1752,10 +2055,15 @@ export class Gadget extends DurableObject {
      */
     const layout = posterLayout === undefined ? (previous?.posterLayout ?? null) : posterLayout;
     const claims = confirmedClaims === undefined ? (previous?.confirmedClaims ?? []) : confirmedClaims;
+    // Omitted means carried for the caption too — a visual-mode-only save
+    // (accepting a generated image without touching copy) must not store a
+    // NULL caption over the reviewed one. Validation checks the text that
+    // will actually land.
+    const effectiveCaption = caption === undefined ? (previous?.caption ?? null) : caption;
 
     const validation = validateRevisionDraft({
       source: { text: sourceItem ? sourceItem.text : "", id: sourceItem ? sourceItem.id : "" },
-      draft: caption,
+      draft: effectiveCaption,
       brief,
       ledger: storedLedger,
       policy: {
@@ -1798,8 +2106,88 @@ export class Gadget extends DurableObject {
     const derived =
       derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
+    /*
+     * The accepted generated asset, pinned on the revision. An explicit
+     * `acceptedGeneratedMediaId` must be this item's DELIVERED row (a stale
+     * row is allowed only when named explicitly — the owner may keep late
+     * bytes). Otherwise a revision that was already `ai_refinement` carries
+     * its pin forward unchanged (a caption-only save never swaps the image),
+     * and a fresh switch to `ai_refinement` pins the newest ready, non-stale
+     * row — or nothing yet, which filing refuses as `generated_image_required`.
+     */
+    let pinnedId = null;
+    let pinnedDigest = null;
+    let pinnedProvenance = null;
+    let pinnedSource = null;
+    const statusOf = this.storage.generatedMediaStatuses(batchItemId);
+    const correlated = typeof generationRequest === "string" && generationRequest !== "";
+    if (acceptedGeneratedMediaId !== undefined && acceptedGeneratedMediaId !== null) {
+      const row = typeof acceptedGeneratedMediaId === "string" ? this.storage.getGeneratedMedia(acceptedGeneratedMediaId) : null;
+      if (visualMode !== "ai_refinement" || !row || row.batchItemId !== batchItemId || !row.bytes) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generated_media_invalid",
+              severity: "block",
+              message:
+                visualMode !== "ai_refinement"
+                  ? "A generated image can only be accepted with the generated-image visual."
+                  : "That generated image does not belong to this post or has not arrived yet."
+            }
+          ]
+        };
+      }
+      const status = statusOf(row);
+      /*
+       * A correlated generation save accepts its own request's result only.
+       * A superseded or legacy asset is the OWNER's explicit call (no request
+       * id), recorded as such on the revision.
+       */
+      if (correlated && row.id !== (previous?.acceptedGeneratedMediaId ?? null) &&
+          (status === "superseded" || status === "legacy" || row.generationRequest !== generationRequest)) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generated_media_not_current",
+              severity: "block",
+              message: "That image does not answer this generation request. Only the owner can accept an older image."
+            }
+          ]
+        };
+      }
+      pinnedId = row.id;
+      pinnedDigest = await digestBytes(row.bytes);
+      pinnedProvenance = "recorded";
+      pinnedSource = correlated ? "generation" : "owner_explicit";
+    } else if (visualMode === "ai_refinement") {
+      if (previous?.acceptedVisualMode === "ai_refinement" && previous.acceptedGeneratedMediaId) {
+        // Carried forward exactly — including an "unknown" provenance.
+        pinnedId = previous.acceptedGeneratedMediaId;
+        pinnedDigest = previous.acceptedGeneratedMediaDigest ?? null;
+        pinnedProvenance = previous.acceptedGeneratedMediaProvenance ?? (pinnedDigest ? "recorded" : "unknown");
+        pinnedSource = previous.acceptanceSource ?? null;
+      } else {
+        // Implicit pick: a current `candidate` original only — never a
+        // superseded, legacy or derived row.
+        const row = this.storage.latestCandidateGeneratedMedia(batchItemId, {
+          ready: true,
+          statuses: ["candidate"],
+          original: true
+        });
+        if (row?.bytes) {
+          pinnedId = row.id;
+          pinnedDigest = await digestBytes(row.bytes);
+          pinnedProvenance = "recorded";
+          pinnedSource = "generation";
+        }
+      }
+    }
+    const effectiveAltText = altText === undefined ? (previous?.altText ?? null) : altText;
+
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
-      caption,
+      caption: effectiveCaption,
       posterLayout: layout,
       confirmedClaims: claims,
       issues: validation.issues,
@@ -1808,21 +2196,52 @@ export class Gadget extends DurableObject {
       originalMediaRefs: originals,
       derivedMediaRefs: derived,
       publicationIntent: intent.intent,
-      ledger: storedLedger
+      ledger: storedLedger,
+      acceptedVisualMode: visualMode,
+      acceptedGeneratedMediaId: pinnedId,
+      acceptedGeneratedMediaDigest: pinnedDigest,
+      acceptedGeneratedMediaProvenance: pinnedProvenance,
+      acceptedGeneratedMediaSource: pinnedSource,
+      altText: effectiveAltText
     });
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    /*
+     * The saved revision answers this item's drafting ask — only for the
+     * parts THIS call explicitly delivered (audit b7de9dd R2), and only when
+     * correlated (`satisfyItemGeneration` ignores owner saves and stale ids).
+     * Carried-forward content is preserved on the revision, never credited:
+     * - caption: only when the call supplied a `caption` field. An explicit
+     *   caption equal to the previous text still counts — equality is not
+     *   proof of no work. Alt-text- or image-only saves do not answer it.
+     * - image: only an explicitly accepted generated asset registered under
+     *   this same request. A retained poster layout, a carried-forward pin or
+     *   an implicit pick never does — a text poster is not an AI image.
+     */
+    const acceptedForRequest =
+      correlated &&
+      acceptedGeneratedMediaId !== undefined &&
+      acceptedGeneratedMediaId !== null &&
+      this.storage.getGeneratedMedia(pinnedId)?.generationRequest === generationRequest;
+    this.storage.satisfyItemGeneration(batchItemId, {
+      request: correlated ? generationRequest : null,
+      needs: { caption: caption !== undefined, image: acceptedForRequest }
+    });
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
-    return { ok: true, revision: result.revision, issues: validation.issues };
+    // The surviving mark goes back with the ack: a caption save that left an
+    // image ask pending must not let the caller mirror `null` and read the
+    // post as fully drafted.
+    const remaining = generationMark(this.storage.getBatchItem(batchItemId)?.generation);
+    return { ok: true, revision: result.revision, issues: validation.issues, generation: remaining };
   }
 
   savePoster(args) {
     return this.enqueueMutation(() => this.savePosterLocked(args));
   }
 
-  async savePosterLocked({ batchItemId, expectedRevision, template, png }) {
+  async savePosterLocked({ batchItemId, expectedRevision, template, png, generationRequest }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
       return {
@@ -1831,9 +2250,12 @@ export class Gadget extends DurableObject {
       };
     }
 
+    const staleIssue = staleGenerationIssue(batchItem, generationRequest);
+    if (staleIssue) return { ok: false, issues: [staleIssue] };
+
     const bytes = toBytes(png);
     // A caller bug, not an owner-facing condition — `steps.js`'s
-    // `onSavePoster` always hands this `renderPosterPng`'s own Uint8Array
+    // `onSavePoster` always hands this `renderPosterImage`'s own Uint8Array
     // output. Still a value, not a throw (see the file header note: a
     // workerd test proved a throw here breaks the facet's output gate the
     // same way an expected refusal's did).
@@ -1844,15 +2266,22 @@ export class Gadget extends DurableObject {
           {
             code: "invalid_argument",
             severity: "block",
-            message: "savePoster needs PNG bytes (Uint8Array, ArrayBuffer or base64 string)."
+            message: "savePoster needs image bytes (Uint8Array, ArrayBuffer or base64 string)."
           }
         ]
       };
     }
-    if (!isPngSignature(bytes)) {
+    /*
+     * PNG or JPEG, sniffed — never the caller's say-so. JPEG is what
+     * Instagram's publish container accepts for image_url media; PNG stays
+     * admitted because other destinations take it and already-stored posters
+     * are PNG.
+     */
+    const format = isPngSignature(bytes) ? "png" : isJpegSignature(bytes) ? "jpeg" : null;
+    if (!format) {
       return {
         ok: false,
-        issues: [{ code: "poster_not_png", severity: "block", message: "The uploaded file is not a PNG." }]
+        issues: [{ code: "poster_not_image", severity: "block", message: "The uploaded file is not a PNG or JPEG image." }]
       };
     }
 
@@ -1864,12 +2293,12 @@ export class Gadget extends DurableObject {
           {
             code: "poster_too_large",
             severity: "block",
-            message: `The poster PNG exceeds the ${constraints.maxBytes}-byte limit.`
+            message: `The poster image exceeds the ${constraints.maxBytes}-byte limit.`
           }
         ]
       };
     }
-    const dimensions = readPngDimensions(bytes);
+    const dimensions = format === "jpeg" ? readJpegDimensions(bytes) : readPngDimensions(bytes);
     if (!dimensions || dimensions.width !== constraints.width || dimensions.height !== constraints.height) {
       return {
         ok: false,
@@ -1877,7 +2306,7 @@ export class Gadget extends DurableObject {
           {
             code: "poster_wrong_size",
             severity: "block",
-            message: `The poster PNG must be exactly ${constraints.width}x${constraints.height}.`
+            message: `The poster image must be exactly ${constraints.width}x${constraints.height}.`
           }
         ]
       };
@@ -1894,14 +2323,235 @@ export class Gadget extends DurableObject {
       originalMediaRefs: previous?.originalMediaRefs ?? [],
       derivedMediaRefs: previous?.derivedMediaRefs ?? [],
       publicationIntent: previous?.publicationIntent ?? null,
-      ledger: previous?.ledger ?? { spans: [], media: [] }
+      ledger: previous?.ledger ?? { spans: [], media: [] },
+      // A poster materialization is not a visual-mode pick — carry the one
+      // the revision already holds so a re-render can't silently revert it.
+      acceptedVisualMode: previous?.acceptedVisualMode ?? null,
+      acceptedGeneratedMediaId: previous?.acceptedGeneratedMediaId ?? null,
+      acceptedGeneratedMediaDigest: previous?.acceptedGeneratedMediaDigest ?? null,
+      acceptedGeneratedMediaProvenance: previous?.acceptedGeneratedMediaProvenance ?? null,
+      acceptedGeneratedMediaSource: previous?.acceptanceSource ?? null,
+      altText: previous?.altText ?? null
     });
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.savePoster(batchItemId, result.revision, template, bytes);
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
+    // A text poster is not a generated image (audit b7de9dd R2): its bytes
+    // complete no generation need. Only a correlated generated-image
+    // delivery or acceptance answers `needs.image`.
+    this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision };
+  }
+
+  // -----------------------------------------------------------------------
+  // generated images — the attachment→gadget acceptance contract
+  // -----------------------------------------------------------------------
+
+  /**
+   * The agent (or a platform transfer) names an image it generated for ONE
+   * batch item — `attachmentId` is the platform upload's identity, carried
+   * on the row through edit/reload/review/publication. NO BYTES arrive here:
+   * they follow through `deliverGeneratedImage`, fetched server-side by
+   * whoever holds the session credential (the dev host today; the shared
+   * contract door for installed gadgets), so the model's tool result never
+   * carries image payloads.
+   */
+  saveGeneratedImage(args) {
+    return this.enqueueMutation(() => this.saveGeneratedImageLocked(args));
+  }
+
+  async saveGeneratedImageLocked({ batchItemId, attachmentId, altText, mimeType, generationRequest }) {
+    const batchItem = this.storage.getBatchItem(batchItemId);
+    if (!batchItem || batchItem.active === false) {
+      return {
+        ok: false,
+        issues: [{ code: "batch_item_unknown", severity: "block", message: `No batch item ${batchItemId}.` }]
+      };
+    }
+    const id = generateId("gm");
+    /*
+     * The stamp is the CALLER's request id, validated against the item's
+     * current mark — never the mark read here, which would relabel an old
+     * job's image as the answer to a newer ask. A mismatched id (superseded,
+     * already answered, or no mark at all) is kept as explicit stale history:
+     * its delivery satisfies nothing and it is never auto-accepted. No id at
+     * all is unattributed — it answers no mark, pending or not.
+     */
+    const request = typeof generationRequest === "string" && generationRequest ? generationRequest : null;
+    const stale = request !== null && staleGenerationIssue(batchItem, request) !== null;
+    this.storage.saveGeneratedMedia({
+      id,
+      batchItemId,
+      attachmentId: typeof attachmentId === "string" ? attachmentId : null,
+      altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
+      mimeType: typeof mimeType === "string" ? mimeType : null,
+      generationRequest: request,
+      stale
+    });
+    // Registering the asset does not satisfy the mark — only delivered
+    // bytes do (deliverGeneratedImage). The row just records WHICH upload
+    // answers the ask, so a later byte delivery can be correlated.
+    return { ok: true, id, generationRequest: request, stale };
+  }
+
+  /** Registrations still waiting on bytes — the delivery sweep's read. */
+  async pendingGeneratedImages() {
+    return { pending: this.storage.pendingGeneratedMedia().map((row) => ({
+      id: row.id,
+      batchItemId: row.batchItemId,
+      attachmentId: row.attachmentId,
+      mimeType: row.mimeType,
+      createdAt: row.createdAt
+    })) };
+  }
+
+  /**
+   * Deliver the bytes for a registered generated image. Sniffed, never the
+   * caller's say-so — the same admission rule savePoster runs. A correlated
+   * delivery satisfies the item's `needs.image` mark; a stale or uncorrelated
+   * one still stores the bytes (the owner may keep them) but clears nothing.
+   */
+  deliverGeneratedImage(args) {
+    return this.enqueueMutation(() => this.deliverGeneratedImageLocked(args));
+  }
+
+  async deliverGeneratedImageLocked({ id, png, bytes, mimeType, generationRequest }) {
+    const row = this.storage.getGeneratedMedia(String(id ?? ""));
+    if (!row) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_unknown", severity: "block", message: `No generated image ${id}.` }]
+      };
+    }
+    const payload = toBytes(bytes ?? png);
+    if (!payload) {
+      return {
+        ok: false,
+        issues: [{ code: "invalid_argument", severity: "block", message: "deliverGeneratedImage needs image bytes (Uint8Array, ArrayBuffer or base64 string)." }]
+      };
+    }
+    const format = isPngSignature(payload) ? "image/png" : isJpegSignature(payload) ? "image/jpeg" : null;
+    if (!format) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_not_image", severity: "block", message: "The delivered file is not a PNG or JPEG image." }]
+      };
+    }
+    const digest = await digestBytes(payload);
+    /*
+     * Delivered bytes are immutable (audit 5ccaff1 G4): the same bytes again
+     * are an idempotent no-op; different bytes are refused whether or not a
+     * revision pinned the row. A different representation is a new row —
+     * `saveDerivedGeneratedImage`.
+     */
+    if (row.bytes) {
+      const existing = row.contentDigest ?? (await digestBytes(row.bytes));
+      if (existing === digest) return { ok: true, id: row.id, byteLength: row.bytes.byteLength, unchanged: true };
+      return {
+        ok: false,
+        issues: [
+          {
+            code: "generated_media_immutable",
+            severity: "block",
+            message: "This generated image already has different bytes. Save a copy as a new image instead of replacing it."
+          }
+        ]
+      };
+    }
+    const stored = this.storage.deliverGeneratedMedia(row.id, {
+      bytes: payload,
+      mimeType: format,
+      contentDigest: digest
+    });
+    /*
+     * Correlation rides on the STORED stamp, never a caller's echo: the
+     * registration recorded which ask it answered, and a delivery clears
+     * `needs.image` only when that ask is still the item's current one. A
+     * registration made with no ask pending — or delivered after its ask
+     * was superseded — keeps its bytes but touches no mark.
+     */
+    // Freshness is re-derived NOW, not taken from registration time: a row
+    // whose request was superseded in between completes nothing.
+    if (row.generationRequest && this.storage.generatedMediaStatuses(row.batchItemId)(stored) === "candidate") {
+      this.storage.satisfyItemGeneration(row.batchItemId, {
+        request: row.generationRequest,
+        needs: { image: true }
+      });
+    }
+    const batchItem = this.storage.getBatchItem(row.batchItemId);
+    if (batchItem) this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
+    await this.broadcast({ type: "generated_image", batchItemId: row.batchItemId, generatedMediaId: row.id });
+    return { ok: true, id: row.id, byteLength: stored?.byteLength ?? payload.byteLength };
+  }
+
+  /**
+   * A new generated_media row made from a delivered one's bytes — e.g. the
+   * JPEG copy of a PNG a JPEG-only destination needs. The source row is never
+   * changed. The copy inherits the source's request id (so its freshness
+   * status follows the same rules), attachment id and alt text; the format
+   * is sniffed and the digest recorded. It completes no generation need and
+   * is never picked implicitly: accepting it takes an explicit
+   * `acceptedGeneratedMediaId` save, which makes a new revision.
+   * Idempotent: the same bytes for the same source return the existing copy
+   * (`reused: true`) rather than a duplicate row.
+   */
+  saveDerivedGeneratedImage(args) {
+    return this.enqueueMutation(() => this.saveDerivedGeneratedImageLocked(args ?? {}));
+  }
+
+  async saveDerivedGeneratedImageLocked({ sourceMediaId, bytes, mimeType }) {
+    const source = typeof sourceMediaId === "string" ? this.storage.getGeneratedMedia(sourceMediaId) : null;
+    if (!source || !source.bytes) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_unknown", severity: "block", message: "The source image does not exist or has not arrived yet." }]
+      };
+    }
+    const payload = toBytes(bytes);
+    if (!payload) {
+      return {
+        ok: false,
+        issues: [{ code: "invalid_argument", severity: "block", message: "saveDerivedGeneratedImage needs image bytes (Uint8Array, ArrayBuffer or base64 string)." }]
+      };
+    }
+    const format = isPngSignature(payload) ? "image/png" : isJpegSignature(payload) ? "image/jpeg" : null;
+    if (!format) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_not_image", severity: "block", message: "The derived file is not a PNG or JPEG image." }]
+      };
+    }
+    // `mimeType` is informational only; the sniffed format is what is stored.
+    void mimeType;
+    const digest = await digestBytes(payload);
+    const existing = this.storage.findDerivedGeneratedMedia(source.id, digest);
+    if (existing) return { ok: true, id: existing.id, mimeType: existing.mimeType, digest, reused: true };
+    const created = this.storage.saveDerivedGeneratedMedia({
+      id: generateId("gm"),
+      source,
+      bytes: payload,
+      mimeType: format,
+      contentDigest: digest
+    });
+    await this.broadcast({ type: "generated_image", batchItemId: source.batchItemId, generatedMediaId: created.id });
+    return { ok: true, id: created.id, mimeType: format, digest, reused: false };
+  }
+
+  /**
+   * Serve stored generated-image bytes to the client, chunked like
+   * `getMedia` — the same response shape `loadMediaAsBlobUrl` assembles.
+   */
+  async getGeneratedImage(id, options = {}) {
+    const row = this.storage.getGeneratedMedia(String(id ?? ""));
+    if (!row || !row.bytes) return { ok: false, code: "media_missing", message: `No stored image for ${id}.` };
+    const chunkIndex = Number.isInteger(options?.chunk) ? options.chunk : 0;
+    const chunkBytes = PREVIEW_CHUNK_BYTES;
+    const total = row.bytes.byteLength;
+    const chunks = Math.max(1, Math.ceil(total / chunkBytes));
+    const start = chunkIndex * chunkBytes;
+    return { mime: row.mimeType ?? "image/png", total, chunk: chunkIndex, chunks, bytes: row.bytes.slice(start, start + chunkBytes) };
   }
 
   /**
@@ -2015,6 +2665,21 @@ export class Gadget extends DurableObject {
         message: "Choose a destination account before submitting for review."
       };
     }
+    /*
+     * Publishing authority, checked where it is used. Draft-first setup does
+     * not demand the Social Hub door up front (`definition.ts`), so a
+     * submission without it is refused by value — naming the one grant that
+     * fixes it — before any publication row is written or door is called.
+     * Read from consent, not from a surviving binding stub.
+     */
+    if (!doorGrantStatus(this.env).social) {
+      return {
+        ok: false,
+        code: "publisher_not_granted",
+        requirementKey: "social",
+        message: "Grant the Social Hub publisher before submitting for review."
+      };
+    }
 
     const caption = revision.caption ?? "";
     // Timing comes with the submission now; the stored revision's own intent
@@ -2053,19 +2718,191 @@ export class Gadget extends DurableObject {
     const warnings = [];
     let packedMedia = publicationMedia({
       derivedMediaRefs: revision.derivedMediaRefs,
-      sourceMedia: sourceItem?.media
+      sourceMedia: sourceItem?.media,
+      fallbackAltText: sourceMediaAltText(sourceItem)
     });
     let posterShipped = false;
+    /*
+     * An accepted AI-generated image is the visual when this revision was
+     * saved under `ai_refinement` — it ships exactly like a stored poster
+     * (bytes → `uploadMedia` → publisher-addressable URL), with the same
+     * JPEG-only destination rule applied to whatever format was delivered.
+     * `ai_refinement` chosen but no bytes delivered is not "fine": for an
+     * open source that is the same refusal the missing poster gets.
+     */
+    /*
+     * The asset shipped is the one THIS revision pinned (migration 16), never
+     * the newest registration — a later image cannot change what files
+     * without a new revision. A pin whose bytes changed since review (a
+     * re-delivery to the same row) refuses rather than filing unseen pixels.
+     */
+    const wantsGenerated = revision.acceptedVisualMode === "ai_refinement";
+    const pinnedRow =
+      wantsGenerated && revision.acceptedGeneratedMediaId
+        ? this.storage.getGeneratedMedia(revision.acceptedGeneratedMediaId)
+        : null;
+    const generatedImage = pinnedRow && pinnedRow.batchItemId === batchItemId && pinnedRow.bytes ? pinnedRow : null;
+    /*
+     * No pin, or a pin whose provenance is unknown (migration 16's guess), is
+     * not a reviewed image. Refused before anything is uploaded; the owner
+     * accepts an image again, which writes a new revision.
+     */
+    if (
+      wantsGenerated &&
+      (!revision.acceptedGeneratedMediaId || revision.acceptedGeneratedMediaProvenance === "unknown")
+    ) {
+      return {
+        ok: false,
+        code: "generated_image_review_required",
+        message: revision.acceptedGeneratedMediaId
+          ? "It is not known which generated image was reviewed for this version. Nothing was filed; accept the image again, then submit."
+          : "No generated image has been accepted for this version. Nothing was filed; accept an image, then submit."
+      };
+    }
+    if (generatedImage && revision.acceptedGeneratedMediaDigest) {
+      const digest = await digestBytes(generatedImage.bytes);
+      if (digest !== revision.acceptedGeneratedMediaDigest) {
+        return {
+          ok: false,
+          code: "generated_image_changed",
+          message:
+            "The generated image stored for this post no longer matches the one that was reviewed. Nothing was filed; review the image and save again."
+        };
+      }
+    }
+    if (wantsGenerated && generatedImage?.bytes) {
+      const { mimeType, extension } = posterMimeType(generatedImage.bytes);
+      const jpegOnly = bindings.some((binding) =>
+        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+      );
+      if (jpegOnly && mimeType !== "image/jpeg") {
+        return {
+          ok: false,
+          code: "generated_image_format_stale",
+          message:
+            "The accepted generated image is a PNG, which Instagram's publish container rejects. Nothing was filed; accept a JPEG copy of the image, then submit again."
+        };
+      }
+      try {
+        const uploaded = await socialUploadMedia(this.env, {
+          dataBase64: bytesToBase64(generatedImage.bytes),
+          mimeType,
+          filename: `generated-${batchItemId}-r${revision.revision}.${extension}`
+        });
+        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
+          packedMedia = {
+            ok: true,
+            media: [
+              {
+                assetId: uploaded.assetId,
+                url: uploaded.url,
+                kind: "image",
+                // The accepted asset's own alt text is the description;
+                // absent, fall back to the post's source description.
+                // Revision alt text, then the asset's, then the source's.
+                altText: revision.altText || generatedImage.altText || sourceMediaAltText(sourceItem),
+                mimeType: uploaded.mimeType ?? mimeType,
+                byteSize: uploaded.byteSize ?? generatedImage.byteLength,
+                width: null,
+                height: null
+              }
+            ]
+          };
+          posterShipped = true;
+        } else {
+          // Refused, not warned: filing on would ship the source photo in place
+          // of the generated image the owner reviewed.
+          return {
+            ok: false,
+            code: "generated_image_not_shipped",
+            message: isDoorRefusal(uploaded) ? uploaded.message : "The generated image could not be prepared for publishing. Nothing was filed; try submitting again."
+          };
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          code: "generated_image_not_shipped",
+          message: `The generated image could not be uploaded (${errorMessage(error)}). Nothing was filed; try submitting again.`
+        };
+      }
+    } else if (wantsGenerated && !generatedImage?.bytes) {
+      /*
+       * Generated-image mode with no stored image is refused for EVERY source,
+       * not only an open one. Shipping the source photograph instead was a
+       * silent substitution: the owner reviewed a generated image and would
+       * have approved someone's reference picture.
+       */
+      return {
+        ok: false,
+        code: "generated_image_required",
+        message: "This post was saved with a generated image, but that image has not arrived yet. Wait for it, or save a different visual, before submitting."
+      };
+    }
     const poster = this.storage.getPoster(batchItemId, revision.revision);
-    if (poster) {
+    // The visual pick is real: `keep_original` ships the source media even
+    // when a poster exists — the drawer's "Source media" pick would be a lie
+    // otherwise. A revision with no recorded pick (NULL — legacy saves and
+    // agent writes that never named a mode) keeps the ship-when-stored
+    // behaviour it was reviewed under.
+    const visualMode = revision.acceptedVisualMode ?? null;
+    const wantsPoster = visualMode !== "ai_refinement" && visualMode !== "keep_original";
+    if (poster && !posterShipped && wantsPoster) {
+      // The stored bytes carry their format — sniffed, never assumed: a
+      // JPEG renders for Instagram's container, a PNG still ships where a
+      // destination accepts it.
+      const { mimeType, extension } = posterMimeType(poster.bytes);
+      /*
+       * A stored PNG under a JPEG-only destination is a draft saved before
+       * the format rule existed: filing it would reach the provider and hold
+       * at `media_not_ready`, indistinguishable from a slow upload. The owner
+       * path is a fresh render — the drawer's Continue saves one — so refuse
+       * here, while the refusal can still name the fix.
+       */
+      const jpegOnly = bindings.some((binding) =>
+        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+      );
+      if (jpegOnly && mimeType !== "image/jpeg") {
+        return {
+          ok: false,
+          code: "poster_format_stale",
+          message:
+            "The saved poster is a PNG, which Instagram's publish container rejects — re-render it as JPEG (Continue to publish saves a fresh one) and submit again."
+        };
+      }
       try {
         const uploaded = await socialUploadMedia(this.env, {
           dataBase64: bytesToBase64(poster.bytes),
-          mimeType: "image/png",
-          filename: `poster-${batchItemId}-r${revision.revision}.png`
+          mimeType,
+          filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
         });
         if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
-          packedMedia = { ok: true, media: [{ assetId: uploaded.assetId, url: uploaded.url, kind: "image" }] };
+          /*
+           * GUD-005: the provider holds media filed without alt text — the
+           * poster describes itself by the copy it renders. Width/height come
+           * from the template, never from sniffed bytes.
+           */
+          let width = null;
+          let height = null;
+          try {
+            ({ width, height } = posterPngConstraints(poster.template));
+          } catch {
+            // A template the schema no longer knows ships without dims.
+          }
+          packedMedia = {
+            ok: true,
+            media: [
+              {
+                assetId: uploaded.assetId,
+                url: uploaded.url,
+                kind: "image",
+                altText: revision.altText || posterAltText(revision.posterLayout),
+                mimeType: uploaded.mimeType ?? mimeType,
+                byteSize: uploaded.byteSize ?? poster.byteLength,
+                width,
+                height
+              }
+            ]
+          };
           posterShipped = true;
         } else {
           warnings.push({
@@ -2079,7 +2916,7 @@ export class Gadget extends DurableObject {
           message: `The poster could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
         });
       }
-    } else if (revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
+    } else if (wantsPoster && revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
       warnings.push({
         code: "poster_not_shipped",
         message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
@@ -2089,7 +2926,7 @@ export class Gadget extends DurableObject {
       return {
         ok: false,
         code: "poster_required",
-        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs the generated poster. Render the poster for this post, or publish from an account you own."
+        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs a generated visual (the text poster or an accepted generated image). Produce one for this post, or publish from an account you own."
       };
     }
     if (!packedMedia.ok) {
@@ -2115,10 +2952,45 @@ export class Gadget extends DurableObject {
      * files nothing. The owner's `createNewVersion` opt-in retires the
      * conflicting rows as the new filing succeeds, never before.
      */
+    /*
+     * The pair is (post, RESOURCE), not (post, alias). Two env names granted
+     * over one account resolve to the same `resolvedId`; keyed by alias, the
+     * second name would file the post again and a submission naming both
+     * would send it twice. Asked live (the row may predate the field), falling
+     * back to the stored description, then the alias itself for the plain
+     * legacy door that has no describe().
+     */
+    const described = new Map();
+    const resourceOf = (binding) =>
+      readString(described.get(binding)?.resolvedId) ??
+      readString(this.storage.getDestination(binding)?.describe?.resolvedId) ??
+      binding;
+    for (const binding of bindings) described.set(binding, await describeConnector(this.env, binding));
+    const aliasesOf = (resource) => [
+      ...new Set([
+        ...this.storage
+          .listDestinations()
+          .filter((row) => readString(row.describe?.resolvedId) === resource)
+          .map((row) => row.binding),
+        ...bindings.filter((binding) => resourceOf(binding) === resource)
+      ])
+    ];
+    const seenResources = new Map();
+    const aliasSkips = [];
+    for (const binding of [...bindings]) {
+      const resource = resourceOf(binding);
+      if (seenResources.has(resource)) {
+        aliasSkips.push({ destinationBinding: binding, reason: "same_resource", sameAs: seenResources.get(resource) });
+        bindings.splice(bindings.indexOf(binding), 1);
+      } else {
+        seenResources.set(resource, binding);
+      }
+    }
+
     const conflictsByBinding = new Map();
     for (const binding of bindings) {
-      const conflicts = this.storage
-        .activePublicationsForPair(batchItem.itemId, binding)
+      const conflicts = aliasesOf(resourceOf(binding))
+        .flatMap((alias) => this.storage.activePublicationsForPair(batchItem.itemId, alias))
         .filter((publication) => publication.batchItemId !== batchItemId);
       if (conflicts.length) conflictsByBinding.set(binding, conflicts);
     }
@@ -2146,12 +3018,58 @@ export class Gadget extends DurableObject {
         continue;
       }
 
+      /*
+       * Live authority, not stored history: a destination row survives a
+       * revoked grant so items it produced still name where they went, but
+       * "stored once" is not "sendable now". Checked BEFORE the door call so
+       * a revocation reads as itself — a grant to re-take — rather than as
+       * `provider_unavailable`, which an owner reads as an outage to wait
+       * out. The door gate would refuse the same call a heartbeat later;
+       * this names it accurately and leaves nothing half-filed.
+       */
+      if (!bindingGranted(this.env, binding)) {
+        const label =
+          this.storage.listDestinations().find((row) => row.binding === binding)?.label ?? binding;
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_not_granted",
+          message: `${label} is no longer connected — grant the connection again in Settings, then submit.`
+        });
+        continue;
+      }
+
+      /*
+       * The door's `destinationBinding` is the connector resource binding id
+       * (`crb_…`), not the env name this workspace knows the account by —
+       * `createDraft` resolves it through `loadConnectorResourceGrantById`,
+       * which only answers the id. `describe()` states it (`resolvedId`), and
+       * is asked HERE, at the moment of use, so a row stored before the field
+       * existed resolves the same way a fresh one does. A binding whose door
+       * offers no describe() at all is the older plain-env shape — the env
+       * name itself is the publisher address — while a describe-capable door
+       * that cannot name a resolvedId is a real misconfiguration to refuse.
+       * (`typeof` is safe HERE: the gate's Proxy reports "function" for every
+       * name, so a non-function member means a genuinely plain object.)
+       */
+      const door = this.env[binding];
+      const described = await describeConnector(this.env, binding);
+      const resolvedId =
+        readString(described?.resolvedId) ?? (door && typeof door.describe !== "function" ? binding : null);
+      if (!resolvedId) {
+        failures.push({
+          destinationBinding: binding,
+          code: "destination_unresolved",
+          message: `${binding} did not describe a destination the publisher can address.`
+        });
+        continue;
+      }
+
       let draft;
       try {
         draft = await socialCreateDraft(this.env, {
           caption,
           media: packedMedia.media,
-          targets: [{ destinationBinding: binding }],
+          targets: [{ destinationBinding: resolvedId }],
           origin: attribution.origin,
           protectedLiterals,
           // The Social Hub owns schedule validation and time resolution.
@@ -2210,7 +3128,19 @@ export class Gadget extends DurableObject {
         replaceIds
       });
       filed.push({ destinationBinding: binding, publicationId, postId: draft.postId, versionId: draft.versionId });
-      mergedTargets.push(...normalizeTargets(draft.targets, [binding]));
+      /*
+       * Provenance stamp (§9.A): the cached target row says WHICH filing it
+       * describes, so a later superseded revision's stale "held" can never
+       * be read back as this revision's outcome.
+       */
+      mergedTargets.push(
+        ...normalizeTargets(this.toWorkspaceBindings(draft.targets), [binding]).map((target) => ({
+          ...target,
+          publicationId,
+          publicationRevision: expectedRevision,
+          publicationVersion: draft.versionId
+        }))
+      );
       lastFiled = draft;
     }
 
@@ -2227,6 +3157,27 @@ export class Gadget extends DurableObject {
       return { ok: false, code: first.code, message: first.message, failures };
     }
 
+    /*
+     * Rebuild the item's cached target rows: the fresh stamped rows for what
+     * was just filed, plus any still-live cached rows for destinations this
+     * filing did not touch. A cached row whose publication no longer exists
+     * (superseded by this very filing) drops out — keeping it is exactly how
+     * an old "held" used to shadow a newer published version.
+     */
+    const filedBindings = new Set(filed.map((entry) => entry.destinationBinding));
+    const livePubs = this.storage
+      .publicationsFor(batchItemId)
+      .filter((publication) => publication.state !== "superseded" && publication.state !== "failed");
+    const livePubIds = new Set(livePubs.map((publication) => publication.id));
+    const livePubBindings = new Set(livePubs.map((publication) => publication.destinationBinding));
+    const retainedTargets = (batchItem.targets ?? []).filter(
+      (target) =>
+        target &&
+        !filedBindings.has(target.destinationBinding) &&
+        ((target.publicationId && livePubIds.has(target.publicationId)) ||
+          (!target.publicationId && livePubBindings.has(target.destinationBinding)))
+    );
+    const nextTargets = [...retainedTargets, ...mergedTargets];
     this.storage.updateBatchItem(batchItemId, {
       state: "review_requested",
       approval_id: null,
@@ -2234,7 +3185,7 @@ export class Gadget extends DurableObject {
       content_hash: lastFiled.contentHash,
       post_id: lastFiled.postId,
       version: lastFiled.versionId,
-      targets_json: JSON.stringify(mergedTargets.length ? mergedTargets : null)
+      targets_json: JSON.stringify(nextTargets.length ? nextTargets : null)
     });
     await this.broadcast({ type: "review_requested", batchItemId, versionId: lastFiled.versionId });
     return {
@@ -2261,22 +3212,99 @@ export class Gadget extends DurableObject {
     if (!batchItem) return { publications: [], targets: [] };
 
     const publications = [];
+    const freshByPublication = new Map();
     for (const publication of this.storage.publicationsFor(batchItemId)) {
       // A `bound` row was never sent — there is no `versionId` to poll.
       let targets = [];
       if (publication.version) {
         const fresh = await socialReadStatus(this.env, publication.version);
         const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
-        targets = normalizeTargets(freshTargets, [publication.destinationBinding], null);
+        /*
+         * Every answered check stamps `lastCheckedAt`; identifiers the door
+         * returned fill in the receipt. A refusal/absent read changes nothing,
+         * and receipt fields are only ever filled, never cleared.
+         */
+        if (fresh && !isDoorRefusal(fresh)) {
+          const mine = (Array.isArray(freshTargets) ? freshTargets : []).find((entry) => {
+            const binding = this.toWorkspaceBindings([entry])[0]?.destinationBinding ?? entry?.destinationBinding;
+            return binding === publication.destinationBinding;
+          });
+          this.storage.recordPublicationCheck(publication.id, {
+            providerId: readString(mine?.providerPostId) ?? readString(mine?.providerId) ?? readString(mine?.provider_post_id) ?? null,
+            url: readString(mine?.receiptUrl) ?? readString(mine?.receipt_url) ?? null
+          });
+        }
+        targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null).map(
+          (target) => ({
+            ...target,
+            publicationId: publication.id,
+            publicationRevision: publication.revision,
+            publicationVersion: publication.version
+          })
+        );
         if (freshTargets) {
-          // The pair's own outcome rows are the item's canonical targets.
-          this.storage.updateBatchItem(batchItemId, { targets_json: JSON.stringify(targets) });
+          freshByPublication.set(publication.id, targets);
         }
       }
       publications.push({ ...publication, targets });
     }
 
-    return { publications, targets: publications.flatMap((publication) => publication.targets) };
+    /*
+     * One write for the whole item, not one per publication — the old loop
+     * overwrote targets_json with each row's own read, so only the LAST
+     * publication's destination survived. Cached rows for publications the
+     * door said nothing about (or that have no version to poll) stay, while
+     * rows stamped for a publication that no longer exists drop out.
+     */
+    const liveIds = new Set(
+      publications
+        .filter((publication) => publication.state !== "superseded" && publication.state !== "failed")
+        .map((publication) => publication.id)
+    );
+    if (freshByPublication.size) {
+      const retained = (batchItem.targets ?? []).filter(
+        (target) => target && (target.publicationId ? liveIds.has(target.publicationId) : true)
+      );
+      // Only a LIVE publication's fresh read belongs in the item's current
+      // outcome cache — a superseded row is polled for history, not state.
+      const freshRows = publications
+        .filter((publication) => liveIds.has(publication.id))
+        .flatMap((publication) => freshByPublication.get(publication.id) ?? []);
+      const freshBindings = new Set(freshRows.map((target) => target.destinationBinding));
+      const merged = [
+        ...retained.filter((target) => !freshBindings.has(target.destinationBinding)),
+        ...freshRows
+      ];
+      this.storage.updateBatchItem(batchItemId, {
+        targets_json: JSON.stringify(merged.length ? merged : null)
+      });
+    }
+
+    const stored = new Map(this.storage.publicationsFor(batchItemId).map((row) => [row.id, row]));
+    const refreshed = publications.map((publication) => ({ ...(stored.get(publication.id) ?? publication), targets: publication.targets }));
+    return { publications: refreshed, targets: refreshed.flatMap((publication) => publication.targets) };
+  }
+
+  /**
+   * The door keys its target rows by the resource binding id it published to
+   * (`crb_…`), while this workspace files publications under the env name the
+   * owner picked. `resolvedId` is the bridge already stored on each
+   * destination row — without this translation every returned outcome reads
+   * as "unknown" forever, and `draft.targets` at submit time file a row keyed
+   * to an id nobody else in this workspace uses.
+   */
+  toWorkspaceBindings(entries) {
+    const resolvedToBinding = new Map();
+    for (const row of this.storage.listDestinations()) {
+      const resolvedId = readString(row.describe?.resolvedId);
+      if (resolvedId) resolvedToBinding.set(resolvedId, row.binding);
+    }
+    if (!resolvedToBinding.size) return Array.isArray(entries) ? entries : [];
+    return (Array.isArray(entries) ? entries : []).map((entry) => {
+      const key = entry?.destinationBinding ?? entry?.binding;
+      const workspace = typeof key === "string" ? resolvedToBinding.get(key) : undefined;
+      return workspace ? { ...entry, destinationBinding: workspace } : entry;
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -2559,6 +3587,97 @@ function duplicatePublicationRefusal(conflictsByBinding, itemId) {
   };
 }
 
+/**
+ * The fingerprint a revision pins its generated asset by. WebCrypto SHA-256
+ * where the runtime has it (workerd and Node both do); `length:<n>` only as
+ * a documented fallback — weaker, still compared literally.
+ */
+async function digestBytes(bytes) {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle && typeof subtle.digest === "function") {
+    const hash = new Uint8Array(await subtle.digest("SHA-256", bytes));
+    return `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `length:${bytes.byteLength}`;
+}
+
+/**
+ * A caller-supplied `generationRequest` that is not the item's current mark
+ * id is late work from a superseded (or already answered) ask. Returns the
+ * block issue, or null when the id is absent or current.
+ */
+function staleGenerationIssue(batchItem, generationRequest) {
+  if (typeof generationRequest !== "string" || !generationRequest) return null;
+  const mark = generationMark(batchItem.generation);
+  if (mark?.id && mark.id === generationRequest) return null;
+  return {
+    code: "generation_request_stale",
+    severity: "block",
+    message: "This work answers a generation request that is no longer the post's current one, so it was not saved over the newer draft."
+  };
+}
+
+/**
+ * A correlated save (it echoes the current mark's id) that changes a part the
+ * request did not ask for. "Regenerate image" must keep the caption and
+ * "Rewrite caption" must keep the accepted image — the owner's own saves (no
+ * request id) are never limited by this.
+ */
+function unrequestedPartIssue(storage, batchItem, { generationRequest, caption, acceptedVisualMode, acceptedGeneratedMediaId }) {
+  if (typeof generationRequest !== "string" || !generationRequest) return null;
+  const mark = generationMark(batchItem.generation);
+  if (!mark || mark.id !== generationRequest) return null;
+  // Authorized by what was REQUESTED (`scope`), not by what remains
+  // (`needs`): an image delivered first must not make the caption save that
+  // accepts it look unrequested (audit 5ccaff1 G1).
+  const previous = storage.latestRevision(batchItem.id);
+  if (!mark.scope.caption && caption !== undefined && caption !== (previous?.caption ?? null)) {
+    return {
+      code: "generation_part_not_requested",
+      severity: "block",
+      message: "This request asked for a new image only, so the caption was left as it is. Save the image without changing the caption."
+    };
+  }
+  const visualChanged =
+    (acceptedVisualMode !== undefined && acceptedVisualMode !== (previous?.acceptedVisualMode ?? null)) ||
+    (acceptedGeneratedMediaId !== undefined &&
+      acceptedGeneratedMediaId !== null &&
+      acceptedGeneratedMediaId !== (previous?.acceptedGeneratedMediaId ?? null));
+  if (!mark.scope.image && visualChanged) {
+    return {
+      code: "generation_part_not_requested",
+      severity: "block",
+      message: "This request asked for a new caption only, so the accepted image was left as it is. Save the caption without changing the image."
+    };
+  }
+  return null;
+}
+
+function instructionOverridesOf(batchItem) {
+  const stored = batchItem?.instructionOverrides ?? {};
+  const text = (value) => (typeof value === "string" && value.trim() ? value : null);
+  return { image: text(stored.image), caption: text(stored.caption) };
+}
+
+/** The client-facing shape of one generated_media row. */
+function projectGeneratedMedia(row, status = null) {
+  return {
+    id: row.id,
+    ready: row.bytes != null,
+    mimeType: row.mimeType,
+    altText: row.altText,
+    attachmentId: row.attachmentId,
+    deliveredAt: row.deliveredAt,
+    digest: row.contentDigest,
+    generationRequest: row.generationRequest,
+    derivedFrom: row.derivedFrom ?? null,
+    // "accepted" | "candidate" | "superseded" | "legacy" (derived on read).
+    status,
+    // Derived, never the registration-time flag alone.
+    stale: status ? status === "superseded" : row.stale
+  };
+}
+
 function conflictResult(currentRevision) {
   return {
     ok: false,
@@ -2577,10 +3696,53 @@ function isPngSignature(bytes) {
   return PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
 }
 
+function isJpegSignature(bytes) {
+  return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
 function readPngDimensions(bytes) {
   if (bytes.byteLength < 24) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
+ * JPEG dims live in the first SOF segment (C0–CF except DHT/JPG/DAC), reached
+ * by walking `FF marker len16` segments from the SOI. Anything that doesn't
+ * parse is null — the caller treats that as "not an image we ship".
+ */
+function readJpegDimensions(bytes) {
+  if (!isJpegSignature(bytes)) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 2;
+  while (offset + 4 <= bytes.byteLength) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1];
+    // Standalone markers carry no length field: TEM, RSTn, SOI, EOI.
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2;
+      continue;
+    }
+    const length = view.getUint16(offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.byteLength) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return offset + 9 <= bytes.byteLength
+        ? { height: view.getUint16(offset + 5), width: view.getUint16(offset + 7) }
+        : null;
+    }
+    offset += 2 + length;
+  }
+  return null;
+}
+
+/**
+ * What `uploadMedia` should declare for a stored poster. The save path
+ * admits only PNG and JPEG, so a stored poster always resolves; the fallback
+ * is PNG purely so a corrupt row fails as a format refusal downstream rather
+ * than a bogus claim here.
+ */
+function posterMimeType(bytes) {
+  return isJpegSignature(bytes) ? { mimeType: "image/jpeg", extension: "jpg" } : { mimeType: "image/png", extension: "png" };
 }
 
 /** Uint8Array / ArrayBuffer / plain array / base64 string, all in — one boundary for "bytes arrived over RPC or JSON". */

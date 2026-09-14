@@ -42,6 +42,7 @@ import {
   computeIssues,
   createSetupDraft,
   createWizardState,
+  renderPublish,
   applySavedPoster,
   discardDraft,
   draftIsDirty,
@@ -49,13 +50,14 @@ import {
   isApprovalExpired,
   setBatch,
   resumeBatch,
+  setPublishError,
   recordDraftConflict,
   resolveDraftConflict,
   submitEnabled,
   toConfigPayload,
   updateDraft
 } from "../../src/src/client/steps.js";
-import { createInboxState, drawerAction, drawerProjection, groupSourcesWithBatches, renderInbox, setInboxFilter, setInboxSummaries, visibleBatchSummaries } from "../../src/src/client/inbox.js";
+import { createInboxState, clearInboxSelection, drawerAction, drawerProjection, groupSourcesWithBatches, inboxSelectionCount, renderInbox, selectedInboxItems, setInboxFilter, setInboxSummaries, toggleInboxItem, visibleBatchSummaries, visibleInboxItems } from "../../src/src/client/inbox.js";
 import { suggestProtectedTerms } from "../../src/src/client/steps.js";
 import { LOCALES, STRINGS, t } from "../../src/src/client/i18n.js";
 import { normalizeConfig } from "../../src/config.js";
@@ -265,6 +267,143 @@ describe("the selection tray, when nothing is set up to publish to", () => {
   });
 });
 
+/*
+ * #1960 — the publish step's draft cards used to hide behind the
+ * zero-destination empty state: the owner could not SEE what they drafted
+ * until a destination existed. The cards paint regardless; only the send
+ * waits, and the notice above the grid names the way out.
+ */
+describe("the Publish step, when nothing is set up to publish to", () => {
+  const item = {
+    id: "item1",
+    state: "drafting",
+    sourceItem: { sourceLabel: "@acct", provider: "instagram", text: "a post", id: "p1" },
+    revision: 1,
+    destinationBindings: [],
+    publications: []
+  };
+
+  function publishView(summary: unknown) {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const wizard = setBatch(createWizardState(), { id: "batch1", items: [item] as never });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary,
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    return root;
+  }
+
+  const cards = (root: unknown) =>
+    findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-preview-card"));
+  const submitButtons = (root: unknown) =>
+    findAll(
+      root as never,
+      (e: { tagName?: string; textContent?: string }) =>
+        e.tagName === "BUTTON" && String(e.textContent ?? "").includes("Submit for review")
+    );
+
+  const notices = (root: unknown) =>
+    findAll(root as never, (e: { classList?: { contains(n: string): boolean } }) =>
+      e.classList?.contains("sl-notice") === true);
+
+  it("renders the draft cards under the no-destination notice", () => {
+    const root = publishView({ destinations: [] });
+    expect(cards(root)).toHaveLength(1);
+    expect(notices(root)).toHaveLength(1);
+  });
+
+  it("keeps the card's own submit visible, disabled, and naming the missing destination", () => {
+    const root = publishView({ destinations: [] });
+    const submit = submitButtons(root)[0] as { disabled?: boolean; getAttribute(n: string): string | null };
+    expect(submit).toBeDefined();
+    expect(submit.disabled).toBe(true);
+    expect(submit.getAttribute("title")).toBe("No destination set up yet");
+  });
+
+  it("does not let a since-revoked destination binding submit through", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    // The item still carries the binding a removed destination left behind —
+    // the picker cannot render it, so it is not a choice the owner made.
+    const wizard = setBatch(createWizardState(), {
+      id: "batch1",
+      items: [{ ...item, destinationBindings: ["IG_GONE"] }] as never
+    });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary: { destinations: [] },
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    const submit = submitButtons(root)[0] as { disabled?: boolean };
+    expect(submit).toBeDefined();
+    expect(submit.disabled).toBe(true);
+  });
+
+  /*
+   * The stored-but-revoked case: the destination row still exists (history
+   * is not rewritten) but the server's live read says its grant is gone.
+   * The row renders marked and untouchable; a submit resting on it alone
+   * stays disabled — and re-granting flips `granted` back, re-enabling the
+   * owner's original selection instead of re-pointing it elsewhere.
+   */
+  it("shows a revoked destination marked and keeps a submit resting on it alone disabled", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    // The item still points at the destination it was drafted for — the
+    // picker's seeded selection — while the summary says its grant is gone.
+    const wizard = setBatch(createWizardState(), {
+      id: "batch1",
+      items: [{ ...item, destinationBindings: ["IG_MAIN"] }] as never
+    });
+    renderPublish(root as never, wizard as never, {
+      locale: "en",
+      summary: { destinations: [{ binding: "IG_MAIN", label: "IG", provider: "instagram", granted: false }] },
+      policy: {},
+      handlers: {
+        onOpenSettings() {}, onRefreshGrants() {}, onToggleBinding() {},
+        onPublishIntent() {}, onEditCaption() {}, onSubmitItem() {},
+        onRetry() {}, onCheckManually() {}, onBack() {}
+      }
+    } as never);
+    const rows = findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-dest-row"));
+    expect(rows).toHaveLength(1);
+    expect(String((rows[0] as { className?: string }).className)).toContain("sl-dest-row-revoked");
+    const checkbox = findAll(rows[0] as never, (e: { tagName?: string }) => e.tagName === "INPUT")[0] as { disabled?: boolean };
+    expect(checkbox.disabled).toBe(true);
+    expect(findAll(rows[0] as never, (e: { textContent?: string }) => String(e.textContent ?? "").includes("access revoked"))).toHaveLength(1);
+    const submit = submitButtons(root)[0] as { disabled?: boolean };
+    expect(submit.disabled).toBe(true);
+  });
+
+  it("re-enables the same selection once the grant is back", () => {
+    const root = publishView({ destinations: [{ binding: "IG_MAIN", label: "IG", provider: "instagram", granted: true }] });
+    const rows = findAll(root as never, (e: { className?: string }) => String(e.className ?? "").includes("sl-dest-row"));
+    expect(rows).toHaveLength(1);
+    expect(String((rows[0] as { className?: string }).className)).not.toContain("sl-dest-row-revoked");
+  });
+
+  it("shows no notice once a destination exists", () => {
+    const root = publishView({ destinations: [{ binding: "IG_MAIN", label: "IG" }] });
+    expect(cards(root)).toHaveLength(1);
+    expect(notices(root)).toHaveLength(0);
+  });
+});
+
 describe("suggestProtectedTerms", () => {
   it("offers repeated capitalized names and hashtags from the owner's own posts", () => {
     const items = [
@@ -355,7 +494,15 @@ describe("steps.js transitions", () => {
     expect(wizard.batch.items.map((item) => item.id)).toEqual(["draft"]);
     expect(wizard.drafts.submitted).toBeUndefined();
     expect(drawerAction({ state: "expired" }).kind).toBe("resume");
-    expect(drawerAction({ state: "published" }).kind).toBe("unavailable");
+    // A state with no delivery evidence is an outcome to inspect, not a
+    // silent draft and not "unavailable" — unknown maps to attention.
+    expect(drawerAction({ state: "published" }).kind).toBe("outcome");
+    // The real published path: a live delivery at the current revision
+    // whose canonical outcome reads back published shows its receipt.
+    expect(drawerAction({
+      state: "review_requested",
+      phase: "published"
+    }).kind).toBe("receipt");
   });
 
   it("blocks dirty or in-flight submissions and rejects edits while submitting", () => {
@@ -434,6 +581,141 @@ describe("inbox.js projections", () => {
     // `.sl-post-open` button — which opens the drawer for its batch.
     await buttons.find((button) => button.classList?.contains("sl-post-open"))?.dispatchEvent({ type: "click" });
     expect(calls).toEqual(["inspect:b1"]);
+  });
+
+  // §9 — the Content card IS a post: per-item chips, per-item drawer
+  // targeting, per-item selection across batches.
+  const phaseBatch = (id: string, items: any[], extra: Record<string, unknown> = {}) => ({
+    id,
+    draftCount: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
+    items,
+    ...extra
+  });
+  const summaryItem = (batchItemId: string, patch: Record<string, unknown> = {}) => ({
+    batchItemId,
+    batchId: "b",
+    itemId: `src-${batchItemId}`,
+    state: "drafting",
+    revision: 1,
+    phase: "draft",
+    deliveries: [],
+    sourceLabel: "Account",
+    sourceText: "Source post text",
+    caption: "Saved caption",
+    ...patch
+  });
+
+  it("targets the drawer at the one clicked post, not its batch", () => {
+    const drawer = drawerProjection(
+      { id: "b1", items: [summaryItem("bi-1"), summaryItem("bi-2", { caption: "Other" })] },
+      null,
+      "bi-2"
+    );
+    expect(drawer?.batchItemId).toBe("bi-2");
+    // Siblings stay available for navigation without becoming the subject.
+    expect(drawer?.items).toHaveLength(2);
+  });
+
+  it("selects posts across batches and keeps the selection through filter changes", () => {
+    let state = setInboxSummaries(createInboxState(), {
+      batches: [
+        phaseBatch("b1", [summaryItem("bi-1"), summaryItem("bi-2")], { draftCount: 2 }),
+        phaseBatch("b2", [summaryItem("bi-3", { batchId: "b2", phase: "in_review" })], { reviewCount: 1 })
+      ],
+      totals: { batches: 2, items: 3, drafts: 2, review: 1 }
+    });
+    state = toggleInboxItem(state, "bi-1", { batchId: "b1", itemId: "src-bi-1", revision: 1 });
+    state = toggleInboxItem(state, "bi-3", { batchId: "b2", itemId: "src-bi-3", revision: 2 });
+    expect(inboxSelectionCount(state)).toBe(2);
+
+    // A filter that hides a selected post does not drop the selection.
+    state = setInboxFilter(state, "review");
+    expect(inboxSelectionCount(state)).toBe(2);
+    expect(visibleInboxItems(state).map(({ item }) => item.batchItemId)).toEqual(["bi-3"]);
+
+    // A summaries refresh carries the freshest observed revision forward.
+    state = setInboxFilter(state, "all");
+    state = setInboxSummaries(state, {
+      batches: [
+        phaseBatch("b1", [summaryItem("bi-1", { revision: 4 }), summaryItem("bi-2")], { draftCount: 2 }),
+        phaseBatch("b2", [summaryItem("bi-3", { batchId: "b2", phase: "in_review" })], { reviewCount: 1 })
+      ]
+    });
+    expect(selectedInboxItems(state).find((entry) => entry.batchItemId === "bi-1")?.revision).toBe(4);
+
+    state = clearInboxSelection(state);
+    expect(inboxSelectionCount(state)).toBe(0);
+  });
+
+  it("checkboxes select without opening, and the dock reports the count", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    renderInbox(root, setInboxSummaries(createInboxState(), {
+      batches: [phaseBatch("b1", [summaryItem("bi-1")], { draftCount: 1 })],
+      totals: { batches: 1, items: 1, drafts: 1 }
+    }), {
+      locale: "en",
+      handlers: {
+        onInspectBatch: (batch: { id: string }, itemId: string) => calls.push(`inspect:${batch.id}:${itemId}`),
+        onSelectItem: (id: string, entry: { revision: number }) => calls.push(`select:${id}:${entry.revision}`),
+        onClearItemSelection: () => calls.push("clear"),
+        onReviewSelected: () => calls.push("review"),
+        onInboxFilter: () => {},
+        onLoadMoreBatches: () => {}
+      }
+    });
+    // The checkbox is a sibling of the open button — change selects only.
+    const checkbox = findAll(root, (node) => node.classList?.contains("sl-post-check"))[0];
+    expect(checkbox).toBeTruthy();
+    await checkbox.dispatchEvent({ type: "change", currentTarget: { checked: true } });
+    expect(calls).toEqual(["select:bi-1:1"]);
+
+    // The card body still opens — and names the ITEM, not just the batch.
+    await findAll(root, (node) => node.classList?.contains("sl-post-open"))[0]?.dispatchEvent({ type: "click" });
+    expect(calls[1]).toBe("inspect:b1:bi-1");
+  });
+
+  it("renders the dock once posts are selected, wired to clear and review", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    const state = toggleInboxItem(
+      setInboxSummaries(createInboxState(), {
+        batches: [phaseBatch("b1", [summaryItem("bi-1")], { draftCount: 1 })],
+        totals: { batches: 1, items: 1, drafts: 1 }
+      }),
+      "bi-1",
+      { batchId: "b1", itemId: "src-bi-1", revision: 1 }
+    );
+    renderInbox(root, state, {
+      locale: "en",
+      handlers: {
+        onInspectBatch: () => {},
+        onSelectItem: () => {},
+        onClearItemSelection: () => calls.push("clear"),
+        onReviewSelected: () => calls.push("review"),
+        onInboxFilter: () => {},
+        onLoadMoreBatches: () => {}
+      }
+    });
+    expect(root.textContent).toContain("1 selected");
+    const buttons = findAll(root, (node) => node.tagName === "BUTTON");
+    await buttons.find((button) => button.textContent === "Clear")?.dispatchEvent({ type: "click" });
+    await buttons.find((button) => button.textContent === "Review selected")?.dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["clear", "review"]);
+  });
+
+  it("maps every shared phase to its drawer action, queued included", () => {
+    // A marked, un-drafted item is queued — the action is to wait, not
+    // "continue" into output that does not exist.
+    expect(drawerAction({ state: "drafting", revision: 0, generation: "requested" }).kind).toBe("waiting");
+    expect(drawerAction({ state: "drafting", revision: 2, generation: "requested" }).kind).toBe("resume");
+    expect(drawerAction({ phase: "queued" }).kind).toBe("waiting");
+    expect(drawerAction({ phase: "in_review" }).kind).toBe("approval");
+    expect(drawerAction({ phase: "scheduled" }).kind).toBe("schedule");
+    expect(drawerAction({ phase: "published" }).kind).toBe("receipt");
+    expect(drawerAction({ phase: "attention" }).kind).toBe("outcome");
   });
 });
 
@@ -912,6 +1194,46 @@ describe("bundled client.js smoke test", () => {
       expect(findAll(document.body, (element) => hasClass(element, "sl-setup-error"))).toHaveLength(0);
       expect(findSetupForm(document)).toBeTruthy();
       expect(document.body.textContent).toContain("Settings saved. Monitoring was not changed.");
+
+      // Staying is for explicit activation, not a dead end: once the first
+      // save makes the gadget configured, the way back to the posts is drawn.
+      // Before, it rendered only when the form was re-opened from Settings,
+      // so a new owner had nothing to press but reload.
+      const back = findAll(document.body, (element) => element.tagName === "BUTTON" && element.textContent === "Cancel");
+      expect(back).toHaveLength(1);
+    });
+
+    it("offers the scan cadence grant when turning monitoring on is refused for it", async () => {
+      const { document } = installMinimalDom();
+      document.documentElement.lang = "en";
+      const { gadget } = unconfiguredGadget(async () => ({ configured: true }));
+      (gadget as Record<string, unknown>).setMonitoring = async () => ({
+        ok: false,
+        code: "schedule_not_granted",
+        requirementKey: "schedule",
+        message: "Grant the scan cadence before turning monitoring on."
+      });
+      (globalThis as any).gadget = gadget;
+
+      await import(pathToFileURL(bundlePath).href + `?case=schedule-not-granted-${Date.now()}`);
+      await flushAsyncWork();
+      await findPrimaryButton(document).dispatchEvent({ type: "click", preventDefault: () => {} });
+      await flushAsyncWork();
+
+      const enable = findAll(document.body, (element) => element.tagName === "BUTTON" && element.getAttribute?.("data-monitor-enable") === "true")[0];
+      expect(enable.disabled).toBe(false);
+      await enable.dispatchEvent({ type: "click", preventDefault: () => {} });
+      await flushAsyncWork();
+
+      const banner = findAll(document.body, (element) => hasClass(element, "sl-setup-error"))[0];
+      expect(banner?.textContent).toContain(t("en", "scheduleNotGrantedBody"));
+      // The owner's language, not the server's diagnostic sentence.
+      expect(banner?.textContent).not.toContain("Grant the scan cadence before turning monitoring on.");
+      const grant = findAll(banner, (element) => element.tagName === "BUTTON")[0];
+      expect(grant?.textContent).toBe(t("en", "scheduleGrantAction"));
+      for (const locale of LOCALES) {
+        for (const key of ["scheduleNotGrantedBody", "scheduleGrantAction"]) expect(t(locale, key), `${locale}.${key}`).not.toBe(key);
+      }
     });
 
     it("surfaces a failed setConfig inline (no alert) instead of silently resetting", async () => {
@@ -1152,3 +1474,62 @@ describe("a card's cover comes from cached bytes", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// steps.js — draft first: publishing authority is asked for at submit
+// ---------------------------------------------------------------------------
+
+describe("the publish step, when publishing authority is missing", () => {
+  it("says so in the owner's language and asks the host for the Social Hub publisher", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    const batch = {
+      id: "b1",
+      items: [
+        {
+          id: "bi1",
+          revision: 1,
+          caption: "第一稿內容文字",
+          state: "drafting",
+          destinationBindings: [],
+          publications: [],
+          posterLayout: null,
+          sourceItem: { sourceLabel: "@essentialfoodsofficial", provider: "instagram" }
+        }
+      ]
+    };
+    let state = resumeBatch(createWizardState(), batch as never);
+    state = setPublishError(state, "bi1", {
+      code: "publisher_not_granted",
+      message: "Grant the Social Hub publisher before submitting for review."
+    });
+    const handlers = new Proxy(
+      { onGrantPublishing: (id: string) => calls.push(`grant:${id}`) } as Record<string, unknown>,
+      { get: (target, key: string) => (key in target ? target[key] : () => {}) }
+    );
+    renderPublish(root, state, {
+      locale: "en",
+      handlers,
+      policy: normalizeConfig({ cadence: "daily" }),
+      summary: { destinations: [{ destinationBinding: "IG_FAVCRM", label: "@favcrm.io", provider: "instagram" }] }
+    });
+
+    const alert = findAll(root, (node) => node.getAttribute?.("role") === "alert")[0];
+    expect(alert?.textContent).toContain(t("en", "publisherNotGrantedBody"));
+    expect(alert?.textContent).not.toContain("Grant the Social Hub publisher before submitting for review.");
+
+    const grant = findAll(root, (node) => node.tagName === "BUTTON" && (node.textContent ?? "").includes(t("en", "publisherGrantAction")))[0];
+    expect(grant).toBeTruthy();
+    await grant.dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["grant:bi1"]);
+  });
+
+  it("has the refusal and its action in every locale", () => {
+    for (const locale of LOCALES) {
+      for (const key of ["publisherNotGrantedTitle", "publisherNotGrantedBody", "publisherGrantAction"]) {
+        expect({ locale, key, present: Boolean((STRINGS as Record<string, Record<string, string>>)[locale]?.[key]) }).toEqual({ locale, key, present: true });
+      }
+    }
+  });
+});

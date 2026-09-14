@@ -54,10 +54,29 @@ function sqlite() {
   return { ctx, db, sql };
 }
 
+/**
+ * A connector destination door as the platform wires it: `describe()` states the
+ * connector resource binding id (`crb_…`) `createDraft` wants as its target.
+ */
+function connectorDoor(name: string) {
+  return {
+    async describe() {
+      return {
+        provider: "instagram",
+        role: "destination",
+        resourceLabel: name,
+        resolvedId: `crb_${name.toLowerCase()}`
+      };
+    }
+  };
+}
+
 /** The Social Hub as the gadget sees it: createDraft answers, submitForReview files the ask by refusing. */
 function mockSocial(created: unknown[]) {
   let version = 0;
   return {
+    FB_MAIN: connectorDoor("FB_MAIN"),
+    IG_OUT: connectorDoor("IG_OUT"),
     social: {
       async createDraft(input: { targets?: { destinationBinding: string }[] }) {
         created.push(input);
@@ -147,10 +166,39 @@ describe("TEST-002: one active localization per post while it is drafting", () =
   });
 });
 
+describe("draft first: publishing authority is checked at submission", () => {
+  it("refuses publisher_not_granted when a destination is chosen but the Social Hub door is not granted", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    const { item } = await draft(gadget);
+
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: ["IG_DEST"] });
+    expect(refused).toMatchObject({ ok: false, code: "publisher_not_granted", requirementKey: "social" });
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("reads consent rather than a surviving binding stub, and calls no door", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created), __consent: { social: false } });
+    const { item } = await draft(gadget);
+
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: ["IG_DEST"] });
+    expect(refused).toMatchObject({ ok: false, code: "publisher_not_granted" });
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+  });
+
+  it("still asks for a destination first when neither is set", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    const { item } = await draft(gadget);
+    const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: [] });
+    expect(refused).toMatchObject({ ok: false, code: "batch_needs_destinations" });
+  });
+});
+
 describe("TEST-004/005/012: the pair rule lives at submit", () => {
   it("refuses a submit with no destination, and writes no publication", async () => {
     const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     const { item } = await draft(gadget);
 
     const refused = await gadget.submitForReview({ batchItemId: item.id, expectedRevision: 1, destinationBindings: [] });
@@ -167,7 +215,7 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
 
   it("files one publication per binding, and the same pair on another localization refuses", async () => {
     const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     const first = await draft(gadget);
 
     const submitted = await gadget.submitForReview({
@@ -182,8 +230,9 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     expect(gadget.storage.publicationsFor(first.item.id)).toMatchObject([
       { destinationBinding: "FB_MAIN", revision: 1, state: "review_requested", postId: "post-1", version: "ver-1" }
     ]);
-    // Each binding is its own draft: the door saw exactly one target.
-    expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "FB_MAIN" }]);
+    // Each binding is its own draft: the door saw exactly one target — the
+    // connector resource binding id `describe()` resolved, not the env name.
+    expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "crb_fb_main" }]);
 
     // The owner's new version leaves the filed localization active — REQ-017's
     // pair, not the item, is now what a second draft would collide with.
@@ -226,6 +275,109 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
         .map((row) => `${row.destinationBinding}:${row.state}`)
         .sort()
     ).toEqual(["FB_MAIN:review_requested", "IG_OUT:review_requested"]);
+  });
+});
+
+/*
+ * TASK-103 follow-up: a stored destination row is HISTORY, not authority.
+ * The picker and the submit must answer "is this connection still granted?"
+ * from live state — `env` in the no-projection case, `env.__consent` when
+ * the runtime supplies it — never from the row's own continued existence.
+ */
+describe("destination eligibility is live authority, not stored history", () => {
+  it("refuses a submit to a revoked destination, keeps the row, and files once regranted", async () => {
+    const created: unknown[] = [];
+    const env: Record<string, unknown> = {
+      workspace: { notify: async () => {} },
+      FB_MAIN: {},
+      ...mockSocial(created)
+    };
+    const gadget = gadgetWith(env);
+    const { item } = await draft(gadget);
+    // The stored row — what a configured destination looks like.
+    gadget.storage.setDestinations([{ binding: "FB_MAIN", label: "Facebook Page", provider: "facebook" }]);
+
+    let summary = await gadget.summary();
+    expect(summary.destinations).toMatchObject([{ binding: "FB_MAIN", granted: true }]);
+
+    // Revoke: a remint rebuilds the isolate's env without the stub — the
+    // unit-level equivalent is deleting the key off the same env object.
+    delete env.FB_MAIN;
+    summary = await gadget.summary();
+    // The row survives — items it produced still name it — marked, not gone.
+    expect(summary.destinations).toMatchObject([{ binding: "FB_MAIN", granted: false, label: "Facebook Page" }]);
+
+    const refused = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: 1,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(refused).toMatchObject({ ok: false, code: "destination_not_granted" });
+    expect(refused.message).toContain("Facebook Page");
+    // Nothing was asked of the social door and nothing was filed.
+    expect(created).toEqual([]);
+    expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
+
+    // Regrant — the same env name is live again, and the same submit files.
+    env.FB_MAIN = {};
+    const filed = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: 1,
+      destinationBindings: ["FB_MAIN"]
+    });
+    expect(filed.ok).not.toBe(false);
+    expect(filed.submitted).toMatchObject([{ destinationBinding: "FB_MAIN" }]);
+  });
+
+  it("reads the consent projection over a minted stub when the runtime supplies one", async () => {
+    const created: unknown[] = [];
+    // The stub is present (the binding row still wires the door) but the
+    // grant projection says the owner revoked it — consent is the truth.
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      FB_MAIN: {},
+      __consent: { social: true },
+      ...mockSocial(created)
+    });
+    gadget.storage.setDestinations([{ binding: "FB_MAIN", label: "FB", provider: "facebook" }]);
+    const { item } = await draft(gadget);
+
+    const summary = await gadget.summary();
+    expect(summary.destinations).toMatchObject([{ binding: "FB_MAIN", granted: false }]);
+
+    // And a requirement-keyed consent entry — `connector:FB_MAIN`, or a
+    // family member's `source:FB_MAIN` — is what a live grant looks like.
+    (gadget as unknown as { env: Record<string, unknown> }).env.__consent = { "connector:FB_MAIN": true, social: true };
+    const regranted = await gadget.summary();
+    expect(regranted.destinations).toMatchObject([{ binding: "FB_MAIN", granted: true }]);
+  });
+
+  it("files the granted binding and names the revoked one on a mixed submit", async () => {
+    const created: unknown[] = [];
+    const env: Record<string, unknown> = {
+      workspace: { notify: async () => {} },
+      FB_MAIN: {},
+      ...mockSocial(created)
+    };
+    // IG_OUT absent — the second choice's grant is gone. (`mockSocial`
+    // supplies connector-door stubs for both names, so absence is explicit.)
+    delete env.IG_OUT;
+    const gadget = gadgetWith(env);
+    gadget.storage.setDestinations([
+      { binding: "FB_MAIN", label: "FB", provider: "facebook" },
+      { binding: "IG_OUT", label: "IG Out", provider: "instagram" }
+    ]);
+    const { item } = await draft(gadget);
+
+    const result = await gadget.submitForReview({
+      batchItemId: item.id,
+      expectedRevision: 1,
+      destinationBindings: ["FB_MAIN", "IG_OUT"]
+    });
+    expect(result.ok).not.toBe(false);
+    expect(result.submitted).toMatchObject([{ destinationBinding: "FB_MAIN" }]);
+    expect(result.failures).toMatchObject([{ destinationBinding: "IG_OUT", code: "destination_not_granted" }]);
+    expect(created).toHaveLength(1);
   });
 });
 
@@ -280,7 +432,7 @@ describe("TEST-007: migration 8 backfills live rows", () => {
 describe("TEST-008: a legacy caller's destinationBindings still land", () => {
   it("records them as bound publications and defaults the submit picker", async () => {
     const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     const batch = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"], destinationBindings: ["FB_MAIN", "IG_OUT"] });
     const item = batch.items[0];
     // The column stays empty — the bindings live as `bound` publications.
@@ -307,17 +459,18 @@ describe("TEST-008: a legacy caller's destinationBindings still land", () => {
         .map((row) => `${row.destinationBinding}:${row.state}:r${row.revision}`)
         .sort()
     ).toEqual(["FB_MAIN:review_requested:r1", "IG_OUT:review_requested:r1"]);
-    // Two bindings, two separate drafts — each door call saw its own pair.
+    // Two bindings, two separate drafts — each door call saw its own pair,
+    // addressed by the `crb_` id `describe()` resolved, not the env name.
     expect(
       created.map((input) => (input as { targets: { destinationBinding: string }[] }).targets[0].destinationBinding).sort()
-    ).toEqual(["FB_MAIN", "IG_OUT"]);
+    ).toEqual(["crb_fb_main", "crb_ig_out"]);
   });
 });
 
 describe("poster_required: an open source never ships someone else's photo", () => {
   it("refuses an open source with no shipped poster, before any door call", async () => {
     const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     // The provenance the scan recorded: metered fetch, not a connector binding.
     gadget.storage.addOpenSource({
       binding: "open:IG_WATCH",
@@ -362,7 +515,7 @@ describe("poster_required: an open source never ships someone else's photo", () 
 
   it("an owned source with no poster still ships source media with the warning", async () => {
     const created: unknown[] = [];
-    const gadget = gadgetWith({ workspace: { notify: async () => {} }, ...mockSocial(created) });
+    const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     // IG_MAIN was recorded through a connector binding — the org owns it.
     gadget.storage.addSourceBinding({ binding: "IG_MAIN", label: "Main Instagram", provider: "instagram" });
     const { item } = await draft(gadget);
@@ -380,5 +533,37 @@ describe("poster_required: an open source never ships someone else's photo", () 
     expect(submitted.ok).not.toBe(false);
     expect(created).toHaveLength(1);
     expect(submitted.warnings?.map((w: { code: string }) => w.code)).toContain("poster_not_shipped");
+  });
+});
+
+describe("draft first: scan cadence is checked when monitoring is turned on", () => {
+  it("refuses schedule_not_granted by value and arms nothing without the schedule door", async () => {
+    const gadget = gadgetWith({ workspace: { notify: async () => {} } });
+    await gadget.saveSetup({ cadence: "daily" });
+
+    const refused = await gadget.setMonitoring(true);
+    expect(refused).toMatchObject({ ok: false, code: "schedule_not_granted", requirementKey: "schedule" });
+    expect(gadget.storage.getConfig()?.monitoringEnabled).not.toBe(true);
+  });
+
+  it("arms the scan once the schedule door is granted", async () => {
+    const created: unknown[] = [];
+    const gadget = gadgetWith({
+      workspace: { notify: async () => {} },
+      schedule: {
+        list: async () => [],
+        create: async (hook: string, cadence: unknown) => {
+          created.push({ hook, cadence });
+          return { id: "sch_1" };
+        },
+        cancel: async () => ({ cancelled: true })
+      }
+    });
+    await gadget.saveSetup({ cadence: "daily" });
+
+    const armed = await gadget.setMonitoring(true);
+    expect(armed).toMatchObject({ ok: true });
+    expect(created).toHaveLength(1);
+    expect(gadget.storage.getConfig()?.monitoringEnabled).toBe(true);
   });
 });

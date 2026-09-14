@@ -29,6 +29,7 @@ const MAX_MEDIA_PER_ITEM = 10;
 const MAX_CAPTION_CHARS = 5_000;
 const MAX_HANDLE_CHARS = 100;
 const MAX_URL_CHARS = 2_048;
+const MAX_ALT_TEXT_CHARS = 1_000;
 const DEFAULT_MIN_CHINESE_SHARE = 0.3;
 const POSTER_MAX_BYTES = 2_000_000; // SQLite row-size headroom, CON-009.
 const REFINEMENT_BRIEF_VERSION = 1;
@@ -151,14 +152,21 @@ function doorMediaEntry(entry) {
         : "";
   if (!assetId) return null;
   const url = typeof value.url === "string" ? value.url.trim().slice(0, MAX_URL_CHARS) : "";
+  const altText =
+    typeof value.altText === "string" && value.altText.trim()
+      ? value.altText.trim().slice(0, MAX_ALT_TEXT_CHARS)
+      : typeof value.alt === "string" && value.alt.trim()
+        ? value.alt.trim().slice(0, MAX_ALT_TEXT_CHARS)
+        : "";
   return {
     assetId,
     url,
-    kind: value.kind === "video" ? "video" : "image"
+    kind: value.kind === "video" ? "video" : "image",
+    altText
   };
 }
 
-function packDoorMedia(entries) {
+function packDoorMedia(entries, fallbackAltText = "") {
   const media = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     const packed = doorMediaEntry(entry);
@@ -171,7 +179,7 @@ function packDoorMedia(entries) {
           "Every media item needs a publisher-addressable https url. Generated assets at /v1/media/:id/assets/:idx cannot be fetched by the publisher."
       };
     }
-    media.push(packed);
+    media.push({ ...packed, altText: packed.altText || fallbackAltText });
   }
   return { ok: true, media };
 }
@@ -179,11 +187,36 @@ function packDoorMedia(entries) {
 /**
  * Phase 1 (TASK-027): derived refs when they are publisher-addressable,
  * otherwise the source item's own media. Generated media-job URLs refuse.
+ * Providers hold media with no alt text (GUD-005), so the caller names the
+ * fallback description — the poster path passes its own instead.
  */
-export function publicationMedia({ derivedMediaRefs, sourceMedia } = {}) {
+export function publicationMedia({ derivedMediaRefs, sourceMedia, fallbackAltText = "" } = {}) {
   const derived = Array.isArray(derivedMediaRefs) ? derivedMediaRefs : [];
-  if (derived.length > 0) return packDoorMedia(derived);
-  return packDoorMedia(sourceMedia);
+  if (derived.length > 0) return packDoorMedia(derived, fallbackAltText);
+  return packDoorMedia(sourceMedia, fallbackAltText);
+}
+
+/**
+ * GUD-005 alt text. The rendered poster's own copy is its description; a
+ * source image is described by the post it came from. Both stay under the
+ * platform's 1000-char media bound.
+ */
+export function posterAltText(layout) {
+  const input = record(layout) ?? {};
+  const text = [input.headline, input.subline]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean)
+    .join(" — ");
+  return (text ? `Poster: ${text}` : "Generated poster image").slice(0, MAX_ALT_TEXT_CHARS);
+}
+
+export function sourceMediaAltText(sourceItem) {
+  const item = record(sourceItem) ?? {};
+  const handle = typeof item.authorHandle === "string" ? item.authorHandle.trim() : "";
+  const label = typeof item.sourceLabel === "string" ? item.sourceLabel.trim() : "";
+  const who = handle ? `@${handle.replace(/^@+/, "")}` : label || "the source account";
+  const text = typeof item.text === "string" ? item.text.trim() : "";
+  return (text ? `${who} post: ${text}` : `Image posted by ${who}`).slice(0, MAX_ALT_TEXT_CHARS);
 }
 
 export function normalizePublicationIntent(input) {
@@ -1120,6 +1153,232 @@ export function revisionCas(current, expected) {
   const normalizedExpected = expected ?? null;
   return { ok: normalizedCurrent === normalizedExpected, current: normalizedCurrent };
 }
+
+// ---------------------------------------------------------------------------
+// 8. Item presentation policy (post-audit §9.A)
+// ---------------------------------------------------------------------------
+
+/**
+ * One shared roll-up for cards, filters, counts, drawer and actions.
+ *
+ * - `queued` / `regenerating`: generation was requested but no acknowledged
+ *   output yet (or a newer re-draft is pending). Never claimed from the
+ *   batch-level flag alone — the per-item mark is authoritative.
+ * - `draft`: an acknowledged revision the owner can still edit.
+ * - `in_review` / `scheduled` / `published`: from live (non-superseded,
+ *   non-failed) publications at the *current* revision plus their canonical
+ *   readback targets. A superseded rev-2 hold can never override a live rev-3
+ *   publication.
+ * - `attention`: a live filing reported failed/held/unknown, or the item row
+ *   itself is in one of those states with nothing filed.
+ */
+export const ITEM_PHASES = Object.freeze([
+  "queued",
+  "regenerating",
+  "draft",
+  "in_review",
+  "scheduled",
+  "published",
+  "attention"
+]);
+
+const ATTENTION_OUTCOMES = new Set(["failed", "failed_safe", "held", "unknown"]);
+/*
+ * Outcomes that still need the owner's eye — an approval queue entry, a
+ * provider-side confirmation, a first readback. Any of them outranks
+ * `scheduled`: a post filed to two destinations where one is scheduled but
+ * the other still awaits approval is pending owner work, not done.
+ */
+const PENDING_OUTCOMES = new Set([
+  "awaiting_approval",
+  "pending_approval",
+  "awaiting_review",
+  "in_review",
+  "submitted",
+  "review_requested",
+  "pending",
+  "processing"
+]);
+const FILING_ITEM_STATES = new Set(["submitted", "awaiting_approval", "review_requested"]);
+const EDITABLE_ITEM_STATES = new Set(["drafting", "expired"]);
+
+/**
+ * The durable generation mark a `batch_items.generation` row carries.
+ *
+ * Since the correlation fix the stored value is a JSON string —
+ * `{ id, base, needs: { caption, image } }` — so a save can be correlated
+ * back to the request that asked for it and caption work can never satisfy
+ * a still-pending image ask. The pre-identity `'requested'` string still
+ * parses (legacy rows), as an unidentifiable request needing both.
+ * `null`/absent means nothing is being generated.
+ */
+function generationInstructions(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const text = (entry) => (typeof entry === "string" ? entry : null);
+  return { image: text(value.image), caption: text(value.caption) };
+}
+
+/**
+ * The owner's per-post instruction overrides and the saved defaults, resolved
+ * to what a generation request for this post would actually use. An override
+ * that is absent or blank falls back to the saved default.
+ */
+export function effectiveInstructions(config, overrides) {
+  const pick = (override, fallback) => {
+    const own = typeof override === "string" && override.trim() ? override : null;
+    return own !== null
+      ? { text: own, source: "post" }
+      : { text: typeof fallback === "string" ? fallback : "", source: "default" };
+  };
+  return {
+    image: pick(overrides?.image, config?.posterPrompt),
+    caption: pick(overrides?.caption, config?.contentPrompt)
+  };
+}
+
+export function generationMark(mark) {
+  if (!mark) return null;
+  if (typeof mark === "object") {
+    const needs = {
+      caption: mark.needs?.caption !== false,
+      image: mark.needs?.image !== false
+    };
+    return {
+      id: typeof mark.id === "string" ? mark.id : null,
+      base: Number.isFinite(mark.base) ? mark.base : null,
+      // What was REQUESTED is `scope` (immutable); what REMAINS is `needs`.
+      // A mark written before `scope` existed falls back to its needs — the
+      // narrowest reading, so an old mark never authorizes more than it asks.
+      scope:
+        mark.scope && typeof mark.scope === "object"
+          ? { caption: mark.scope.caption === true, image: mark.scope.image === true }
+          : { ...needs },
+      needs,
+      // When the request was made, and the effective instructions it was made
+      // under (`{ image, caption }`) — present only on marks that recorded them.
+      at: typeof mark.at === "string" ? mark.at : undefined,
+      instructions: generationInstructions(mark.instructions)
+    };
+  }
+  if (typeof mark === "string" && mark.startsWith("{")) {
+    try {
+      return generationMark(JSON.parse(mark));
+    } catch {
+      return null;
+    }
+  }
+  // Legacy 'requested'/'drafting' strings: a request with no identity that
+  // still needs both caption and image output.
+  return { id: null, base: null, scope: { caption: true, image: true }, needs: { caption: true, image: true } };
+}
+
+/**
+ * Deliveries = live publications plus their freshest canonical outcome.
+ * `targets` rows carry optional provenance stamps (`publicationId`,
+ * `publicationRevision`, `publicationVersion`) written by the server. EVERY
+ * stamp a row supplies must agree with the publication — a row stamped for
+ * a different filing can never match on a weaker field (a `revision` that
+ * happens to coincide is not an identity). Rows with no stamps at all are
+ * legacy and bind by destination alone. Superseded/failed publications stay
+ * in `publications` for history but never produce a delivery row.
+ */
+export function liveDeliveries(publications = [], targets = []) {
+  const live = (Array.isArray(publications) ? publications : []).filter(
+    (pub) => pub && pub.state !== "superseded" && pub.state !== "failed"
+  );
+  return live.map((pub) => {
+    if (pub.state === "bound") {
+      return {
+        publicationId: pub.id,
+        destinationBinding: pub.destinationBinding,
+        outcome: "bound",
+        detail: null,
+        guidance: null,
+        receiptUrl: null,
+        postId: null,
+        version: null,
+        revision: pub.revision,
+        filedAt: pub.updatedAt ?? null
+      };
+    }
+    const candidates = (Array.isArray(targets) ? targets : []).filter(
+      (entry) => entry && entry.destinationBinding === pub.destinationBinding
+    );
+    const hasStamp = (entry) =>
+      Boolean(entry.publicationId) || Boolean(entry.publicationVersion) || entry.publicationRevision != null;
+    const stampsAgree = (entry) =>
+      (!entry.publicationId || entry.publicationId === pub.id) &&
+      (!entry.publicationVersion || (pub.version != null && entry.publicationVersion === pub.version)) &&
+      (entry.publicationRevision == null ||
+        (pub.revision != null && entry.publicationRevision === pub.revision));
+    const target =
+      candidates.find((entry) => hasStamp(entry) && stampsAgree(entry)) ??
+      candidates.find((entry) => !hasStamp(entry)) ??
+      null;
+    return {
+      publicationId: pub.id,
+      destinationBinding: pub.destinationBinding,
+      outcome: target?.outcome ?? pub.state,
+      detail: target?.detail ?? null,
+      guidance: target?.guidance ?? null,
+      receiptUrl: target?.receiptUrl ?? null,
+      postId: pub.postId ?? null,
+      version: pub.version ?? target?.publicationVersion ?? null,
+      revision: pub.revision,
+      filedAt: pub.updatedAt ?? null
+    };
+  });
+}
+
+/**
+ * Roll a batch item up to { phase, deliveries }.
+ *
+ * `generation` is the item's own durable request mark (not the batch flag).
+ * `revision` is `current_revision`; a filing whose revision is behind it
+ * describes a superseded version and only appears in the deliveries list.
+ */
+export function itemPresentation({ state, revision = 0, generation = null, publications = [], targets = [] } = {}) {
+  const deliveries = liveDeliveries(publications, targets);
+  const filed = deliveries.filter((entry) => entry.outcome !== "bound");
+  const current = filed.filter((entry) => entry.revision != null && entry.revision >= revision);
+
+  let phase;
+  if (current.some((entry) => ATTENTION_OUTCOMES.has(entry.outcome))) {
+    phase = "attention";
+  } else if (current.some((entry) => PENDING_OUTCOMES.has(entry.outcome))) {
+    // A live filing still awaiting approval (or any pending owner work) keeps
+    // the post in the review queue even when a sibling filing is already
+    // scheduled or published — "scheduled on A" must not hide "awaiting
+    // approval on B".
+    phase = "in_review";
+  } else if (current.length > 0 && current.every((entry) => entry.outcome === "published")) {
+    phase = "published";
+  } else if (current.some((entry) => entry.outcome === "scheduled")) {
+    phase = "scheduled";
+  } else if (current.length > 0) {
+    phase = "in_review";
+  } else if (FILING_ITEM_STATES.has(state)) {
+    phase = "in_review";
+  } else if (state === "scheduled") {
+    phase = "scheduled";
+  } else if (ATTENTION_OUTCOMES.has(state)) {
+    phase = "attention";
+  } else if (EDITABLE_ITEM_STATES.has(state)) {
+    phase = generationMark(generation) ? (revision > 0 ? "regenerating" : "queued") : "draft";
+  } else {
+    // Unknown state: never dress it up as a draft.
+    phase = "attention";
+  }
+  return { phase, deliveries };
+}
+
+/** Which inbox filter a phase belongs to; `all`/`new` handled by the caller. */
+export const PHASE_FILTERS = Object.freeze({
+  drafts: Object.freeze(["queued", "regenerating", "draft"]),
+  review: Object.freeze(["in_review"]),
+  scheduled: Object.freeze(["scheduled"]),
+  attention: Object.freeze(["attention"])
+});
 
 // ---------------------------------------------------------------------------
 // The model's own English / zh-HK (書面語) strings.

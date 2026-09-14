@@ -9,9 +9,32 @@ import {
   assertLocalFrontendOrigin,
   assertRemoteApiOrigin
 } from './platform-origin.mjs';
+import { refuse } from './door-certainty.mjs';
 
 const SESSION_FILE = 'agent-session.json';
 const MAX_MESSAGE_LENGTH = 16_000;
+const MAX_INSTRUCTIONS_LENGTH = 64_000;
+
+/**
+ * The text of one agent turn, from what a person typed and, separately, the
+ * gadget's own instructions.
+ *
+ * The 16,000-character cap is for the MESSAGE — what the owner (or the host,
+ * speaking for the owner) asks. A development registration carries no files
+ * the agent can read, so the host hands the gadget's `agent.md` over with the
+ * turn; that document is not the owner's message and is bounded on its own.
+ * Folding it into the message made every draft exceed the cap once the notes
+ * grew past it, and no turn started at all.
+ */
+export function composeRunMessage(input) {
+  const message = typeof input?.message === 'string' ? input.message.trim() : '';
+  if (!message || message.length > MAX_MESSAGE_LENGTH) throw new Error('Enter a message up to 16,000 characters.');
+  if (input?.instructions === undefined || input?.instructions === null) return message;
+  if (typeof input.instructions !== 'string') throw new Error('Gadget instructions must be text.');
+  const instructions = input.instructions.trim();
+  if (instructions.length > MAX_INSTRUCTIONS_LENGTH) throw new Error('Gadget instructions exceed 64,000 characters.');
+  return instructions ? `${message}\n\n${instructions}` : message;
+}
 
 // The API issues a hard 30-minute lease and revokes on replacement, socket
 // break, unsubscribe or expiry (workers/api/src/v2/development-gadget-registration.ts).
@@ -64,6 +87,13 @@ export async function createConnectedAgent({
    * no door.
    */
   requirements: initialRequirements = [],
+  /**
+   * The source's `server.js`, so the platform reads which methods are reads
+   * (`static readMethods`) with the scanner it uses for an installed gadget.
+   * Sent as source rather than a list: the API refuses a host naming its own
+   * reads.
+   */
+  serverSource: initialServerSource,
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -89,10 +119,15 @@ export async function createConnectedAgent({
   let sourceHash = initialSourceHash;
   let methods = initialMethods;
   let requirements = initialRequirements;
+  let serverSource = initialServerSource;
   if (typeof sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Invalid source digest.');
 
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const sessionPath = resolve(stateDirectory, SESSION_FILE);
+
+  function registrationMetadata() {
+    return { title, sourceHash, methods, requirements, ...(typeof serverSource === 'string' ? { serverSource } : {}) };
+  }
 
   const events = [];
   function drainEvents() { return events.splice(0, events.length); }
@@ -156,7 +191,7 @@ export async function createConnectedAgent({
     const socket = openSocket(socketUrl);
     const stub = openSession(socket);
     await stub.subscribe(new Subscriber());
-    const registration = await stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
+    const registration = await stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
     workspaceId = resolvedWorkspaceId;
     session = { stub, socket, gadgetId: registration.gadgetId, expiresAt: registration.expiresAt };
     reconnectAttempts = 0;
@@ -188,14 +223,33 @@ export async function createConnectedAgent({
     return connecting;
   }
 
+  /**
+   * A renewal or reload that returns a DIFFERENT gadget id is a registration
+   * replacement: every pending ask/decision captured against the old id is
+   * dead server-side, so the events the host still holds would show an
+   * approval card nobody can honour. Drop them and mark the snapshot so the
+   * host can say approvals must be re-requested — never silently carry an
+   * old approval onto replacement code.
+   */
+  function noteRegistration(registration) {
+    if (session && registration.gadgetId && registration.gadgetId !== session.gadgetId) {
+      drainEvents();
+      session.replacedFrom = session.gadgetId;
+    }
+    session.gadgetId = registration.gadgetId;
+    session.expiresAt = registration.expiresAt;
+  }
+
   /** Never renews mid-turn; a race with the server's own guard is swallowed and retried later. */
   async function maybeRenew() {
     if (!session || turnInFlight) return;
     if (now() < session.expiresAt - RENEW_WINDOW_MS) return;
     try {
-      const registration = await session.stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
-      session.gadgetId = registration.gadgetId;
-      session.expiresAt = registration.expiresAt;
+      // The SAME metadata builder as initial registration and reload — a
+      // renewal that drops `serverSource` un-marks the read methods, and
+      // every subsequent getBatch starts asking the owner for approval.
+      const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
+      noteRegistration(registration);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (TURN_RUNNING_PATTERN.test(message)) return;
@@ -204,7 +258,13 @@ export async function createConnectedAgent({
   }
 
   function statusSnapshot() {
-    return { connected: Boolean(session), workspaceId, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
+    return {
+      connected: Boolean(session),
+      workspaceId,
+      gadgetId: session?.gadgetId ?? null,
+      expiresAt: session?.expiresAt ?? null,
+      replacedFrom: session?.replacedFrom ?? null
+    };
   }
 
   async function handle(input, currentCookie) {
@@ -212,10 +272,7 @@ export async function createConnectedAgent({
     const operation = input.operation;
     if (!['run', 'pending', 'answer', 'history'].includes(operation)) throw new Error('Unsupported agent operation.');
     let message;
-    if (operation === 'run') {
-      message = typeof input.message === 'string' ? input.message.trim() : '';
-      if (!message || message.length > MAX_MESSAGE_LENGTH) throw new Error('Enter a message up to 16,000 characters.');
-    }
+    if (operation === 'run') message = composeRunMessage(input);
     if (operation === 'answer' && (typeof input.actionId !== 'string' || typeof input.approve !== 'boolean'))
       throw new Error('An action id and decision are required.');
 
@@ -254,6 +311,24 @@ export async function createConnectedAgent({
   await connect(remote ? devToken : cookie);
 
   /**
+   * Validate the fields used by doors() and grantedDoorKeys().
+   * Any malformed row leaves the inventory unconfirmed; a valid empty list
+   * proves absence. Additional fields are accepted for compatibility.
+   */
+  function validateDoorInventory(listed) {
+    if (!Array.isArray(listed)) throw new Error('The platform door inventory could not be read.');
+    for (const door of listed) {
+      if (
+        !door || typeof door !== 'object' ||
+        typeof door.requirementKey !== 'string' || !door.requirementKey ||
+        typeof door.envKey !== 'string' || !door.envKey ||
+        typeof door.granted !== 'boolean'
+      ) throw new Error('The platform door inventory could not be read.');
+    }
+    return listed;
+  }
+
+  /**
    * The doors this session can reach, as the local runtime wants them.
    *
    * `spec` is what the isolate turns into `env.<door>.<method>`, and it lists
@@ -269,11 +344,14 @@ export async function createConnectedAgent({
    */
   async function doors(methodsByDoor) {
     await ensureConnected(remote ? devToken : cookie);
-    const granted = await session.stub.developmentDoors();
+    const granted = validateDoorInventory(await session.stub.developmentDoors());
     const spec = {};
-    for (const door of Array.isArray(granted) ? granted : []) {
+    for (const door of granted) {
       if (!door?.granted) continue;
-      const names = methodsByDoor?.[door.envKey];
+      // A connector family member is named by the owner's choice of account,
+      // so the source cannot list it in advance; its methods are the
+      // connector door's, as the platform reports them.
+      const names = methodsByDoor?.[door.envKey] ?? (typeof door.family === 'string' && Array.isArray(door.methods) ? door.methods : undefined);
       if (!Array.isArray(names) || names.length === 0) continue;
       spec[door.envKey] = names;
     }
@@ -287,11 +365,109 @@ export async function createConnectedAgent({
     };
   }
 
+  /**
+   * Record the owner's yes to one door this source declared, for this
+   * conversation.
+   *
+   * The canvas only ASKS (`gadget:grant-door`); the owner answered in the
+   * host's own dialog before this runs. `persistToAgent` is required and
+   * sent explicitly, because the API reads an omitted flag as "also save it
+   * for the assistant" for an organization-scoped door, and the dialog's
+   * default is this conversation only.
+   *
+   * Remote mode grants over the socket: there is no cookie to reach the REST
+   * route with, and a gadget-dev conversation has no assistant to persist to
+   * anyway, so the grant is conversation-only either way. The dev token binds
+   * the member who minted it — `grantedBy` records them, the same attribution
+   * a Studio grant gets — and the platform re-verifies their membership on
+   * every socket ticket.
+   */
+  /** The requirement keys the platform lists as granted in this conversation — read, never inferred. */
+  async function grantedDoorKeys() {
+    await ensureConnected(remote ? devToken : cookie);
+    // Malformed rows must not become evidence that permission is absent.
+    const listed = validateDoorInventory(await session.stub.developmentDoors());
+    return listed.filter((door) => door.granted === true).map((door) => door.requirementKey);
+  }
+
+  async function grantDoor(input, currentCookie) {
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
+      throw refuse('That door is not one this gadget declared.', 'not_declared');
+    if (typeof input?.persistToAgent !== 'boolean') throw refuse('Say whether this grant is for this conversation only.', 'invalid_request');
+    if (remote) {
+      await ensureConnected(devToken);
+      const result = await session.stub.grantDevelopmentDoor(requirementKey);
+      // The platform's own confirmation must name the requested requirement.
+      // Substituting `requirementKey` for a missing/mismatched answer (F02a)
+      // let a malformed or empty response read as though the platform had
+      // confirmed exactly what was asked for — it never did.
+      if (result?.requirementKey !== requirementKey) throw new Error('The platform did not confirm which door was granted.');
+      return { requirementKey: result.requirementKey, persistedToAgent: false };
+    }
+    await ensureConnected(currentCookie);
+    const result = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(workspaceId)}/door-grants`, {
+      frontendOrigin, cookie: currentCookie, method: 'POST', body: { requirementKey, persistToAgent: input.persistToAgent }, fetchImpl
+    });
+    const confirmedKey = result?.data?.grant?.requirementKey;
+    // Same rule over REST: `requestJson` already rejects a body it cannot
+    // parse, but a well-formed body that simply omits or misnames the grant
+    // is just as unconfirmed. Never fall back to the requested key — that is
+    // the requested identity standing in for a confirmed one.
+    if (confirmedKey !== requirementKey) throw new Error('The platform did not confirm which door was granted.');
+    return {
+      requirementKey: confirmedKey,
+      persistedToAgent: result?.data?.persistedToAgent === true
+    };
+  }
+
+  /** Each connector family this source declared, what it holds, and what the owner could add. */
+  async function connectionChoices() {
+    await ensureConnected(remote ? devToken : cookie);
+    const families = await session.stub.developmentConnectionChoices();
+    return Array.isArray(families) ? families : [];
+  }
+
+  /**
+   * The owner's choice of one existing account for a declared family. The
+   * platform checks the account, the family's size and consent; this only
+   * refuses what it can already see is wrong.
+   *
+   * The socket is the ONLY surface this can go through: the REST grant route
+   * finds a family through the conversation's installed gadgets, and a
+   * development gadget is attached nowhere — so Studio could never grant it.
+   * That holds in remote mode exactly as in local: the dev token binds the
+   * member who minted it, the grant lands under `grantedBy: <that member>`,
+   * and the same member could grant this account to this conversation from
+   * Studio were a family grant reachable there at all.
+   */
+  async function grantConnection(input) {
+    const requirementKey = input?.requirementKey;
+    if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey && row?.kind === 'connector_resource'))
+      throw new Error('That connection family is not one this gadget declared.');
+    if (typeof input?.resolvedId !== 'string' || !input.resolvedId) throw new Error('Choose an account to connect.');
+    await ensureConnected(remote ? devToken : cookie);
+    const result = await session.stub.grantDevelopmentConnection({ requirementKey, resolvedId: input.resolvedId });
+    if (!result?.ok) throw new Error(result?.message || 'That connection could not be granted.');
+    return { requirementKey: result.requirementKey, env: result.env, label: result.label ?? null };
+  }
+
   return {
+    connectionChoices,
+    grantConnection,
     get info() {
-      return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
+      return {
+        connected: Boolean(session),
+        workspaceId,
+        conversationTitle: title,
+        gadgetId: session?.gadgetId ?? null,
+        expiresAt: session?.expiresAt ?? null,
+        replacedFrom: session?.replacedFrom ?? null
+      };
     },
     doors,
+    grantDoor,
+    grantedDoorKeys,
     handle,
     /**
      * Point the live session at new source.
@@ -311,14 +487,11 @@ export async function createConnectedAgent({
       sourceHash = next.sourceHash;
       if (Array.isArray(next.methods)) methods = next.methods;
       if (Array.isArray(next.requirements)) requirements = next.requirements;
+      if (typeof next.serverSource === 'string') serverSource = next.serverSource;
       await ensureConnected(remote ? devToken : cookie);
-      const registration = await session.stub.registerDevelopmentGadget(
-        { title, sourceHash, methods, requirements },
-        new LocalHost()
-      );
-      session.gadgetId = registration.gadgetId;
-      session.expiresAt = registration.expiresAt;
-      return { gadgetId: registration.gadgetId, sourceHash };
+      const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
+      noteRegistration(registration);
+      return { gadgetId: registration.gadgetId, sourceHash, replacedFrom: session?.replacedFrom ?? null };
     },
     close() { disconnect(); }
   };
@@ -354,8 +527,25 @@ async function requestJson(url, { frontendOrigin, cookie, authorization, method,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000)
   });
-  const value = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(value?.error?.message || value?.message || `API request failed (${response.status}).`);
+  let value = null;
+  let readable = true;
+  try { value = await response.json(); } catch { readable = false; }
+  if (!response.ok) {
+    const message = value?.error?.message || value?.message;
+    // A 4xx that explained itself is the API's refusal. A 5xx, a timeout-ish
+    // 408, or a body nobody can read may have written before failing.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && typeof message === 'string' && message) {
+      throw refuse(message, typeof value?.error?.code === 'string' ? value.error.code : 'upstream_refused');
+    }
+    throw new Error(message || `API request failed (${response.status}).`);
+  }
+  // HTTP 200 with a body nobody can parse is not a successful answer — it is
+  // an upstream that may have written before failing to respond. Returning
+  // null here let a caller (F02a) read the absence of every field as
+  // confirmed, including a field the caller then filled in with the
+  // REQUESTED value rather than a confirmed one. Throw instead, so an
+  // unreadable success is never distinguishable from "nothing came back".
+  if (!readable) throw new Error(`The API response for ${new URL(url).pathname} could not be read.`);
   return value;
 }
 
@@ -377,7 +567,8 @@ export function socialMethodNames() {
   return [
     'summary', 'setConfig', 'saveSetup', 'setMonitoring', 'refreshGrants', 'addOpenSource', 'removeOpenSource', 'scanRuns', 'refresh', 'listItems',
     'getItem', 'getMedia', 'createBatch', 'getBatch', 'listBatches', 'listBatchSummaries', 'saveRevision',
-    'saveRevisions', 'savePoster', 'dismissGenerationAsk', 'requestGeneration', 'submitForReview', 'readPublishState',
+    'saveRevisions', 'savePoster', 'saveGeneratedImage', 'deliverGeneratedImage', 'getGeneratedImage', 'pendingGeneratedImages',
+    'dismissGenerationAsk', 'requestGeneration', 'saveInstructionOverrides', 'submitForReview', 'readPublishState',
     'exportAs', 'exportJson', 'exportHtml', 'markSeen', 'setSelection', 'clearSelection'
   ];
 }

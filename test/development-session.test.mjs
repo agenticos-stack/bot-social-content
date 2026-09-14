@@ -73,3 +73,34 @@ test('start() and agent() report the live connection state, not a snapshot from 
   assert.equal(afterBreak.agentConnected,false);
   assert.equal(afterBreak.agent.gadgetId,null);
 });
+
+test('door grants receive the current request cookie and require a started session',async()=>{
+  const seen=[];
+  const session=createDevelopmentSessions({appKey:'test-app',origin:'http://social.localhost:18000',
+    authenticate:async request=>({userId:'u1',orgId:'o1',cookie:request.headers.get('cookie')}),
+    createRuntime:async()=>({token:'host-only',agent:{info:{connected:true}},
+      grant:async(input,cookie)=>{seen.push([input,cookie]);return {requirementKey:input.requirementKey,persistedToAgent:false};},
+      handle:async()=>Response.json({ok:true}),dispose:async()=>{}})});
+  const request=cookie=>new Request('http://social.localhost:18000/api/dev/grant',{method:'POST',headers:{cookie}});
+  const input={requirementKey:'metered_fetch',persistToAgent:false};
+  await assert.rejects(session.grant(request('session=first'),input),/Start/);
+  await session.start(request('session=first'));
+  await session.grant(request('session=rotated'),input);
+  assert.deepEqual(seen,[[input,'session=rotated']]);
+  await session.dispose();
+});
+
+test('connection calls reach the started runtime only',async()=>{
+  const seen=[];
+  const session=createDevelopmentSessions({appKey:'test-app',origin:'http://social.localhost:18000',
+    authenticate:async request=>({userId:'u1',orgId:'o1',cookie:request.headers.get('cookie')}),
+    createRuntime:async()=>({token:'host-only',agent:{info:{connected:true}},
+      connections:async input=>{seen.push(input);return {families:[]};},
+      handle:async()=>Response.json({ok:true}),dispose:async()=>{}})});
+  const request=()=>new Request('http://social.localhost:18000/api/dev/connections',{method:'POST',headers:{cookie:'session=a'}});
+  await assert.rejects(session.connections(request(),{operation:'list'}),/Start/);
+  await session.start(request());
+  assert.deepEqual(await session.connections(request(),{operation:'list'}),{families:[]});
+  assert.deepEqual(seen,[{operation:'list'}]);
+  await session.dispose();
+});

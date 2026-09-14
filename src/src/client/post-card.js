@@ -42,8 +42,13 @@ export function sourceLabel(locale, item) {
 /**
  * @param card — the card view-model:
  *   key            string    base for element ids (checkbox label wiring)
- *   cover          { itemId, mediaId } | null  — collected into `covers` for
- *                            the async fill; null leaves the glyph/kicker.
+ *   cover          { itemId, mediaId } | { generatedMediaId } | null —
+ *                            collected into `covers` for the async fill; null
+ *                            leaves the glyph/kicker. A source cover is
+ *                            reference imagery and must carry `coverLabel`.
+ *   coverLabel     string | null   visible label over the cover ("Reference")
+ *   placeholder    string | null   visible slot text when there is no output
+ *                            to show (e.g. "No accepted output yet")
  *   glyphKey       string | null   door-reported mark (data-glyph attr)
  *   glyph          string          fallback text mark
  *   kicker         string          source label over the cover
@@ -83,7 +88,9 @@ export function renderPostCard(locale, card, covers) {
     [
       (coverSlot = el("span", { class: "sl-media" }, [
         el("span", { class: "sl-provider-glyph", "data-glyph": card.glyphKey || "" }, card.glyph || ""),
-        el("span", { class: "sl-media-kicker" }, card.kicker || "")
+        el("span", { class: "sl-media-kicker" }, card.kicker || ""),
+        card.placeholder ? el("span", { class: "sl-media-placeholder" }, card.placeholder) : null,
+        card.coverLabel ? el("span", { class: "sl-media-label sl-reference-badge" }, card.coverLabel) : null
       ])),
       el("span", { class: "sl-post-body" }, [
         el("strong", null, card.title || ""),
@@ -107,7 +114,11 @@ export function renderPostCard(locale, card, covers) {
 
   // Collected while building rather than queried for afterwards: the card
   // holds its own slot, so nothing has to find it again by selector.
-  if (covers && coverSlot && card.cover) covers.push({ slot: coverSlot, itemId: card.cover.itemId, mediaId: card.cover.mediaId });
+  if (covers && coverSlot && card.cover) {
+    covers.push(card.cover.generatedMediaId
+      ? { slot: coverSlot, generatedMediaId: card.cover.generatedMediaId }
+      : { slot: coverSlot, itemId: card.cover.itemId, mediaId: card.cover.mediaId });
+  }
 
   const article = el("article", { class: "sl-post" }, [
     selectbox,
@@ -132,13 +143,15 @@ export function renderPostCard(locale, card, covers) {
  */
 const COVER_FETCHES = 4;
 
-export async function fillCovers(covers, loadCover) {
-  const queue = [...covers];
+export async function fillCovers(covers, loadCover, loadGeneratedCover) {
+  // A generated cover needs its own loader; without one it is left unfilled
+  // rather than substituted with anything else.
+  const queue = covers.filter((cover) => !cover.generatedMediaId || typeof loadGeneratedCover === "function");
   const draw = async () => {
     for (let next = queue.shift(); next; next = queue.shift()) {
-      const { slot, itemId, mediaId } = next;
+      const { slot, itemId, mediaId, generatedMediaId } = next;
       try {
-        const url = await loadCover(itemId, mediaId);
+        const url = generatedMediaId ? await loadGeneratedCover(generatedMediaId) : await loadCover(itemId, mediaId);
         if (url) slot.appendChild(el("img", { class: "sl-media-cover", src: url, alt: "", decoding: "async" }));
       } catch (error) {
         // A cover that cannot be fetched is not an error to put on the card: it
@@ -148,7 +161,7 @@ export async function fillCovers(covers, loadCover) {
         // the reason goes to the console where whoever is developing the gadget
         // can read it. `getMedia`'s refusal codes carry the same reason to the
         // preview dialog, where an owner sees it.
-        console.warn(`cover ${itemId} ${mediaId}: ${error && error.message}`);
+        console.warn(`cover ${generatedMediaId ?? `${itemId} ${mediaId}`}: ${error && error.message}`);
       }
     }
   };

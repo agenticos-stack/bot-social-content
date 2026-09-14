@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { Gadget } from "../../src/server.js";
 import { normalizePublicationIntent } from "../../src/model.js";
@@ -59,6 +60,16 @@ function minimalPng(width: number, height: number) {
   const view = new DataView(bytes.buffer);
   view.setUint32(16, width);
   view.setUint32(20, height);
+  return bytes;
+}
+
+// SOI + a leading SOF0 segment — the minimum the dimension parser walks.
+function minimalJpeg(width: number, height: number) {
+  const bytes = new Uint8Array(32);
+  bytes.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08]);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(7, height);
+  view.setUint16(9, width);
   return bytes;
 }
 
@@ -213,6 +224,60 @@ describe("social archive revision metadata persistence", () => {
     });
   });
 
+  it("savePoster admits JPEG — the format Instagram's container accepts — and still refuses other bytes", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+
+    const saved = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(saved).toMatchObject({ ok: true });
+    expect(gadget.storage.getPoster("item-1", saved.revision)?.byteLength).toBe(32);
+
+    const wrongSize = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: saved.revision,
+      template: "1080x1350",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(wrongSize.ok).toBe(false);
+
+    const notImage = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: saved.revision,
+      template: "1080x1080",
+      png: new Uint8Array(24).fill(7)
+    });
+    expect(notImage.ok).toBe(false);
+    expect((notImage as { issues?: { code: string }[] }).issues?.[0]?.code).toBe("poster_not_image");
+  });
+
+  it("savePoster accepts a real encoder's JPEG and stores the bytes verbatim", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    // canvas.toBlob('image/jpeg') output captured from the connected run —
+    // decodable JFIF, not a synthetic header, so admission proves a real
+    // image passes, and storage must return byte-identical pixels.
+    const realJpeg = new Uint8Array(readFileSync(new URL("../fixtures/poster-1080x1350.jpg", import.meta.url)));
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+    const saved = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1350",
+      png: realJpeg
+    });
+    expect(saved).toMatchObject({ ok: true });
+    const stored = gadget.storage.getPoster("item-1", saved.revision);
+    expect(stored?.byteLength).toBe(realJpeg.byteLength);
+    expect(Uint8Array.from(stored?.bytes ?? [])).toEqual(realJpeg);
+  });
+
   it("a caption-only save carries posterLayout and confirmedClaims forward", async () => {
     const { ctx } = sqliteContext();
     const gadget = new Gadget(ctx as never, {} as never);
@@ -232,6 +297,66 @@ describe("social archive revision metadata persistence", () => {
       posterLayout: expect.objectContaining({ template: "1080x1080", headline: "Hello" }),
       confirmedClaims: ["award"]
     });
+  });
+
+  it("a caption edit after savePoster keeps the poster — the image belongs to the layout, not the caption", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const layout = {
+      template: "1080x1080",
+      headline: "Hello",
+      subline: "world",
+      background: { kind: "solid", value: "#000000" },
+      textColor: "#ffffff",
+      align: "left"
+    };
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", posterLayout: layout });
+    const poster = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(poster).toMatchObject({ ok: true, revision: 2 });
+
+    // The owner's caption edit lands on a new revision; the layout is
+    // carried, so the rendered poster still describes it exactly.
+    const edit = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 2, caption: "第二稿內容文字" });
+    expect(edit).toMatchObject({ ok: true, revision: 3 });
+    expect(gadget.storage.getPoster("item-1", 3)?.byteLength).toBe(32);
+  });
+
+  it("a layout change does NOT carry the poster — the stored pixels were rendered for the old layout", async () => {
+    const { ctx } = sqliteContext();
+    const gadget = new Gadget(ctx as never, {} as never);
+    seed(gadget);
+    const layout = {
+      template: "1080x1080",
+      headline: "Hello",
+      background: { kind: "solid", value: "#000000" },
+      textColor: "#ffffff",
+      align: "left"
+    };
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", posterLayout: layout });
+    const poster = await gadget.savePoster({
+      batchItemId: "item-1",
+      expectedRevision: 1,
+      template: "1080x1080",
+      png: minimalJpeg(1080, 1080)
+    });
+    expect(poster).toMatchObject({ ok: true, revision: 2 });
+
+    const edit = await gadget.saveRevision({
+      batchItemId: "item-1",
+      expectedRevision: 2,
+      caption: "第二稿內容文字",
+      posterLayout: { ...layout, headline: "Different" }
+    });
+    expect(edit).toMatchObject({ ok: true, revision: 3 });
+    expect(gadget.storage.getPoster("item-1", 3)).toBeNull();
+    // The rev-2 poster itself is untouched — revision history stays honest.
+    expect(gadget.storage.getPoster("item-1", 2)?.byteLength).toBe(32);
   });
 });
 
