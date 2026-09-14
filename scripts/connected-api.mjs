@@ -100,7 +100,7 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
         const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
         if(keys!=='requirementKey' || typeof input.requirementKey!=='string')return fail(400,'A door is required.');
         if(typeof development.activate!=='function')return fail(501,'This host cannot activate a door.');
-        try{return Response.json({data:await development.activate(input)},{headers:{'cache-control':'no-store'}});}
+        try{return Response.json({data:await development.activate(request,input)},{headers:{'cache-control':'no-store'}});}
         catch(error){return fail(409,error instanceof Error?error.message:'That door could not be activated.');}
       }
       if(agent){

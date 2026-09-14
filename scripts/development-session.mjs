@@ -49,6 +49,19 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
       if(typeof runtime.grant !== 'function')throw new Error('Granting doors is unavailable in this development session.');
       return runtime.grant(input, identity.devToken ?? identity.cookie);
     },
+    /*
+     * Start a door this conversation already holds. The same authenticated
+     * acquisition as every other operation: the caller must be signed in, own
+     * the running session (same org and user), and the session must exist —
+     * this never starts one. The runtime verifies the grant with the platform
+     * and grants nothing; its answer (runtime ready or refresh_failed) is
+     * returned as it is.
+     */
+    async activate(request, input){
+      const {runtime}=await acquire(request,false);
+      if(typeof runtime.activate !== 'function')throw new Error('Activating doors is unavailable in this development session.');
+      return runtime.activate(input);
+    },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };
 }
