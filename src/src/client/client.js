@@ -1068,7 +1068,66 @@ function App() {
     // close guard's explicit "save and leave".
     const buffers = new Map(); // batchItemId -> buffer
     const bufferOf = (id) => buffers.get(id) ?? {};
-    const patchBuffer = (id, patch) => buffers.set(id, { ...bufferOf(id), ...patch });
+    // Every change to a buffered field bumps that field's edit version, so a
+    // Save acknowledgment can tell "still what I submitted" from "typed
+    // since" — including typing the same text back after changing it.
+    // Keys: caption, altText, imageId, instructions.image, instructions.caption.
+    const editVersions = new Map(); // batchItemId -> { [fieldKey]: n }
+    const bumpVersions = (id, keys) => {
+      const held = { ...(editVersions.get(id) ?? {}) };
+      for (const key of keys) held[key] = (held[key] ?? 0) + 1;
+      editVersions.set(id, held);
+    };
+    const bufferKeys = (patch) => Object.entries(patch).flatMap(([key, value]) =>
+      key === "instructions" ? Object.keys(value ?? {}).map((part) => `instructions.${part}`) : [key]);
+    const patchBuffer = (id, patch) => {
+      const before = bufferOf(id);
+      const keys = new Set(bufferKeys(patch));
+      if ("instructions" in patch) for (const part of Object.keys(before.instructions ?? {})) keys.add(`instructions.${part}`);
+      const changed = [...keys].filter((key) => {
+        const [head, part] = key.split(".");
+        return part ? before.instructions?.[part] !== patch.instructions?.[part] : before[head] !== patch[head];
+      });
+      if (changed.length) bumpVersions(id, changed);
+      buffers.set(id, { ...before, ...patch });
+    };
+    /** Drop buffered fields (a discard, not a save): later snapshots must not match them. */
+    const dropBufferFields = (id, keys) => {
+      const next = { ...bufferOf(id) };
+      for (const key of keys) delete next[key];
+      bumpVersions(id, bufferKeys(Object.fromEntries(keys.map((key) => [key, bufferOf(id)[key]]))));
+      buffers.set(id, next);
+    };
+    /** What a Save submits for one post: each buffered field's value and edit version. */
+    const snapshotBuffer = (id) => {
+      const buffer = bufferOf(id);
+      return {
+        buffer: { ...buffer, instructions: buffer.instructions ? { ...buffer.instructions } : undefined },
+        versions: { ...(editVersions.get(id) ?? {}) }
+      };
+    };
+    /**
+     * After an acknowledged save, clear only the fields still exactly as
+     * submitted (same edit version). A field edited while the save was in
+     * flight keeps its newer buffer and stays dirty.
+     */
+    const acknowledgeFields = (id, snapshot, keys) => {
+      const current = editVersions.get(id) ?? {};
+      const next = { ...bufferOf(id) };
+      const instructions = { ...(next.instructions ?? {}) };
+      for (const key of keys) {
+        if ((current[key] ?? 0) !== (snapshot.versions[key] ?? 0)) continue;
+        const [head, part] = key.split(".");
+        if (part) delete instructions[part];
+        else delete next[head];
+      }
+      if (keys.some((key) => key.startsWith("instructions."))) {
+        if (Object.keys(instructions).length) next.instructions = instructions;
+        else delete next.instructions;
+      }
+      if (Object.keys(next).length) buffers.set(id, next);
+      else buffers.delete(id);
+    };
     const itemNotes = new Map();     // batchItemId -> live note element (current render)
     const generatedUrls = new Map(); // generatedMediaId -> live blob: URL (revoked on redraw/close)
     // One reference stage per post for this drawer session, kept across
@@ -1192,7 +1251,8 @@ function App() {
       const work = ids
         .map((idToSave) => items.find((entry) => entry.id === idToSave))
         .filter(Boolean)
-        .map((item) => ({ item, entry: revisionEntryFor(item, bufferOf(item.id)), patch: instructionPatchFor(item, bufferOf(item.id)) }))
+        .map((item) => ({ item, snapshot: snapshotBuffer(item.id) }))
+        .map((job) => ({ ...job, entry: revisionEntryFor(job.item, job.snapshot.buffer), patch: instructionPatchFor(job.item, job.snapshot.buffer) }))
         .filter((job) => job.entry || job.patch);
       if (!work.length) return true;
       saving = true;
@@ -1206,32 +1266,44 @@ function App() {
         const revisionJobs = work.filter((job) => job.entry);
         if (revisionJobs.length) {
           const result = await rpc.saveRevisions({ revisions: revisionJobs.map((job) => job.entry) });
+          // This drawer ended (closed, or replaced by another) while saving:
+          // its buffers and view are gone; the acknowledgment has nowhere to land.
+          if (!live) return false;
           for (const [index, job] of revisionJobs.entries()) {
             const one = result?.results?.[index];
             const note = itemNotes.get(job.item.id);
             if (one?.ok) {
-              job.item.revision = one.revision;
-              if (job.entry.caption !== undefined) job.item.caption = job.entry.caption;
-              if (job.entry.altText !== undefined) job.item.altText = job.entry.altText;
-              job.item.generation = one.generation ?? null;
-              job.item.phase = null;
-              const { caption: _caption, imageId: _imageId, altText: _altText, ...rest } = bufferOf(job.item.id);
-              buffers.set(job.item.id, rest);
+              // A live read may have replaced the item object mid-save: apply
+              // to the post by id, never to a sibling.
+              for (const target of new Set([job.item, items.find((entry) => entry.id === job.item.id)].filter(Boolean))) {
+                target.revision = one.revision;
+                if (job.entry.caption !== undefined) target.caption = job.entry.caption;
+                if (job.entry.altText !== undefined) target.altText = job.entry.altText;
+                target.generation = one.generation ?? null;
+                target.phase = null;
+              }
+              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText"]);
               captionConflicts.delete(job.item.id);
               if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
             } else {
               allOk = false;
-              if (note) note.textContent = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
+              // The note line is rebuilt by the re-read's redraw; announce too,
+              // so the reason the save failed stays visible to the owner.
+              const message = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
+              if (note) note.textContent = message;
+              announce(message, "");
             }
           }
         }
         for (const job of work.filter((entry) => entry.patch)) {
           const saved = await rpc.saveInstructionOverrides(job.patch);
+          if (!live) return false;
           if (saved?.ok) {
-            job.item.instructionOverrides = saved.instructionOverrides;
-            job.item.effectiveInstructions = saved.effectiveInstructions;
-            const { instructions: _instructions, ...rest } = bufferOf(job.item.id);
-            buffers.set(job.item.id, rest);
+            for (const target of new Set([job.item, items.find((entry) => entry.id === job.item.id)].filter(Boolean))) {
+              target.instructionOverrides = saved.instructionOverrides;
+              target.effectiveInstructions = saved.effectiveInstructions;
+            }
+            acknowledgeFields(job.item.id, job.snapshot, ["image", "caption"].map((part) => `instructions.${part}`));
           } else {
             allOk = false;
             announce(refusalMessage(saved ?? {}) || t(locale, "saveFailed"), "");
@@ -1268,7 +1340,7 @@ function App() {
       if (decision === "save" && !(await saveItems(dirty))) return false;
       // "discard" must actually drop the buffers, so a later save (Review's
       // own) cannot resurrect what the owner threw away.
-      if (decision === "discard") for (const id of dirty) buffers.delete(id);
+      if (decision === "discard") for (const id of dirty) dropBufferFields(id, Object.keys(bufferOf(id)));
       return true;
     };
 
@@ -1407,10 +1479,7 @@ function App() {
         const decision = await confirmUnsavedNavigation(leaveDialog, locale);
         if (decision === "keep") return;
         if (decision === "save" && !(await saveItems([item.id]))) return;
-        if (decision === "discard") {
-          const { caption: _caption, ...rest } = bufferOf(item.id);
-          buffers.set(item.id, rest);
-        }
+        if (decision === "discard") dropBufferFields(item.id, ["caption"]);
       }
       const send = (withReplace) =>
         rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
@@ -1472,7 +1541,9 @@ function App() {
               disabled: state.save.disabled,
               title: state.save.reason || null,
               "aria-describedby": state.save.disabled ? DRAWER_FOOTER_HINT_ID : null,
-              onclick: () => saveItems([item.id]).then(() => redraw())
+              // Preserving: the owner may be typing in a field the save did
+              // not clear; its focus and caret survive the re-render.
+              onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
             el("button", {
               type: "button", class: "sl-primary",
@@ -1626,19 +1697,13 @@ function App() {
           onResolveCaptionConflict: (choice) => {
             // "use": the new saved caption wins and the local buffer is
             // discarded. "keep": the buffer stays, dirty against it.
-            if (choice === "use") {
-              const { caption: _caption, ...rest } = bufferOf(item.id);
-              buffers.set(item.id, rest);
-            }
+            if (choice === "use") dropBufferFields(item.id, ["caption"]);
             captionConflicts.delete(item.id);
             redraw();
           },
           onStageImage: (mediaId) => {
             if (mediaId) patchBuffer(item.id, { imageId: mediaId });
-            else {
-              const { imageId: _imageId, ...rest } = bufferOf(item.id);
-              buffers.set(item.id, rest);
-            }
+            else dropBufferFields(item.id, ["imageId"]);
             redraw();
           },
           onRequestPart: (part) => requestPart(item, part)
@@ -1683,19 +1748,30 @@ function App() {
      */
     let refreshing = null;
     let rerun = false;
+    let passIsReconnect = false; // the read in flight was started by a `reconnected`
     const refresh = (event) => {
       if (!live) return Promise.resolve();
       if (event?.batchItemId && !items.some((entry) => entry.id === event.batchItemId)) return Promise.resolve();
       if (event?.batchId && event.batchId !== batch.id) return Promise.resolve();
-      if (refreshing) { rerun = true; return refreshing; }
+      const reconnect = event?.type === "reconnected";
+      if (refreshing) {
+        // A duplicate reconnect joins the reconciliation read already in
+        // flight (issued after the stream came back); anything else owes a
+        // follow-up read.
+        if (!(reconnect && passIsReconnect && !rerun)) rerun = true;
+        return refreshing;
+      }
       refreshing = (async () => {
         try {
+          passIsReconnect = reconnect;
           do {
             rerun = false;
             if ((await refetchItems()) && live) redrawPreserving();
+            passIsReconnect = false;
           } while (rerun && live);
         } finally {
           refreshing = null;
+          passIsReconnect = false;
         }
       })();
       return refreshing;

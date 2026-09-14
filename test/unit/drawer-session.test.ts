@@ -594,3 +594,350 @@ describe("U3: one reference stage per post per drawer session", () => {
     expect(r.calls.stagesDisposed).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R3 — owner edits made while Save is in flight survive its acknowledgment
+// ---------------------------------------------------------------------------
+
+/** Holds each save RPC until released; a released save persists what it was sent. */
+function gateSaves(r: AnyRec) {
+  const gates: Array<(fail: boolean) => void> = [];
+  const hold = () => new Promise<boolean>((go) => gates.push(go));
+  r.scope.rpc.saveRevisions = async (input: AnyRec) => {
+    r.calls.revisionWrites.push(input);
+    if (await hold()) return { ok: true, results: input.revisions.map(() => ({ ok: false, issues: [{ message: "Revision conflict." }] })) };
+    const results = input.revisions.map((rev: AnyRec) => {
+      const row = r.db.items.find((item: AnyRec) => item.id === rev.batchItemId);
+      if (rev.caption !== undefined) row.caption = rev.caption;
+      if (rev.altText !== undefined) row.altText = rev.altText;
+      if (rev.acceptedGeneratedMediaId) {
+        row.generatedImage = { id: rev.acceptedGeneratedMediaId, ready: true, mimeType: "image/jpeg", status: "accepted" };
+        row.generatedCandidate = null;
+      }
+      row.revision = (row.revision ?? 0) + 1;
+      return { ok: true, revision: row.revision };
+    });
+    return { ok: true, results };
+  };
+  const instructions = r.scope.rpc.saveInstructionOverrides;
+  r.scope.rpc.saveInstructionOverrides = async (patch: AnyRec) => {
+    if (await hold()) return { ok: false, message: "Instructions are too long." };
+    return instructions(patch);
+  };
+  return {
+    release: async () => { gates.shift()!(false); await flushAsyncWork(); },
+    fail: async () => { gates.shift()!(true); await flushAsyncWork(); },
+    pending: () => gates.length
+  };
+}
+const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraft"));
+async function startSave(r: AnyRec) {
+  const done = saveButton(r).dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+  // Wrapped: returning the promise itself would make `await startSave()` wait for the save.
+  return { done };
+}
+
+describe("R3: typing during a pending Save keeps the newer edit", () => {
+  it("caption: A is saved, B stays visible and dirty, and a second save persists B", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    expect(saveButton(r).disabled).toBe(true);
+    await type(captionField(r), "Caption B");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.calls.revisionWrites[0].revisions[0].caption).toBe("Caption A");
+    expect(r.db.items[0].caption).toBe("Caption A");
+    expect(captionField(r).value).toBe("Caption B");
+    expect(saveButton(r).disabled).toBe(false);
+    // The unsaved guard still counts B.
+    const close = buttons(r.dialog()).find((b) => b.getAttribute("aria-label") === t("en", "drawerClose"));
+    await close.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.guards).toBe(1);
+
+    const { done: second } = await startSave(r);
+    expect(r.calls.revisionWrites[1].revisions[0]).toMatchObject({ caption: "Caption B", expectedRevision: 2 });
+    await saves.release();
+    await second;
+    await flushAsyncWork();
+    expect(r.db.items[0].caption).toBe("Caption B");
+    expect(captionField(r).value).toBe("Caption B");
+    expect(saveButton(r).disabled).toBe(true);
+  });
+
+  it("clears the buffer when nothing was typed during the save", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(captionField(r).value).toBe("Caption A");
+    expect(saveButton(r).disabled).toBe(true);
+  });
+
+  it("an edit typed back to the submitted text during the save is still acknowledged as saved", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    await type(captionField(r), "Caption A!");
+    await type(captionField(r), "Caption A");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    // Newer edit version kept, but it equals the saved caption: not dirty.
+    expect(captionField(r).value).toBe("Caption A");
+    expect(saveButton(r).disabled).toBe(true);
+  });
+
+  it("alt text: A is saved, B is retained dirty", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    const alt = () => byId(r.dialog(), "sl-drawer-alt-text");
+    await type(alt(), "Alt A");
+    const { done: saving } = await startSave(r);
+    await type(alt(), "Alt B");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.db.items[0].altText).toBe("Alt A");
+    expect(alt().value).toBe("Alt B");
+    expect(saveButton(r).disabled).toBe(false);
+    const { done: second } = await startSave(r);
+    await saves.release();
+    await second;
+    expect(r.db.items[0].altText).toBe("Alt B");
+  });
+
+  it("instruction overrides: only the part still as submitted is cleared", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
+    await type(byId(r.dialog(), "sl-instructions-image"), "Image A");
+    await type(byId(r.dialog(), "sl-instructions-caption"), "Caption tone A");
+    const { done: saving } = await startSave(r);
+    await type(byId(r.dialog(), "sl-instructions-image"), "Image B");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.db.items[0].instructionOverrides).toEqual({ image: "Image A", caption: "Caption tone A" });
+    expect(tab(r.dialog(), "instructions").getAttribute("aria-selected")).toBe("true");
+    expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Image B");
+    expect(byId(r.dialog(), "sl-instructions-caption").value).toBe("Caption tone A");
+    expect(saveButton(r).disabled).toBe(false);
+    const { done: second } = await startSave(r);
+    await saves.release();
+    await second;
+    expect(r.db.items[0].instructionOverrides).toEqual({ image: "Image B", caption: "Caption tone A" });
+    expect(saveButton(r).disabled).toBe(true);
+  });
+
+  it("staged image: the submitted candidate is accepted, a different image staged during the save stays staged", async () => {
+    const r = rig({
+      items: [post("a", {
+        generatedCandidate: { id: "gm_cand", ready: true, mimeType: "image/jpeg", status: "candidate" },
+        generatedHistory: [{ id: "gm_old", ready: true, status: "superseded", createdAt: "2026-09-13T03:00:00.000Z" }]
+      })]
+    });
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerUseCandidate"));
+    const { done: saving } = await startSave(r);
+    await click(r.dialog(), t("en", "drawerTabHistory"));
+    await click(r.dialog(), t("en", "drawerHistoryUseImage"));
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.calls.revisionWrites[0].revisions[0].acceptedGeneratedMediaId).toBe("gm_cand");
+    expect(r.db.items[0].generatedImage.id).toBe("gm_cand");
+    expect(saveButton(r).disabled).toBe(false);
+    const { done: second } = await startSave(r);
+    expect(r.calls.revisionWrites[1].revisions[0].acceptedGeneratedMediaId).toBe("gm_old");
+    await saves.release();
+    await second;
+    expect(r.db.items[0].generatedImage.id).toBe("gm_old");
+  });
+
+  it("switching sibling posts during the save: the acknowledgment lands on the saved post only", async () => {
+    const r = rig({ items: [post("a"), post("b", { caption: "Second post caption" })] });
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    await click(r.dialog(), t("en", "drawerPostNofM", { n: 2, total: 2 }));
+    await type(captionField(r), "Second post edit");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.db.items.map((item: AnyRec) => item.caption)).toEqual(["Caption A", "Second post caption"]);
+    expect(captionField(r).value).toBe("Second post edit");
+    expect(saveButton(r).disabled).toBe(false);
+    await click(r.dialog(), t("en", "drawerPostNofM", { n: 1, total: 2 }));
+    expect(captionField(r).value).toBe("Caption A");
+    expect(saveButton(r).disabled).toBe(true);
+  });
+
+  it("a live generation refresh during the save merges server data and keeps the newer buffer", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    await type(captionField(r), "Caption B");
+    r.db.items[0].generatedCandidate = { id: "gm_live", ready: true, mimeType: "image/jpeg", status: "candidate" };
+    await r.operation({ type: "generated_image", batchItemId: "a" });
+    await flushAsyncWork();
+    expect(captionField(r).value).toBe("Caption B");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(r.db.items[0].caption).toBe("Caption A");
+    expect(captionField(r).value).toBe("Caption B");
+    expect(images(r.dialog()).map((img) => img.src ?? img.getAttribute("src"))).toContain("blob:gm_live");
+    expect(r.dialog().textContent).not.toContain("A new generated caption is ready");
+    expect(saveButton(r).disabled).toBe(false);
+  });
+
+  it("a failed save keeps every buffer and shows the error", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    await type(byId(r.dialog(), "sl-drawer-alt-text"), "Alt A");
+    const { done: saving } = await startSave(r);
+    await type(captionField(r), "Caption B");
+    await saves.fail();
+    await saving;
+    await flushAsyncWork();
+    expect(r.calls.announced).toContain("Revision conflict.");
+    expect(captionField(r).value).toBe("Caption B");
+    expect(byId(r.dialog(), "sl-drawer-alt-text").value).toBe("Alt A");
+    expect(r.db.items[0].caption).toBe("Saved caption");
+    expect(saveButton(r).disabled).toBe(false);
+  });
+
+  it("a failed instruction save keeps the instruction buffers", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
+    await type(byId(r.dialog(), "sl-instructions-image"), "Image A");
+    const { done: saving } = await startSave(r);
+    await saves.fail();
+    await saving;
+    await flushAsyncWork();
+    expect(r.calls.announced).toContain("Instructions are too long.");
+    expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Image A");
+    expect(saveButton(r).disabled).toBe(false);
+  });
+
+  it("ignores the acknowledgment for a drawer session that was replaced", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Caption A");
+    const { done: saving } = await startSave(r);
+    await r.open({ id: "b", itemId: "a" });
+    const readsAfterReopen = r.calls.reads;
+    await type(captionField(r), "Newer drawer edit");
+    await saves.release();
+    await saving;
+    await flushAsyncWork();
+    expect(captionField(r).value).toBe("Newer drawer edit");
+    expect(r.calls.reads).toBe(readsAfterReopen);
+  });
+
+  it("keeps focus and caret in the field being typed in across the acknowledgment re-render", async () => {
+    const r = rig();
+    const saves = gateSaves(r);
+    await r.open({ id: "b", itemId: "a" });
+    (document.body as any).appendChild(r.dialog());
+    const proto = Object.getPrototypeOf(captionField(r));
+    const selections: Array<[unknown, number, number]> = [];
+    const restore = { focus: proto.focus, setSelectionRange: proto.setSelectionRange };
+    proto.focus = function focus() { (document as any).activeElement = this; };
+    proto.setSelectionRange = function setSelectionRange(start: number, end: number) { selections.push([this, start, end]); };
+    try {
+      await type(captionField(r), "Caption A");
+      const { done: saving } = await startSave(r);
+      const typing = captionField(r);
+      await type(typing, "Caption B typed");
+      typing.focus();
+      Object.assign(typing, { selectionStart: 9, selectionEnd: 9 });
+      await saves.release();
+      await saving;
+      await flushAsyncWork();
+      const after = captionField(r);
+      expect(after.value).toBe("Caption B typed");
+      expect((document as any).activeElement).toBe(after);
+      // The minimal DOM rebuilds the field; the caret is restored onto it.
+      if (after !== typing) expect(selections.at(-1)).toEqual([after, 9, 9]);
+    } finally {
+      Object.assign(proto, restore);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R4 — the host's `reconnected` reconciles the open drawer
+// ---------------------------------------------------------------------------
+
+describe("R4: a stream reconnect reconciles missed updates", () => {
+  it("shows a candidate that arrived while disconnected, preserving buffers and section, in one read per burst", async () => {
+    const r = rig({ items: [post("a", { generation: pendingMark({ image: true }) })] });
+    await r.open({ id: "b", itemId: "a" });
+    await type(captionField(r), "Unsaved owner caption");
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
+    await type(byId(r.dialog(), "sl-instructions-image"), "Unsaved image note");
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    Object.assign(r.db.items[0], { generation: null, generatedCandidate: { id: "gm_missed", ready: true, mimeType: "image/jpeg", status: "candidate" } });
+    const readsBefore = r.calls.reads;
+    await Promise.all([r.operation({ type: "reconnected" }), r.operation({ type: "reconnected" }), r.operation({ type: "reconnected" })]);
+    await flushAsyncWork();
+    expect(r.calls.reads).toBe(readsBefore + 1);
+    expect(images(r.dialog()).map((img) => img.src ?? img.getAttribute("src"))).toContain("blob:gm_missed");
+    expect(tab(r.dialog(), "output").getAttribute("aria-selected")).toBe("true");
+    expect(captionField(r).value).toBe("Unsaved owner caption");
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
+    expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Unsaved image note");
+    expect(r.calls.requests).toHaveLength(0);
+    expect(r.calls.revisionWrites).toHaveLength(0);
+    expect(r.calls.instructionWrites).toHaveLength(0);
+  });
+
+  it("a later non-reconnect event during the reconnect read still owes a follow-up read", async () => {
+    const r = rig();
+    await r.open({ id: "b", itemId: "a" });
+    r.holdNextRead();
+    const first = r.operation({ type: "reconnected" });
+    await flushAsyncWork();
+    const second = r.operation({ type: "revision", batchItemId: "a" });
+    const third = r.operation({ type: "reconnected" });
+    r.release(r.db);
+    await Promise.all([first, second, third]);
+    await flushAsyncWork();
+    expect(r.calls.reads).toBe(3);
+  });
+
+  it("is ignored after the drawer closes", async () => {
+    const r = rig();
+    await r.open({ id: "b", itemId: "a" });
+    const close = buttons(r.dialog()).find((b) => b.getAttribute("aria-label") === t("en", "drawerClose"));
+    await close.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    const reads = r.calls.reads;
+    await r.operation({ type: "reconnected" });
+    expect(r.calls.reads).toBe(reads);
+  });
+});
