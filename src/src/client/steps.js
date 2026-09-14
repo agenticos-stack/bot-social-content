@@ -283,6 +283,9 @@ export function submitItemEnabled(state, batchItemId, policy, destinations = [])
       .map((entry) => entry.destinationBinding ?? entry.binding)
   );
   if (!publishBindings(state, batchItemId).some((binding) => known.has(binding))) return false;
+  // A PNG bound for a JPEG-only destination would be refused at filing
+  // (`generated_image_format_stale`); the owner accepts a JPEG copy first.
+  if (needsJpegCopy(item, { bindings: publishBindings(state, batchItemId), destinations, visualMode: acceptedVisualOf(item, state.drafts[batchItemId]) })) return false;
   const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
   return !hasBlockingIssues(issues);
 }

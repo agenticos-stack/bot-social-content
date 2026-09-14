@@ -81,6 +81,18 @@ describe("Review represents the accepted output (F03)", () => {
     expect(acceptedVisualOf(item, view.wizard.drafts.item1)).toBe("ai_refinement");
   });
 
+  it("a rendered PNG bound for a JPEG-only destination blocks submit until a JPEG copy is pinned", async () => {
+    const view = review(itemWith({ acceptedVisualMode: "ai_refinement", generatedImage: { id: "gm_png", ready: true, mimeType: "image/png" } }), ok);
+    await flushAsyncWork();
+    expect(reviewImageState(view.wizard.batch.items[0])).toBe("ready");
+    expect(submitItemEnabled(view.wizard as never, "item1", {}, destinations)).toBe(false);
+
+    const pinned = itemWith({ acceptedVisualMode: "ai_refinement", revision: 3, generatedImage: { id: "gm_jpeg", ready: true, mimeType: "image/jpeg" } });
+    const after = review(pinned, ok);
+    await flushAsyncWork();
+    expect(submitItemEnabled(after.wizard as never, "item1", {}, destinations)).toBe(true);
+  });
+
   it("a stored image whose preview fails blocks submit and offers a retry that loads it again", async () => {
     let fail = true;
     const view = review(
