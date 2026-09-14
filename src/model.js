@@ -1155,6 +1155,196 @@ export function revisionCas(current, expected) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. Item presentation policy (post-audit §9.A)
+// ---------------------------------------------------------------------------
+
+/**
+ * One shared roll-up for cards, filters, counts, drawer and actions.
+ *
+ * - `queued` / `regenerating`: generation was requested but no acknowledged
+ *   output yet (or a newer re-draft is pending). Never claimed from the
+ *   batch-level flag alone — the per-item mark is authoritative.
+ * - `draft`: an acknowledged revision the owner can still edit.
+ * - `in_review` / `scheduled` / `published`: from live (non-superseded,
+ *   non-failed) publications at the *current* revision plus their canonical
+ *   readback targets. A superseded rev-2 hold can never override a live rev-3
+ *   publication.
+ * - `attention`: a live filing reported failed/held/unknown, or the item row
+ *   itself is in one of those states with nothing filed.
+ */
+export const ITEM_PHASES = Object.freeze([
+  "queued",
+  "regenerating",
+  "draft",
+  "in_review",
+  "scheduled",
+  "published",
+  "attention"
+]);
+
+const ATTENTION_OUTCOMES = new Set(["failed", "failed_safe", "held", "unknown"]);
+/*
+ * Outcomes that still need the owner's eye — an approval queue entry, a
+ * provider-side confirmation, a first readback. Any of them outranks
+ * `scheduled`: a post filed to two destinations where one is scheduled but
+ * the other still awaits approval is pending owner work, not done.
+ */
+const PENDING_OUTCOMES = new Set([
+  "awaiting_approval",
+  "pending_approval",
+  "awaiting_review",
+  "in_review",
+  "submitted",
+  "review_requested",
+  "pending",
+  "processing"
+]);
+const FILING_ITEM_STATES = new Set(["submitted", "awaiting_approval", "review_requested"]);
+const EDITABLE_ITEM_STATES = new Set(["drafting", "expired"]);
+
+/**
+ * The durable generation mark a `batch_items.generation` row carries.
+ *
+ * Since the correlation fix the stored value is a JSON string —
+ * `{ id, base, needs: { caption, image } }` — so a save can be correlated
+ * back to the request that asked for it and caption work can never satisfy
+ * a still-pending image ask. The pre-identity `'requested'` string still
+ * parses (legacy rows), as an unidentifiable request needing both.
+ * `null`/absent means nothing is being generated.
+ */
+export function generationMark(mark) {
+  if (!mark) return null;
+  if (typeof mark === "object") {
+    return {
+      id: typeof mark.id === "string" ? mark.id : null,
+      base: Number.isFinite(mark.base) ? mark.base : null,
+      needs: {
+        caption: mark.needs?.caption !== false,
+        image: mark.needs?.image !== false
+      }
+    };
+  }
+  if (typeof mark === "string" && mark.startsWith("{")) {
+    try {
+      return generationMark(JSON.parse(mark));
+    } catch {
+      return null;
+    }
+  }
+  // Legacy 'requested'/'drafting' strings: a request with no identity that
+  // still needs both caption and image output.
+  return { id: null, base: null, needs: { caption: true, image: true } };
+}
+
+/**
+ * Deliveries = live publications plus their freshest canonical outcome.
+ * `targets` rows carry optional provenance stamps (`publicationId`,
+ * `publicationRevision`, `publicationVersion`) written by the server. EVERY
+ * stamp a row supplies must agree with the publication — a row stamped for
+ * a different filing can never match on a weaker field (a `revision` that
+ * happens to coincide is not an identity). Rows with no stamps at all are
+ * legacy and bind by destination alone. Superseded/failed publications stay
+ * in `publications` for history but never produce a delivery row.
+ */
+export function liveDeliveries(publications = [], targets = []) {
+  const live = (Array.isArray(publications) ? publications : []).filter(
+    (pub) => pub && pub.state !== "superseded" && pub.state !== "failed"
+  );
+  return live.map((pub) => {
+    if (pub.state === "bound") {
+      return {
+        publicationId: pub.id,
+        destinationBinding: pub.destinationBinding,
+        outcome: "bound",
+        detail: null,
+        guidance: null,
+        receiptUrl: null,
+        postId: null,
+        version: null,
+        revision: pub.revision,
+        filedAt: pub.updatedAt ?? null
+      };
+    }
+    const candidates = (Array.isArray(targets) ? targets : []).filter(
+      (entry) => entry && entry.destinationBinding === pub.destinationBinding
+    );
+    const hasStamp = (entry) =>
+      Boolean(entry.publicationId) || Boolean(entry.publicationVersion) || entry.publicationRevision != null;
+    const stampsAgree = (entry) =>
+      (!entry.publicationId || entry.publicationId === pub.id) &&
+      (!entry.publicationVersion || (pub.version != null && entry.publicationVersion === pub.version)) &&
+      (entry.publicationRevision == null ||
+        (pub.revision != null && entry.publicationRevision === pub.revision));
+    const target =
+      candidates.find((entry) => hasStamp(entry) && stampsAgree(entry)) ??
+      candidates.find((entry) => !hasStamp(entry)) ??
+      null;
+    return {
+      publicationId: pub.id,
+      destinationBinding: pub.destinationBinding,
+      outcome: target?.outcome ?? pub.state,
+      detail: target?.detail ?? null,
+      guidance: target?.guidance ?? null,
+      receiptUrl: target?.receiptUrl ?? null,
+      postId: pub.postId ?? null,
+      version: pub.version ?? target?.publicationVersion ?? null,
+      revision: pub.revision,
+      filedAt: pub.updatedAt ?? null
+    };
+  });
+}
+
+/**
+ * Roll a batch item up to { phase, deliveries }.
+ *
+ * `generation` is the item's own durable request mark (not the batch flag).
+ * `revision` is `current_revision`; a filing whose revision is behind it
+ * describes a superseded version and only appears in the deliveries list.
+ */
+export function itemPresentation({ state, revision = 0, generation = null, publications = [], targets = [] } = {}) {
+  const deliveries = liveDeliveries(publications, targets);
+  const filed = deliveries.filter((entry) => entry.outcome !== "bound");
+  const current = filed.filter((entry) => entry.revision != null && entry.revision >= revision);
+
+  let phase;
+  if (current.some((entry) => ATTENTION_OUTCOMES.has(entry.outcome))) {
+    phase = "attention";
+  } else if (current.some((entry) => PENDING_OUTCOMES.has(entry.outcome))) {
+    // A live filing still awaiting approval (or any pending owner work) keeps
+    // the post in the review queue even when a sibling filing is already
+    // scheduled or published — "scheduled on A" must not hide "awaiting
+    // approval on B".
+    phase = "in_review";
+  } else if (current.length > 0 && current.every((entry) => entry.outcome === "published")) {
+    phase = "published";
+  } else if (current.some((entry) => entry.outcome === "scheduled")) {
+    phase = "scheduled";
+  } else if (current.length > 0) {
+    phase = "in_review";
+  } else if (FILING_ITEM_STATES.has(state)) {
+    phase = "in_review";
+  } else if (state === "scheduled") {
+    phase = "scheduled";
+  } else if (ATTENTION_OUTCOMES.has(state)) {
+    phase = "attention";
+  } else if (EDITABLE_ITEM_STATES.has(state)) {
+    phase = generationMark(generation) ? (revision > 0 ? "regenerating" : "queued") : "draft";
+  } else {
+    // Unknown state: never dress it up as a draft.
+    phase = "attention";
+  }
+  return { phase, deliveries };
+}
+
+/** Which inbox filter a phase belongs to; `all`/`new` handled by the caller. */
+export const PHASE_FILTERS = Object.freeze({
+  drafts: Object.freeze(["queued", "regenerating", "draft"]),
+  review: Object.freeze(["in_review"]),
+  scheduled: Object.freeze(["scheduled"]),
+  attention: Object.freeze(["attention"])
+});
+
+// ---------------------------------------------------------------------------
 // The model's own English / zh-HK (書面語) strings.
 // ---------------------------------------------------------------------------
 

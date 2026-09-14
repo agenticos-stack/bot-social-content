@@ -17,12 +17,18 @@
 // base64 text, so a 1 MiB preview does not inflate to 1.33 MiB of TEXT and
 // press against that ceiling for no reason.
 
-import { ledgerFromProtectedOverrides, normalizeLedger } from "./model.js";
+import {
+  generationMark as parseGenerationMark,
+  itemPresentation,
+  ledgerFromProtectedOverrides,
+  normalizeLedger,
+  PHASE_FILTERS
+} from "./model.js";
 
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -386,6 +392,68 @@ const MIGRATIONS = {
   // (this change shipped while it was open) still get the remap.
   11(sql) {
     sql.exec("UPDATE batch_items SET state = 'drafting' WHERE state = 'held_rights'");
+  },
+
+  /*
+   * Post-audit §9.D: the durable drafting ask becomes per-ITEM, so a
+   * regeneration request can name one post instead of silently re-arming its
+   * whole batch. `batches.generation` stays as the roll-up ("something in
+   * this batch wants drafting"); `batch_items.generation` is the
+   * authoritative mark an item's `queued`/`regenerating` phase reads.
+   * Backfill marks the draftable items of already-requested batches — filed
+   * items were never the ask's work.
+   */
+  12(sql) {
+    sql.exec("ALTER TABLE batch_items ADD COLUMN generation TEXT");
+    sql.exec(`UPDATE batch_items SET generation = 'requested'
+      WHERE active = 1 AND state IN ('drafting','expired')
+        AND batch_id IN (SELECT id FROM batches WHERE generation = 'requested')`);
+  },
+
+  /*
+   * AI-generated images accepted into the gadget (TASK: attachment→gadget
+   * transfer). A row registers the acceptance contract first — `bytes` NULL
+   * means the attachment is named but its bytes have not been delivered —
+   * then `deliverGeneratedMedia` fills them in. `attachment_id` preserves
+   * the platform upload's identity through edit/reload/review/publication.
+   */
+  13(sql) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS generated_media (
+      id TEXT PRIMARY KEY,
+      batch_item_id TEXT NOT NULL,
+      attachment_id TEXT,
+      mime_type TEXT,
+      bytes BLOB,
+      byte_length INTEGER,
+      alt_text TEXT,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT
+    )`);
+    sql.exec("CREATE INDEX IF NOT EXISTS idx_generated_media_item ON generated_media(batch_item_id, created_at)");
+  },
+
+  /*
+   * The registration stamps the generation ask it answered so a LATE
+   * delivery can be correlated: an image registered under request A whose
+   * bytes arrive after request B superseded it must not satisfy B's image
+   * need — the bytes may still be kept (the owner can pick them), but they
+   * are not an answer to the newer ask.
+   */
+  14(sql) {
+    sql.exec("ALTER TABLE generated_media ADD COLUMN generation_request TEXT");
+  },
+
+  /*
+   * The owner's explicit visual pick — generated image, text poster, or the
+   * source media — is a fact about the REVISION, kept apart from the
+   * refinement brief: `normalizeRefinementBrief` fills `visualTreatment`
+   * with a default for every brief, so a value read from there can never
+   * tell "the owner chose keep_original" from "nobody chose". A NULL here
+   * is meaningful — a revision saved before the picker existed keeps the
+   * ship-the-stored-poster behaviour it was reviewed under.
+   */
+  15(sql) {
+    sql.exec("ALTER TABLE revisions ADD COLUMN accepted_visual_mode TEXT");
   }
 };
 
@@ -950,15 +1018,88 @@ export class Storage {
   /** The owner dismissed the Content-tab ask — durable, unlike a reload. */
   clearGeneration(batchId) {
     this.sql.exec("UPDATE batches SET generation = NULL WHERE id = ?", batchId);
+    this.sql.exec("UPDATE batch_items SET generation = NULL WHERE batch_id = ?", batchId);
+  }
+
+  /** A saved revision answered this item's ask — its own mark clears, and the batch roll-up follows. */
+  clearItemGeneration(batchItemId) {
+    this.sql.exec("UPDATE batch_items SET generation = NULL WHERE id = ?", batchItemId);
   }
 
   /**
-   * The owner asked for this batch to be drafted again — the same durable
-   * mark createBatch writes, re-armed. Existing drafts stay; the agent's
-   * next turn sees `generation: "requested"` and saves a new revision.
+   * The owner asked for this batch (or specific items in it) to be drafted —
+   * the same durable mark createBatch writes, re-armed. `itemIds` scopes the
+   * ask to exactly those rows; omitted, every still-draftable item carries
+   * it. Existing drafts stay; the agent's next turn sees the mark and saves
+   * a new revision.
+   *
+   * The mark carries a request identity and base revision (`{ id, base,
+   * needs }` — see `generationMark` in model.js): one `request` id is
+   * minted per call and each item stamps the revision the ask was made
+   * against. A later request SUPersedes an earlier one outright — a result
+   * written for an older `id` can satisfy nothing on the newer mark.
    */
-  setGeneration(batchId) {
+  setGeneration(batchId, itemIds = null, request = null) {
     this.sql.exec("UPDATE batches SET generation = 'requested' WHERE id = ?", batchId);
+    const stamp = nowIso();
+    const markFor = (item) =>
+      JSON.stringify({
+        id: request,
+        // `listBatchItems` hydrates `current_revision` to `currentRevision` —
+        // reading the column name off the hydrated row stamps base: 0 forever.
+        base: item.currentRevision ?? item.current_revision ?? item.revision ?? 0,
+        needs: { caption: true, image: true },
+        at: stamp
+      });
+    if (Array.isArray(itemIds) && itemIds.length) {
+      const byId = new Map(this.listBatchItems(batchId).map((item) => [item.id, item]));
+      for (const id of itemIds) {
+        const item = byId.get(id);
+        if (!item) continue;
+        this.sql.exec("UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?", markFor(item), stamp, id);
+      }
+      return;
+    }
+    for (const item of this.listBatchItems(batchId)) {
+      if (!item.active || !["drafting", "expired"].includes(item.state)) continue;
+      this.sql.exec("UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?", markFor(item), stamp, item.id);
+    }
+  }
+
+  /**
+   * A save landed for this item — satisfy only the needs it actually
+   * delivered, and only when the write is correlated to THIS request.
+   *
+   * `request` is the `generation.id` the caller read from the item and
+   * echoed back; a present-but-mismatched id is a stale result — the
+   * revision it wrote still stands, but it clears nothing on the newer
+   * mark. An absent `request` is a manual owner save, which satisfies the
+   * `caption` need only — the owner wrote the caption, but a pending
+   * image ask stays pending (`needs.image` survives). `needs` names what
+   * this write delivered (`{ caption, image }`).
+   *
+   * A mark whose needs are all met clears entirely; the batch roll-up then
+   * clears via `clearGenerationIfAllDrafted`.
+   */
+  satisfyItemGeneration(batchItemId, { request = null, needs = {} } = {}) {
+    const row = rows(this.sql.exec("SELECT generation FROM batch_items WHERE id = ?", batchItemId))[0];
+    const mark = parseGenerationMark(row?.generation ?? null);
+    if (!mark) return;
+    if (request != null && mark.id !== request) return;
+    const remaining = {
+      caption: mark.needs.caption && !needs.caption,
+      image: mark.needs.image && !needs.image
+    };
+    if (!remaining.caption && !remaining.image) {
+      this.clearItemGeneration(batchItemId);
+      return;
+    }
+    this.sql.exec(
+      "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
+      JSON.stringify({ id: mark.id, base: mark.base, needs: remaining }),
+      nowIso(),
+      batchItemId
+    );
   }
 
   /**
@@ -967,7 +1108,7 @@ export class Storage {
    */
   clearGenerationIfAllDrafted(batchId) {
     const pending = Number(rows(this.sql.exec(
-      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND current_revision = 0", batchId
+      "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND generation IS NOT NULL", batchId
     ))[0]?.n ?? 0);
     if (pending === 0) this.clearGeneration(batchId);
   }
@@ -1009,10 +1150,6 @@ export class Storage {
     const rowsFound = rows(this.sql.exec(
       `SELECT b.id, b.created_at, b.status, b.generation,
          COUNT(bi.id) AS item_count,
-         SUM(CASE WHEN bi.state IN ('drafting','expired') THEN 1 ELSE 0 END) AS draft_count,
-         SUM(CASE WHEN bi.state IN ('submitted','awaiting_approval') THEN 1 ELSE 0 END) AS review_count,
-         SUM(CASE WHEN bi.state = 'scheduled' THEN 1 ELSE 0 END) AS scheduled_count,
-         SUM(CASE WHEN bi.state IN ('failed','unknown','held') THEN 1 ELSE 0 END) AS attention_count,
          MIN(bi.updated_at) AS first_updated_at,
          MAX(bi.updated_at) AS last_updated_at,
          GROUP_CONCAT(DISTINCT bi.item_id) AS source_item_ids,
@@ -1041,13 +1178,17 @@ export class Storage {
      * Per-item projection for the Content grid — the card there is a POST
      * (cover + snapshot + state chip), not a batch header. One extra query
      * over the page's batch ids, grouped in memory; a batch card keeps its
-     * `preview` for callers that only need the representative.
+     * `preview` for callers that only need the representative. `phase` is
+     * the shared `itemPresentation` roll-up — the same policy the drawer
+     * and Publish read — so a filed/published item can never fall through
+     * to "drafting" here (§9.A).
      */
     const itemsByBatch = new Map();
     if (page.length) {
       const batchIds = page.map((row) => row.id);
       const itemRows = rows(this.sql.exec(
         `SELECT bi.id AS batch_item_id, bi.batch_id, bi.item_id, bi.state, bi.current_revision,
+           bi.generation AS item_generation, bi.targets_json,
            COALESCE(origin.source_label, source.source_label, source.provider) AS source_label,
            source.provider AS provider, source.source_binding AS source_binding,
            SUBSTR(source.text, 1, 160) AS source_text,
@@ -1062,13 +1203,47 @@ export class Storage {
          ORDER BY bi.id`,
         ...batchIds
       ));
+      const pubRows = rows(this.sql.exec(
+        `SELECT p.batch_item_id, p.id, p.destination_binding, p.revision, p.state,
+           p.post_id, p.version, p.updated_at
+         FROM publications p
+         JOIN batch_items bi ON bi.id = p.batch_item_id
+         WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
+         ORDER BY p.created_at, p.id`,
+        ...batchIds
+      ));
+      const pubsByItem = new Map();
+      for (const pub of pubRows) {
+        const list = pubsByItem.get(pub.batch_item_id) ?? [];
+        list.push(hydratePublication(pub));
+        pubsByItem.set(pub.batch_item_id, list);
+      }
       for (const row of itemRows) {
+        let targets = null;
+        try {
+          targets = row.targets_json ? JSON.parse(row.targets_json) : null;
+        } catch {
+          targets = null;
+        }
+        const { phase, deliveries } = itemPresentation({
+          state: row.state,
+          revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          generation: row.item_generation ?? null,
+          publications: pubsByItem.get(row.batch_item_id) ?? [],
+          targets: targets ?? []
+        });
         const list = itemsByBatch.get(row.batch_id) ?? [];
         list.push({
           batchItemId: row.batch_item_id,
+          batchId: row.batch_id,
           itemId: row.item_id,
           state: row.state,
           revision: row.current_revision == null ? 0 : Number(row.current_revision),
+          // Parsed `{ id, base, needs }` — cards read `needs` for the
+          // caption/image pending placeholders.
+          generation: parseGenerationMark(row.item_generation ?? null),
+          phase,
+          deliveries,
           sourceLabel: row.source_label ?? null,
           provider: row.provider ?? null,
           sourceBinding: row.source_binding ?? null,
@@ -1079,41 +1254,95 @@ export class Storage {
         itemsByBatch.set(row.batch_id, list);
       }
     }
+    const totals = this.facetItemPhaseTotals();
     return {
-      batches: page.map((row) => ({
-        id: row.id,
-        createdAt: row.created_at,
-        status: row.status,
-        generation: row.generation ?? null,
-        itemCount: Number(row.item_count ?? 0),
-        draftCount: Number(row.draft_count ?? 0),
-        reviewCount: Number(row.review_count ?? 0),
-        scheduledCount: Number(row.scheduled_count ?? 0),
-        attentionCount: Number(row.attention_count ?? 0),
-        firstUpdatedAt: row.first_updated_at ?? null,
-        lastUpdatedAt: row.last_updated_at ?? null,
-        sourceItemIds: row.source_item_ids ? String(row.source_item_ids).split(",") : [],
-        preview: row.preview_item_id ? {
-          batchItemId: row.preview_item_id,
-          sourceLabel: row.preview_source_label ?? null,
-          sourceText: row.preview_source_text ?? null,
-          caption: row.preview_caption ?? null,
-          revision: row.preview_revision == null ? null : Number(row.preview_revision),
-          hasMediaReference: Boolean(row.preview_has_media)
-        } : null,
-        items: itemsByBatch.get(row.id) ?? []
-      })),
+      batches: page.map((row) => {
+        const items = itemsByBatch.get(row.id) ?? [];
+        const count = (filter) => items.filter((item) => (PHASE_FILTERS[filter] ?? []).includes(item.phase)).length;
+        return {
+          id: row.id,
+          createdAt: row.created_at,
+          status: row.status,
+          generation: row.generation ?? null,
+          itemCount: Number(row.item_count ?? 0),
+          draftCount: count("drafts"),
+          reviewCount: count("review"),
+          scheduledCount: count("scheduled"),
+          attentionCount: count("attention"),
+          firstUpdatedAt: row.first_updated_at ?? null,
+          lastUpdatedAt: row.last_updated_at ?? null,
+          sourceItemIds: row.source_item_ids ? String(row.source_item_ids).split(",") : [],
+          preview: row.preview_item_id ? {
+            batchItemId: row.preview_item_id,
+            sourceLabel: row.preview_source_label ?? null,
+            sourceText: row.preview_source_text ?? null,
+            caption: row.preview_caption ?? null,
+            revision: row.preview_revision == null ? null : Number(row.preview_revision),
+            hasMediaReference: Boolean(row.preview_has_media)
+          } : null,
+          items
+        };
+      }),
       nextCursor: rowsFound.length > bounded && last ? `${last.created_at}|${last.id}` : null,
       totals: {
         batches: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batches"))[0]?.n ?? 0),
         new: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM items LEFT JOIN seen ON seen.item_id = items.id WHERE seen.item_id IS NULL"))[0]?.n ?? 0),
         items: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1"))[0]?.n ?? 0),
-        drafts: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('drafting','expired')"))[0]?.n ?? 0),
-        review: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('submitted','awaiting_approval')"))[0]?.n ?? 0),
-        scheduled: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state = 'scheduled'"))[0]?.n ?? 0),
-        attention: Number(rows(this.sql.exec("SELECT COUNT(*) AS n FROM batch_items WHERE active = 1 AND state IN ('failed','unknown','held')"))[0]?.n ?? 0)
+        drafts: totals.drafts,
+        review: totals.review,
+        scheduled: totals.scheduled,
+        attention: totals.attention
       }
     };
+  }
+
+  /**
+   * Phase counts over EVERY active batch item, not just the page — the
+   * Content filter chips' totals must survive a limited page. Two flat
+   * reads and the shared `itemPresentation` roll-up; the row state alone
+   * cannot answer this (a `review_requested` item whose current revision
+   * already published is "published", not review work).
+   */
+  facetItemPhaseTotals() {
+    const itemRows = rows(this.sql.exec(
+      `SELECT bi.id, bi.state, bi.current_revision, bi.generation, bi.targets_json
+       FROM batch_items bi WHERE bi.active = 1`
+    ));
+    const pubRows = rows(this.sql.exec(
+      `SELECT p.batch_item_id, p.id, p.destination_binding, p.revision, p.state,
+         p.post_id, p.version, p.updated_at
+       FROM publications p JOIN batch_items bi ON bi.id = p.batch_item_id
+       WHERE bi.active = 1`
+    ));
+    const pubsByItem = new Map();
+    for (const pub of pubRows) {
+      const list = pubsByItem.get(pub.batch_item_id) ?? [];
+      list.push(hydratePublication(pub));
+      pubsByItem.set(pub.batch_item_id, list);
+    }
+    const totals = { drafts: 0, review: 0, scheduled: 0, attention: 0 };
+    for (const row of itemRows) {
+      let targets = null;
+      try {
+        targets = row.targets_json ? JSON.parse(row.targets_json) : null;
+      } catch {
+        targets = null;
+      }
+      const { phase } = itemPresentation({
+        state: row.state,
+        revision: row.current_revision == null ? 0 : Number(row.current_revision),
+        generation: row.generation ?? null,
+        publications: pubsByItem.get(row.id) ?? [],
+        targets: targets ?? []
+      });
+      for (const [filter, phases] of Object.entries(PHASE_FILTERS)) {
+        if (phases.includes(phase)) {
+          totals[filter] += 1;
+          break;
+        }
+      }
+    }
+    return totals;
   }
 
   countBatches() {
@@ -1169,13 +1398,14 @@ export class Storage {
   createBatchItem(row) {
     this.sql.exec(
       `INSERT INTO batch_items (
-        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, generation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
       row.id,
       row.batchId,
       row.itemId,
       JSON.stringify(row.destinationBindings ?? []),
       row.state,
+      row.generation ?? null,
       nowIso(),
       nowIso()
     );
@@ -1405,8 +1635,8 @@ export class Storage {
         `INSERT INTO revisions (
           batch_item_id, revision, caption, poster_layout_json, confirmed_claims_json, issues_json,
           refinement_brief_json, protected_overrides_json, original_media_refs_json, derived_media_refs_json,
-          publication_intent_json, ledger_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          publication_intent_json, ledger_json, accepted_visual_mode, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         batchItemId,
         next,
         patch.caption ?? null,
@@ -1419,6 +1649,7 @@ export class Storage {
         patch.derivedMediaRefs ? JSON.stringify(patch.derivedMediaRefs) : null,
         patch.publicationIntent ? JSON.stringify(patch.publicationIntent) : null,
         patch.ledger ? JSON.stringify(patch.ledger) : null,
+        patch.acceptedVisualMode ?? null,
         nowIso()
       );
       this.sql.exec(
@@ -1504,6 +1735,70 @@ export class Storage {
       this.sql.exec("SELECT * FROM posters WHERE batch_item_id = ? AND revision = ?", batchItemId, revision)
     )[0];
     return row ? { template: row.template, bytes: toUint8Array(row.png), byteLength: row.byte_length } : null;
+  }
+
+  // ---------------------------------------------------------------------
+  // generated_media — AI images accepted into the gadget
+  // ---------------------------------------------------------------------
+
+  /**
+   * Register an accepted generated image BEFORE its bytes arrive. The
+   * two-step shape is the transfer contract: the caller (the agent through
+   * `saveGeneratedImage`, or a platform/delivery transfer) names the
+   * attachment and the post it belongs to; bytes follow through
+   * `deliverGeneratedMedia` — image payloads never ride inside a model's
+   * tool result.
+   */
+  saveGeneratedMedia({ id, batchItemId, attachmentId = null, altText = null, mimeType = null, generationRequest = null }) {
+    this.sql.exec(
+      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         attachment_id = excluded.attachment_id, alt_text = excluded.alt_text`,
+      id,
+      batchItemId,
+      attachmentId,
+      mimeType,
+      altText,
+      generationRequest,
+      nowIso()
+    );
+  }
+
+  /** Fill in the bytes for a registered row. Returns the hydrated row. */
+  deliverGeneratedMedia(id, { bytes, mimeType }) {
+    this.sql.exec(
+      "UPDATE generated_media SET bytes = ?, byte_length = ?, mime_type = ?, delivered_at = ? WHERE id = ?",
+      bytes,
+      bytes?.byteLength ?? 0,
+      mimeType,
+      nowIso(),
+      id
+    );
+    return this.getGeneratedMedia(id);
+  }
+
+  getGeneratedMedia(id) {
+    const row = rows(this.sql.exec("SELECT * FROM generated_media WHERE id = ?", id))[0];
+    return row ? hydrateGeneratedMedia(row) : null;
+  }
+
+  /** The newest generated image for a post — what the drawer and submit read. */
+  latestGeneratedMedia(batchItemId) {
+    const row = rows(
+      this.sql.exec(
+        "SELECT * FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        batchItemId
+      )
+    )[0];
+    return row ? hydrateGeneratedMedia(row) : null;
+  }
+
+  /** Registrations whose bytes never arrived — the delivery sweep reads these. */
+  pendingGeneratedMedia() {
+    return rows(this.sql.exec("SELECT * FROM generated_media WHERE bytes IS NULL ORDER BY created_at")).map(
+      hydrateGeneratedMedia
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -1654,6 +1949,21 @@ function hydrateDestination(row) {
   };
 }
 
+function hydrateGeneratedMedia(row) {
+  return {
+    id: row.id,
+    batchItemId: row.batch_item_id,
+    attachmentId: row.attachment_id ?? null,
+    mimeType: row.mime_type ?? null,
+    bytes: row.bytes ? toUint8Array(row.bytes) : null,
+    byteLength: row.byte_length ?? null,
+    altText: row.alt_text ?? null,
+    generationRequest: row.generation_request ?? null,
+    createdAt: row.created_at,
+    deliveredAt: row.delivered_at ?? null
+  };
+}
+
 /** REQ-016's stored describe payload. Unreadable JSON is treated as absent, never as a partial description. */
 function parseDescribe(json) {
   if (!json) return null;
@@ -1722,6 +2032,7 @@ function hydrateBatchItem(row) {
     postId: row.post_id ?? null,
     version: row.version ?? null,
     targets: row.targets_json ? JSON.parse(row.targets_json) : null,
+    generation: row.generation ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -1762,6 +2073,9 @@ function hydrateRevision(row) {
     derivedMediaRefs: row.derived_media_refs_json ? JSON.parse(row.derived_media_refs_json) : [],
     publicationIntent: row.publication_intent_json ? JSON.parse(row.publication_intent_json) : null,
     ledger: hydrateLedger(row),
+    // The owner's explicit visual pick for this revision — NULL is "no pick
+    // recorded", which is not the same as `keep_original` (see migration 15).
+    acceptedVisualMode: row.accepted_visual_mode ?? null,
     createdAt: row.created_at
   };
 }

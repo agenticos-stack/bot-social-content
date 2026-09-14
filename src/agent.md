@@ -15,7 +15,9 @@ summary; a refusal is not successful activation. The old `setConfig` method is
 retained for legacy clients and can arm monitoring; do not use it as save-only.
 Source-check cadence is never publication timing. New content starts as a draft;
 the owner reviews each exact content, visual and timing revision before publishing.
-No AI image refinement capability is exposed by this UI; do not invent completion.
+AI image generation exists only through the governed platform image tools and the
+`saveGeneratedImage` handoff below — never claim a generated image exists until
+the item's `generatedImage.ready` says its bytes actually arrived.
 
 ## Preparing selected source posts
 
@@ -37,10 +39,20 @@ disclaimers, claims. You are handed the values; do not infer what is
 protected from prose.
 
 What you may NOT do is draft unattended. `createBatch` marks a batch
-`generation: "requested"` — draft only batches carrying that mark, only
-the items the owner selected into them, and only when the owner (or a
-brief naming the batch) actually asked. New scanned content arriving on
-its own is not a drafting ask; never draft a batch nobody requested.
+`generation: "requested"` and each of its items a mark object —
+`{ id, base, needs }` — instead. Draft only batches carrying the batch-level
+mark, and within them ONLY the items whose own `generation` is non-null. An
+unmarked item in a requested batch is a post the owner did not ask you to
+re-draft; leave its revision untouched. Draft only when the owner (or a
+brief naming the batch) actually asked. New scanned content arriving on its
+own is not a drafting ask; never draft a batch nobody requested.
+
+When you save work for a marked item, echo its `generation.id` back as
+`generationRequest` on `saveRevision`/`savePoster`. That id is how your
+write is correlated to the ask you answered: a save that echoes a stale or
+missing id still writes its revision but cannot clear the item's mark — a
+newer request is never satisfied by an older result. Re-read the batch
+immediately before saving so the id and `expectedRevision` are current.
 
 ## When a scan asked for the drafting, not a person
 
@@ -143,6 +155,27 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
   image when bytes exist. When they don't (layout only), the post ships
   the source media and the result warns `poster_not_shipped`. The owner
   can also download the PNG from the drawer.
+- `saveGeneratedImage` is the attachment handoff for a REAL generated
+  image, used when the owner asked for generated imagery rather than a
+  text poster. The platform image tools (`workspace.generateImage` /
+  `workspace.editImage`) produce a conversation attachment and return its
+  `uploadId`. Register that upload against ONE item:
+
+  ```
+  saveGeneratedImage({ batchItemId, attachmentId: uploadId,
+                       altText, generationRequest: generation.id })
+  ```
+
+  You name the attachment — you never carry its bytes. The host fetches
+  them through the authenticated attachment route and delivers them to the
+  gadget afterwards; `generatedImage` on the item reports `ready` when the
+  bytes actually landed. A `ready` generated image only ships when the
+  revision's visual mode is `ai_refinement` (`acceptedVisualMode` on
+  saveRevision, or the owner's own pick in the drawer); the deterministic
+  text poster remains an explicit mode, not a fallback silently swapped in.
+  Registering an upload for an image you did not generate, or claiming a
+  generated image exists while `ready` is still false, is fabrication —
+  the item tells the owner the truth; so do you.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own

@@ -58,7 +58,16 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * any door call proceeds, and `submitForReview` is gated there as it is for
    * an installed gadget.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia'];
+  /*
+   * The four generated-image methods are gadget-local, not door calls:
+   * `saveGeneratedImage`/`deliverGeneratedImage` are the host's
+   * attachment→gadget transfer (preview.mjs's delivery sweep calls them
+   * through the same `local.handle` this list gates), `getGeneratedImage`
+   * is the drawer's chunked read, and `pendingGeneratedImages` is the
+   * sweep's poll. Absent from `browsing` the whole contract silently
+   * refused at the session gate.
+   */
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');

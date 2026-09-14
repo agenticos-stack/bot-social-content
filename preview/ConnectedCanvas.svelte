@@ -164,7 +164,7 @@
 {#key frameGeneration}
 <iframe
   bind:this={frame}
-  src="/dev-canvas"
+  src={"/dev-canvas" + (new URLSearchParams(location.search).get("locale") === "zh-HK" ? "?locale=zh-HK" : "")}
   sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
   title="Social Content — local source"
   onload={connect}

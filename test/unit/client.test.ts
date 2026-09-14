@@ -57,7 +57,7 @@ import {
   toConfigPayload,
   updateDraft
 } from "../../src/src/client/steps.js";
-import { createInboxState, drawerAction, drawerProjection, groupSourcesWithBatches, renderInbox, setInboxFilter, setInboxSummaries, visibleBatchSummaries } from "../../src/src/client/inbox.js";
+import { createInboxState, clearInboxSelection, drawerAction, drawerProjection, groupSourcesWithBatches, inboxSelectionCount, renderInbox, selectedInboxItems, setInboxFilter, setInboxSummaries, toggleInboxItem, visibleBatchSummaries, visibleInboxItems } from "../../src/src/client/inbox.js";
 import { suggestProtectedTerms } from "../../src/src/client/steps.js";
 import { LOCALES, STRINGS, t } from "../../src/src/client/i18n.js";
 import { normalizeConfig } from "../../src/config.js";
@@ -357,7 +357,15 @@ describe("steps.js transitions", () => {
     expect(wizard.batch.items.map((item) => item.id)).toEqual(["draft"]);
     expect(wizard.drafts.submitted).toBeUndefined();
     expect(drawerAction({ state: "expired" }).kind).toBe("resume");
-    expect(drawerAction({ state: "published" }).kind).toBe("unavailable");
+    // A state with no delivery evidence is an outcome to inspect, not a
+    // silent draft and not "unavailable" — unknown maps to attention.
+    expect(drawerAction({ state: "published" }).kind).toBe("outcome");
+    // The real published path: a live delivery at the current revision
+    // whose canonical outcome reads back published shows its receipt.
+    expect(drawerAction({
+      state: "review_requested",
+      phase: "published"
+    }).kind).toBe("receipt");
   });
 
   it("blocks dirty or in-flight submissions and rejects edits while submitting", () => {
@@ -436,6 +444,141 @@ describe("inbox.js projections", () => {
     // `.sl-post-open` button — which opens the drawer for its batch.
     await buttons.find((button) => button.classList?.contains("sl-post-open"))?.dispatchEvent({ type: "click" });
     expect(calls).toEqual(["inspect:b1"]);
+  });
+
+  // §9 — the Content card IS a post: per-item chips, per-item drawer
+  // targeting, per-item selection across batches.
+  const phaseBatch = (id: string, items: any[], extra: Record<string, unknown> = {}) => ({
+    id,
+    draftCount: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
+    items,
+    ...extra
+  });
+  const summaryItem = (batchItemId: string, patch: Record<string, unknown> = {}) => ({
+    batchItemId,
+    batchId: "b",
+    itemId: `src-${batchItemId}`,
+    state: "drafting",
+    revision: 1,
+    phase: "draft",
+    deliveries: [],
+    sourceLabel: "Account",
+    sourceText: "Source post text",
+    caption: "Saved caption",
+    ...patch
+  });
+
+  it("targets the drawer at the one clicked post, not its batch", () => {
+    const drawer = drawerProjection(
+      { id: "b1", items: [summaryItem("bi-1"), summaryItem("bi-2", { caption: "Other" })] },
+      null,
+      "bi-2"
+    );
+    expect(drawer?.batchItemId).toBe("bi-2");
+    // Siblings stay available for navigation without becoming the subject.
+    expect(drawer?.items).toHaveLength(2);
+  });
+
+  it("selects posts across batches and keeps the selection through filter changes", () => {
+    let state = setInboxSummaries(createInboxState(), {
+      batches: [
+        phaseBatch("b1", [summaryItem("bi-1"), summaryItem("bi-2")], { draftCount: 2 }),
+        phaseBatch("b2", [summaryItem("bi-3", { batchId: "b2", phase: "in_review" })], { reviewCount: 1 })
+      ],
+      totals: { batches: 2, items: 3, drafts: 2, review: 1 }
+    });
+    state = toggleInboxItem(state, "bi-1", { batchId: "b1", itemId: "src-bi-1", revision: 1 });
+    state = toggleInboxItem(state, "bi-3", { batchId: "b2", itemId: "src-bi-3", revision: 2 });
+    expect(inboxSelectionCount(state)).toBe(2);
+
+    // A filter that hides a selected post does not drop the selection.
+    state = setInboxFilter(state, "review");
+    expect(inboxSelectionCount(state)).toBe(2);
+    expect(visibleInboxItems(state).map(({ item }) => item.batchItemId)).toEqual(["bi-3"]);
+
+    // A summaries refresh carries the freshest observed revision forward.
+    state = setInboxFilter(state, "all");
+    state = setInboxSummaries(state, {
+      batches: [
+        phaseBatch("b1", [summaryItem("bi-1", { revision: 4 }), summaryItem("bi-2")], { draftCount: 2 }),
+        phaseBatch("b2", [summaryItem("bi-3", { batchId: "b2", phase: "in_review" })], { reviewCount: 1 })
+      ]
+    });
+    expect(selectedInboxItems(state).find((entry) => entry.batchItemId === "bi-1")?.revision).toBe(4);
+
+    state = clearInboxSelection(state);
+    expect(inboxSelectionCount(state)).toBe(0);
+  });
+
+  it("checkboxes select without opening, and the dock reports the count", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    renderInbox(root, setInboxSummaries(createInboxState(), {
+      batches: [phaseBatch("b1", [summaryItem("bi-1")], { draftCount: 1 })],
+      totals: { batches: 1, items: 1, drafts: 1 }
+    }), {
+      locale: "en",
+      handlers: {
+        onInspectBatch: (batch: { id: string }, itemId: string) => calls.push(`inspect:${batch.id}:${itemId}`),
+        onSelectItem: (id: string, entry: { revision: number }) => calls.push(`select:${id}:${entry.revision}`),
+        onClearItemSelection: () => calls.push("clear"),
+        onReviewSelected: () => calls.push("review"),
+        onInboxFilter: () => {},
+        onLoadMoreBatches: () => {}
+      }
+    });
+    // The checkbox is a sibling of the open button — change selects only.
+    const checkbox = findAll(root, (node) => node.classList?.contains("sl-post-check"))[0];
+    expect(checkbox).toBeTruthy();
+    await checkbox.dispatchEvent({ type: "change", currentTarget: { checked: true } });
+    expect(calls).toEqual(["select:bi-1:1"]);
+
+    // The card body still opens — and names the ITEM, not just the batch.
+    await findAll(root, (node) => node.classList?.contains("sl-post-open"))[0]?.dispatchEvent({ type: "click" });
+    expect(calls[1]).toBe("inspect:b1:bi-1");
+  });
+
+  it("renders the dock once posts are selected, wired to clear and review", async () => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    const calls: string[] = [];
+    const state = toggleInboxItem(
+      setInboxSummaries(createInboxState(), {
+        batches: [phaseBatch("b1", [summaryItem("bi-1")], { draftCount: 1 })],
+        totals: { batches: 1, items: 1, drafts: 1 }
+      }),
+      "bi-1",
+      { batchId: "b1", itemId: "src-bi-1", revision: 1 }
+    );
+    renderInbox(root, state, {
+      locale: "en",
+      handlers: {
+        onInspectBatch: () => {},
+        onSelectItem: () => {},
+        onClearItemSelection: () => calls.push("clear"),
+        onReviewSelected: () => calls.push("review"),
+        onInboxFilter: () => {},
+        onLoadMoreBatches: () => {}
+      }
+    });
+    expect(root.textContent).toContain("1 selected");
+    const buttons = findAll(root, (node) => node.tagName === "BUTTON");
+    await buttons.find((button) => button.textContent === "Clear")?.dispatchEvent({ type: "click" });
+    await buttons.find((button) => button.textContent === "Review selected")?.dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["clear", "review"]);
+  });
+
+  it("maps every shared phase to its drawer action, queued included", () => {
+    // A marked, un-drafted item is queued — the action is to wait, not
+    // "continue" into output that does not exist.
+    expect(drawerAction({ state: "drafting", revision: 0, generation: "requested" }).kind).toBe("waiting");
+    expect(drawerAction({ state: "drafting", revision: 2, generation: "requested" }).kind).toBe("resume");
+    expect(drawerAction({ phase: "queued" }).kind).toBe("waiting");
+    expect(drawerAction({ phase: "in_review" }).kind).toBe("approval");
+    expect(drawerAction({ phase: "scheduled" }).kind).toBe("schedule");
+    expect(drawerAction({ phase: "published" }).kind).toBe("receipt");
+    expect(drawerAction({ phase: "attention" }).kind).toBe("outcome");
   });
 });
 

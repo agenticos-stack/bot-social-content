@@ -5,9 +5,24 @@
   "metadata": {
     "title": "Social Content",
     "description": "Watch authorized source accounts, keep normalized posts, localize approved picks into written Traditional Chinese (zh-HK), and hand the exact approved version to the Social Hub publisher through a door.",
-    "author": { "type": "user", "name": "AgenticOS Platform", "id": "platform@agenticos.hk" },
+    "author": {
+      "type": "user",
+      "name": "AgenticOS Platform",
+      "id": "platform@agenticos.hk"
+    },
     "version": 1
   },
-  "storageSchemaVersion": 11,
-  "files": ["client.js", "server.js", "storage.js", "config.js", "doors.js", "grant-request.js", "model.js", "agent.md", "README.md", "manifest.json"]
+  "storageSchemaVersion": 15,
+  "files": [
+    "client.js",
+    "server.js",
+    "storage.js",
+    "config.js",
+    "doors.js",
+    "grant-request.js",
+    "model.js",
+    "agent.md",
+    "README.md",
+    "manifest.json"
+  ]
 }

@@ -200,14 +200,33 @@ export async function createConnectedAgent({
     return connecting;
   }
 
+  /**
+   * A renewal or reload that returns a DIFFERENT gadget id is a registration
+   * replacement: every pending ask/decision captured against the old id is
+   * dead server-side, so the events the host still holds would show an
+   * approval card nobody can honour. Drop them and mark the snapshot so the
+   * host can say approvals must be re-requested — never silently carry an
+   * old approval onto replacement code.
+   */
+  function noteRegistration(registration) {
+    if (session && registration.gadgetId && registration.gadgetId !== session.gadgetId) {
+      drainEvents();
+      session.replacedFrom = session.gadgetId;
+    }
+    session.gadgetId = registration.gadgetId;
+    session.expiresAt = registration.expiresAt;
+  }
+
   /** Never renews mid-turn; a race with the server's own guard is swallowed and retried later. */
   async function maybeRenew() {
     if (!session || turnInFlight) return;
     if (now() < session.expiresAt - RENEW_WINDOW_MS) return;
     try {
-      const registration = await session.stub.registerDevelopmentGadget({ title, sourceHash, methods, requirements }, new LocalHost());
-      session.gadgetId = registration.gadgetId;
-      session.expiresAt = registration.expiresAt;
+      // The SAME metadata builder as initial registration and reload — a
+      // renewal that drops `serverSource` un-marks the read methods, and
+      // every subsequent getBatch starts asking the owner for approval.
+      const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
+      noteRegistration(registration);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (TURN_RUNNING_PATTERN.test(message)) return;
@@ -216,7 +235,13 @@ export async function createConnectedAgent({
   }
 
   function statusSnapshot() {
-    return { connected: Boolean(session), workspaceId, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
+    return {
+      connected: Boolean(session),
+      workspaceId,
+      gadgetId: session?.gadgetId ?? null,
+      expiresAt: session?.expiresAt ?? null,
+      replacedFrom: session?.replacedFrom ?? null
+    };
   }
 
   async function handle(input, currentCookie) {
@@ -374,7 +399,14 @@ export async function createConnectedAgent({
     connectionChoices,
     grantConnection,
     get info() {
-      return { connected: Boolean(session), workspaceId, conversationTitle: title, gadgetId: session?.gadgetId ?? null, expiresAt: session?.expiresAt ?? null };
+      return {
+        connected: Boolean(session),
+        workspaceId,
+        conversationTitle: title,
+        gadgetId: session?.gadgetId ?? null,
+        expiresAt: session?.expiresAt ?? null,
+        replacedFrom: session?.replacedFrom ?? null
+      };
     },
     doors,
     grantDoor,
@@ -400,9 +432,8 @@ export async function createConnectedAgent({
       if (typeof next.serverSource === 'string') serverSource = next.serverSource;
       await ensureConnected(remote ? devToken : cookie);
       const registration = await session.stub.registerDevelopmentGadget(registrationMetadata(), new LocalHost());
-      session.gadgetId = registration.gadgetId;
-      session.expiresAt = registration.expiresAt;
-      return { gadgetId: registration.gadgetId, sourceHash };
+      noteRegistration(registration);
+      return { gadgetId: registration.gadgetId, sourceHash, replacedFrom: session?.replacedFrom ?? null };
     },
     close() { disconnect(); }
   };
@@ -461,7 +492,8 @@ export function socialMethodNames() {
   return [
     'summary', 'setConfig', 'saveSetup', 'setMonitoring', 'refreshGrants', 'addOpenSource', 'removeOpenSource', 'scanRuns', 'refresh', 'listItems',
     'getItem', 'getMedia', 'createBatch', 'getBatch', 'listBatches', 'listBatchSummaries', 'saveRevision',
-    'saveRevisions', 'savePoster', 'dismissGenerationAsk', 'requestGeneration', 'submitForReview', 'readPublishState',
+    'saveRevisions', 'savePoster', 'saveGeneratedImage', 'deliverGeneratedImage', 'getGeneratedImage', 'pendingGeneratedImages',
+    'dismissGenerationAsk', 'requestGeneration', 'submitForReview', 'readPublishState',
     'exportAs', 'exportJson', 'exportHtml', 'markSeen', 'setSelection', 'clearSelection'
   ];
 }

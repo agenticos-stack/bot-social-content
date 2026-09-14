@@ -14,6 +14,11 @@
   let busy = $state(false);
   let error = $state('');
   let failedDraft = $state(null);
+  // Set when a reload/renewal replaced the gadget registration: every ask
+  // captured against the old id is dead server-side, so the honest UI is a
+  // retained notice (receipt of what happened) plus a fresh request — never
+  // a silent redirect of the old approval onto replacement code.
+  let replacedFrom = $state(null);
 
   function textOf(value) {
     if (typeof value === 'string') return value;
@@ -41,7 +46,9 @@
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || 'The local agent request failed.');
-    return payload?.data;
+    const data = payload?.data;
+    if (data?.agent?.replacedFrom) replacedFrom = data.agent.replacedFrom;
+    return data;
   }
 
   async function refreshAsks() {
@@ -118,6 +125,12 @@
     {/each}
     {#if busy}<div class="typing" aria-label="Agent is working"><i></i><i></i><i></i></div>{/if}
   </div>
+  {#if replacedFrom}
+    <aside class="approvals" aria-label="Registration replaced">
+      <div class="approval-title"><span>Gadget reloaded</span></div>
+      <div class="approval"><p>The local source was re-registered — approvals requested before the reload are no longer actionable. Ask the agent again to re-issue them; earlier receipts are retained in the conversation.</p></div>
+    </aside>
+  {/if}
   {#if asks.length}
     <aside class="approvals" aria-label="Pending approvals">
       <div class="approval-title"><span>Approval needed</span><small>{asks.length}</small></div>

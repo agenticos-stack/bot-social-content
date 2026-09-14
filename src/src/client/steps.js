@@ -87,7 +87,7 @@ function draftFor(item) {
     confirmedClaims: Array.isArray(item.confirmedClaims) ? item.confirmedClaims.slice() : [],
     publicationIntent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" },
     refinementBrief: item.refinementBrief,
-    acceptedVisualMode: item.refinementBrief?.visualTreatment ?? "keep_original",
+    acceptedVisualMode: item.acceptedVisualMode ?? "keep_original",
     ledger: item.ledger ?? { spans: [], media: [] }
   };
 }
