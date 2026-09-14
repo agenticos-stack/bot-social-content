@@ -517,14 +517,29 @@ const server = createServer(async (request, response) => {
   if (connected && url.pathname.startsWith('/api/')) {
     try {
       if (request.headers.host !== new URL(frontendOrigin).host) { response.writeHead(403).end(); return; }
+      // A client that goes away aborts its request, so a live-update stream
+      // unsubscribes instead of holding a listener for a closed tab.
+      const disconnected = new AbortController();
+      response.on('close', () => disconnected.abort());
       const result = await connected(new Request(new URL(request.url, frontendOrigin), {
-        method: request.method, headers: request.headers,
+        method: request.method, headers: request.headers, signal: disconnected.signal,
         ...(!['GET','HEAD'].includes(request.method) ? {body: Readable.toWeb(request), duplex: 'half'} : {})
       }));
       response.statusCode = result.status;
       for (const [key,value] of result.headers) if (key !== 'set-cookie') response.setHeader(key,value);
       const cookies = result.headers.getSetCookie();
       if (cookies.length) response.setHeader('Set-Cookie', cookies);
+      /*
+       * An event stream is piped, never buffered. `await result.text()` waits
+       * for the end of a body that by design does not end, so no event — and
+       * not even the status line — ever reached the browser, and an open
+       * drawer could not hear a delivered image.
+       */
+      if ((result.headers.get('content-type') || '').startsWith('text/event-stream') && result.body) {
+        response.flushHeaders();
+        Readable.fromWeb(result.body).on('error', () => response.end()).pipe(response);
+        return;
+      }
       response.end(await result.text());
     } catch { response.writeHead(502).end(); }
     return;
