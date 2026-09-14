@@ -311,24 +311,9 @@ export async function createConnectedAgent({
   await connect(remote ? devToken : cookie);
 
   /**
-   * The platform's own row shape for a development door listing
-   * (workers/api/src/v2/rpc.ts#developmentDoors): every row carries a
-   * non-empty `envKey`, a non-empty `requirementKey` and a real boolean
-   * `granted` — never omitted, never a string standing in for a boolean.
-   * Unknown additive fields (`family`, `methods`, ...) are ignored; only
-   * these three are load-bearing for the two callers below.
-   *
-   * A non-array answer is unreadable, not an absence of doors (F02b): a
-   * malformed inventory must never settle into "no doors granted", a
-   * confirmed-looking empty result the caller could not tell apart from an
-   * owner who genuinely granted nothing. The same holds one level down — a
-   * row that is missing a field or mistypes `granted` is not a confirmed
-   * "not granted" either; filtering it out by `=== true` (or skipping it by
-   * simple truthiness) would fold "the platform sent something unreadable"
-   * into the same false absence, one entry at a time instead of for the
-   * whole list. Any invalid row makes the whole inventory unreadable, for
-   * the same reason a non-array answer does: a caller cannot act on "granted
-   * except for the row it could not read".
+   * Validate the fields used by doors() and grantedDoorKeys().
+   * Any malformed row leaves the inventory unconfirmed; a valid empty list
+   * proves absence. Additional fields are accepted for compatibility.
    */
   function validateDoorInventory(listed) {
     if (!Array.isArray(listed)) throw new Error('The platform door inventory could not be read.');
@@ -400,13 +385,7 @@ export async function createConnectedAgent({
   /** The requirement keys the platform lists as granted in this conversation — read, never inferred. */
   async function grantedDoorKeys() {
     await ensureConnected(remote ? devToken : cookie);
-    // Same rule as `doors()` (F02b), through the same validator: a non-array
-    // answer, or any entry that is missing a field or mistypes `granted`, is
-    // unreadable and must never collapse into the empty list a real, valid
-    // "nothing granted" answer produces. `door-runtime.mjs#activate` treats
-    // an empty array as confirmed absence — so normalizing garbage to `[]`
-    // (whole-list or row-by-row) turned "the platform could not be read"
-    // into a false denial.
+    // Malformed rows must not become evidence that permission is absent.
     const listed = validateDoorInventory(await session.stub.developmentDoors());
     return listed.filter((door) => door.granted === true).map((door) => door.requirementKey);
   }
