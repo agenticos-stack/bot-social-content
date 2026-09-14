@@ -28,7 +28,7 @@ import {
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -469,23 +469,19 @@ const MIGRATIONS = {
    *   an `ai_refinement` revision was reviewed with. Filing ships that asset
    *   and nothing newer.
    *
-   * LEGACY BACKFILL. An existing `ai_refinement` revision pins the item's
-   * newest DELIVERED row — exactly what filing would have shipped before this
-   * migration, frozen so a later registration can no longer move it. SQL
-   * cannot hash, so backfilled pins and pre-16 rows carry a NULL digest;
-   * filing then checks identity and delivery but has no digest to compare.
+   * NO BACKFILL (changed with schema 18, audit 5ccaff1 G3). This migration
+   * once pinned every historical `ai_refinement` revision to the item's newest
+   * delivered image — a guess with no evidence of which image was reviewed.
+   * A fresh database now leaves historical pins NULL; filing such a revision
+   * refuses `generated_image_review_required` until the owner accepts an
+   * image again. Databases that already ran the guessing version are handled
+   * by migration 18, which marks those pins provenance-unknown.
    */
   16(sql) {
     sql.exec("ALTER TABLE generated_media ADD COLUMN stale INTEGER NOT NULL DEFAULT 0");
     sql.exec("ALTER TABLE generated_media ADD COLUMN content_digest TEXT");
     sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_id TEXT");
     sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_digest TEXT");
-    sql.exec(`UPDATE revisions SET accepted_generated_media_id = (
-        SELECT gm.id FROM generated_media gm
-        WHERE gm.batch_item_id = revisions.batch_item_id AND gm.bytes IS NOT NULL
-        ORDER BY gm.created_at DESC, gm.rowid DESC LIMIT 1
-      )
-      WHERE accepted_visual_mode = 'ai_refinement' AND accepted_generated_media_id IS NULL`);
   },
 
   /*
@@ -500,8 +496,55 @@ const MIGRATIONS = {
   17(sql) {
     sql.exec("ALTER TABLE batch_items ADD COLUMN instruction_overrides TEXT");
     sql.exec("ALTER TABLE batch_items ADD COLUMN last_generation TEXT");
+  },
+
+  /*
+   * Provenance, immutable assets and drawer metadata (audit 5ccaff1 G3/G4).
+   *
+   * MIGRATION COMPATIBILITY.
+   * - A database that ran the OLD migration 16 holds guessed pins: an
+   *   `accepted_generated_media_id` with a NULL digest. Every runtime pin is
+   *   written with a digest, so a NULL digest identifies exactly the guessed
+   *   lineage (including caption saves that carried a guess forward). Those
+   *   become `accepted_generated_media_provenance = 'unknown'`; the id stays
+   *   as inspectable history and filing refuses until the owner re-accepts.
+   * - Pins with a digest become `'recorded'`. Revisions with no pin stay NULL.
+   * - A fresh database never guessed (migration 16 no longer backfills), so
+   *   this update touches nothing there.
+   * - Publications, receipts and every other revision column are untouched.
+   * - `schema_version` gates the run; the UPDATE is also restricted to rows
+   *   whose provenance is still NULL, so a replay cannot re-classify.
+   * - Code older than 18 reading this database ignores the new columns; the
+   *   manifest's `storageSchemaVersion` (18) stops it being restored over it.
+   */
+  18(sql) {
+    sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_provenance TEXT");
+    // "generation" (implicit/correlated pick) or "owner_explicit" (named id).
+    sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_source TEXT");
+    sql.exec("ALTER TABLE revisions ADD COLUMN alt_text TEXT");
+    // A NEW row made from another row's bytes (e.g. a JPEG copy of a PNG);
+    // delivered bytes are never rewritten in place.
+    sql.exec("ALTER TABLE generated_media ADD COLUMN derived_from TEXT");
+    sql.exec("ALTER TABLE publications ADD COLUMN last_checked_at TEXT");
+    sql.exec("ALTER TABLE publications ADD COLUMN provider_id TEXT");
+    sql.exec("ALTER TABLE publications ADD COLUMN receipt_url TEXT");
+    sql.exec(`UPDATE revisions SET accepted_generated_media_provenance =
+        CASE WHEN accepted_generated_media_digest IS NULL THEN 'unknown' ELSE 'recorded' END
+      WHERE accepted_generated_media_id IS NOT NULL AND accepted_generated_media_provenance IS NULL`);
   }
 };
+
+/**
+ * LEFT JOIN of the current revision's accepted generated asset, for the
+ * Content thumbnail: delivered, this item's own row, under `ai_refinement`,
+ * with recorded provenance. Selects no bytes.
+ */
+function ACCEPTED_ASSET_JOIN(alias, revisionAlias, itemAlias) {
+  return `LEFT JOIN generated_media ${alias} ON ${alias}.id = ${revisionAlias}.accepted_generated_media_id
+         AND ${alias}.batch_item_id = ${itemAlias}.id AND ${alias}.bytes IS NOT NULL
+         AND ${revisionAlias}.accepted_visual_mode = 'ai_refinement'
+         AND ${revisionAlias}.accepted_generated_media_provenance = 'recorded'`;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -1096,11 +1139,17 @@ export class Storage {
       image: needs ? needs.image === true : true
     };
     const write = (item) => {
+      /*
+       * INVARIANT: what was REQUESTED is the mark's immutable `scope`; what
+       * REMAINS is its mutable `needs`. Completion only ever clears `needs`;
+       * authorization of a correlated save reads `scope`.
+       */
       const mark = JSON.stringify({
         id: request,
         // `listBatchItems` hydrates `current_revision` to `currentRevision` —
         // reading the column name off the hydrated row stamps base: 0 forever.
         base: item.currentRevision ?? item.current_revision ?? item.revision ?? 0,
+        scope: wanted,
         needs: wanted,
         at: stamp,
         ...(typeof instructionsFor === "function" ? { instructions: instructionsFor(item) } : {})
@@ -1112,6 +1161,10 @@ export class Storage {
         stamp,
         item.id
       );
+      // Unaccepted results of any other request are superseded from now on.
+      // Persisted for honesty of the stored flag; status is also derived on
+      // read (`generatedMediaStatuses`), which is the authority.
+      if (request) this.markGeneratedMediaSuperseded(item.id, request);
     };
     if (Array.isArray(itemIds) && itemIds.length) {
       const byId = new Map(this.listBatchItems(batchId).map((item) => [item.id, item]));
@@ -1144,12 +1197,11 @@ export class Storage {
    * delivered, and only when the write is correlated to THIS request.
    *
    * `request` is the `generation.id` the caller read from the item and
-   * echoed back; a present-but-mismatched id is a stale result — the
-   * revision it wrote still stands, but it clears nothing on the newer
-   * mark. An absent `request` is a manual owner save, which satisfies the
-   * `caption` need only — the owner wrote the caption, but a pending
-   * image ask stays pending (`needs.image` survives). `needs` names what
-   * this write delivered (`{ caption, image }`).
+   * echoed back; a mismatched id is a stale result and an absent one is a
+   * manual owner save — neither clears anything (audit 5ccaff1 G1: an owner
+   * edit while a request is pending does not complete generated work).
+   * `needs` names what this write delivered (`{ caption, image }`); only
+   * `needs` shrinks — `scope` is kept verbatim.
    *
    * A mark whose needs are all met clears entirely; the batch roll-up then
    * clears via `clearGenerationIfAllDrafted`.
@@ -1158,7 +1210,8 @@ export class Storage {
     const row = rows(this.sql.exec("SELECT generation FROM batch_items WHERE id = ?", batchItemId))[0];
     const mark = parseGenerationMark(row?.generation ?? null);
     if (!mark) return;
-    if (request != null && mark.id !== request) return;
+    // Owner saves (no request id) never complete generated work.
+    if (request == null || mark.id !== request) return;
     const remaining = {
       caption: mark.needs.caption && !needs.caption,
       image: mark.needs.image && !needs.image
@@ -1169,7 +1222,7 @@ export class Storage {
     }
     this.sql.exec(
       "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
-      JSON.stringify({ id: mark.id, base: mark.base, needs: remaining, at: mark.at, instructions: mark.instructions }),
+      JSON.stringify({ id: mark.id, base: mark.base, scope: mark.scope, needs: remaining, at: mark.at, instructions: mark.instructions }),
       nowIso(),
       batchItemId
     );
@@ -1231,6 +1284,7 @@ export class Storage {
          SUBSTR(source.text, 1, 160) AS preview_source_text,
          SUBSTR(revision.caption, 1, 160) AS preview_caption,
          revision.revision AS preview_revision,
+         preview_gm.id AS preview_thumb_id, preview_gm.mime_type AS preview_thumb_mime,
          CASE WHEN source.media_json IS NOT NULL AND json_array_length(source.media_json) > 0 THEN 1 ELSE 0 END AS preview_has_media
        FROM batches b LEFT JOIN batch_items bi ON bi.batch_id = b.id AND bi.active = 1
        LEFT JOIN batch_items sample ON sample.id = (
@@ -1239,8 +1293,9 @@ export class Storage {
        LEFT JOIN items source ON source.id = sample.item_id
        LEFT JOIN origin_links origin ON origin.batch_item_id = sample.id
        LEFT JOIN revisions revision ON revision.batch_item_id = sample.id AND revision.revision = sample.current_revision
+       ${ACCEPTED_ASSET_JOIN("preview_gm", "revision", "sample")}
        ${filter}
-       GROUP BY b.id, b.created_at, b.status, b.generation
+       GROUP BY b.id, b.created_at, b.status, b.generation, preview_gm.id, preview_gm.mime_type
        ORDER BY b.created_at DESC, b.id DESC LIMIT ?`,
       ...params,
       bounded + 1
@@ -1267,18 +1322,20 @@ export class Storage {
            SUBSTR(source.text, 1, 160) AS source_text,
            json_extract(source.media_json, '$[0].id') AS cover_media_id,
            SUBSTR(revision.caption, 1, 160) AS caption,
-           revision.revision AS caption_revision
+           revision.revision AS caption_revision,
+           thumb.id AS thumb_id, thumb.mime_type AS thumb_mime
          FROM batch_items bi
          LEFT JOIN items source ON source.id = bi.item_id
          LEFT JOIN origin_links origin ON origin.batch_item_id = bi.id
          LEFT JOIN revisions revision ON revision.batch_item_id = bi.id AND revision.revision = bi.current_revision
+         ${ACCEPTED_ASSET_JOIN("thumb", "revision", "bi")}
          WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
          ORDER BY bi.id`,
         ...batchIds
       ));
       const pubRows = rows(this.sql.exec(
         `SELECT p.batch_item_id, p.id, p.destination_binding, p.revision, p.state,
-           p.post_id, p.version, p.updated_at
+           p.post_id, p.version, p.updated_at, p.last_checked_at, p.provider_id, p.receipt_url
          FROM publications p
          JOIN batch_items bi ON bi.id = p.batch_item_id
          WHERE bi.active = 1 AND bi.batch_id IN (${batchIds.map(() => "?").join(",")})
@@ -1322,7 +1379,10 @@ export class Storage {
           sourceBinding: row.source_binding ?? null,
           sourceText: row.source_text ?? null,
           coverMediaId: row.cover_media_id == null ? null : String(row.cover_media_id),
-          caption: row.caption ?? null
+          caption: row.caption ?? null,
+          // The current revision's accepted generated asset — never the
+          // source image, never a provenance-unknown pin.
+          outputThumbnail: row.thumb_id ? { generatedMediaId: row.thumb_id, mimeType: row.thumb_mime ?? null } : null
         });
         itemsByBatch.set(row.batch_id, list);
       }
@@ -1351,7 +1411,10 @@ export class Storage {
             sourceText: row.preview_source_text ?? null,
             caption: row.preview_caption ?? null,
             revision: row.preview_revision == null ? null : Number(row.preview_revision),
-            hasMediaReference: Boolean(row.preview_has_media)
+            hasMediaReference: Boolean(row.preview_has_media),
+            outputThumbnail: row.preview_thumb_id
+              ? { generatedMediaId: row.preview_thumb_id, mimeType: row.preview_thumb_mime ?? null }
+              : null
           } : null,
           items
         };
@@ -1593,6 +1656,23 @@ export class Storage {
     );
   }
 
+  /**
+   * The publisher was asked about this publication. `lastCheckedAt` is
+   * always stamped; receipt identifiers only ever fill in — an absent or
+   * failed read never clears a receipt that was confirmed earlier.
+   */
+  recordPublicationCheck(id, { providerId = null, url = null } = {}) {
+    this.sql.exec(
+      `UPDATE publications SET last_checked_at = ?,
+         provider_id = COALESCE(?, provider_id), receipt_url = COALESCE(?, receipt_url)
+       WHERE id = ?`,
+      nowIso(),
+      providerId,
+      url,
+      id
+    );
+  }
+
   /** Retires a pair's claim — the owner's `createNewVersion` opt-in, or a newer revision of the same item taking over. */
   supersedePublication(id) {
     this.sql.exec("UPDATE publications SET state = 'superseded', updated_at = ? WHERE id = ?", nowIso(), id);
@@ -1709,8 +1789,9 @@ export class Storage {
           batch_item_id, revision, caption, poster_layout_json, confirmed_claims_json, issues_json,
           refinement_brief_json, protected_overrides_json, original_media_refs_json, derived_media_refs_json,
           publication_intent_json, ledger_json, accepted_visual_mode,
-          accepted_generated_media_id, accepted_generated_media_digest, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          accepted_generated_media_id, accepted_generated_media_digest,
+          accepted_generated_media_provenance, accepted_generated_media_source, alt_text, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         batchItemId,
         next,
         patch.caption ?? null,
@@ -1726,6 +1807,9 @@ export class Storage {
         patch.acceptedVisualMode ?? null,
         patch.acceptedGeneratedMediaId ?? null,
         patch.acceptedGeneratedMediaDigest ?? null,
+        patch.acceptedGeneratedMediaId ? (patch.acceptedGeneratedMediaProvenance ?? "recorded") : null,
+        patch.acceptedGeneratedMediaId ? (patch.acceptedGeneratedMediaSource ?? null) : null,
+        typeof patch.altText === "string" ? patch.altText : null,
         nowIso()
       );
       this.sql.exec(
@@ -1834,6 +1918,8 @@ export class Storage {
     generationRequest = null,
     stale = false
   }) {
+    // Registration never touches bytes: re-registering an id keeps its
+    // delivered content (see `deliverGeneratedImage`'s immutability rule).
     this.sql.exec(
       `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, stale, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1848,6 +1934,95 @@ export class Storage {
       stale ? 1 : 0,
       nowIso()
     );
+  }
+
+  /**
+   * A NEW row holding bytes made from another row (a JPEG copy of a PNG).
+   * Inherits the source's request, stale flag, attachment and alt text; the
+   * source row is never modified.
+   */
+  saveDerivedGeneratedMedia({ id, source, bytes, mimeType, contentDigest }) {
+    const at = nowIso();
+    this.sql.exec(
+      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, bytes, byte_length, alt_text,
+         generation_request, stale, content_digest, derived_from, created_at, delivered_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      source.batchItemId,
+      source.attachmentId ?? null,
+      mimeType,
+      bytes,
+      bytes.byteLength,
+      source.altText ?? null,
+      source.generationRequest ?? null,
+      source.stale ? 1 : 0,
+      contentDigest,
+      source.id,
+      at,
+      at
+    );
+    return this.getGeneratedMedia(id);
+  }
+
+  /** An existing derived copy of `sourceId` with exactly these bytes, if any. */
+  findDerivedGeneratedMedia(sourceId, contentDigest) {
+    const row = rows(
+      this.sql.exec(
+        "SELECT rowid AS seq, * FROM generated_media WHERE derived_from = ? AND content_digest = ? ORDER BY rowid LIMIT 1",
+        sourceId,
+        contentDigest
+      )
+    )[0];
+    return row ? hydrateGeneratedMedia(row) : null;
+  }
+
+  /**
+   * Unaccepted rows of this item answering any request other than `request`
+   * are superseded. Rows some revision pinned are left alone (they read as
+   * `accepted`).
+   */
+  markGeneratedMediaSuperseded(batchItemId, request) {
+    this.sql.exec(
+      `UPDATE generated_media SET stale = 1
+       WHERE batch_item_id = ? AND generation_request IS NOT NULL AND generation_request <> ?
+         AND id NOT IN (SELECT accepted_generated_media_id FROM revisions
+                        WHERE batch_item_id = ? AND accepted_generated_media_id IS NOT NULL)`,
+      batchItemId,
+      request,
+      batchItemId
+    );
+  }
+
+  /**
+   * The freshness status of every generated_media row of an item, derived
+   * from current data (audit 5ccaff1 G2) — never only from what was true at
+   * registration:
+   * - `accepted`   — some saved revision pinned it;
+   * - `legacy`     — no request id;
+   * - `superseded` — answered a request that is no longer the item's latest
+   *                  (or was stale when registered), never accepted;
+   * - `candidate`  — answers the item's latest request, delivered or pending.
+   * The latest request is the pending mark's id, else the last mark's id.
+   * Returns a function `(row) => status`.
+   */
+  generatedMediaStatuses(batchItemId) {
+    const pinned = new Set(
+      rows(
+        this.sql.exec(
+          "SELECT DISTINCT accepted_generated_media_id AS id FROM revisions WHERE batch_item_id = ? AND accepted_generated_media_id IS NOT NULL",
+          batchItemId
+        )
+      ).map((row) => row.id)
+    );
+    const item = rows(this.sql.exec("SELECT generation, last_generation FROM batch_items WHERE id = ?", batchItemId))[0];
+    const latest = parseGenerationMark(item?.generation ?? null)?.id ?? parseGenerationMark(item?.last_generation ?? null)?.id ?? null;
+    return (row) => {
+      if (pinned.has(row.id)) return "accepted";
+      if (!row.generationRequest) return "legacy";
+      if (row.stale) return "superseded";
+      if (latest !== null && row.generationRequest !== latest) return "superseded";
+      return "candidate";
+    };
   }
 
   /** Fill in the bytes for a registered row. Returns the hydrated row. */
@@ -1882,33 +2057,43 @@ export class Storage {
   }
 
   /**
-   * The newest NON-STALE registration for a post, delivered or not — the
-   * candidate a UI may offer beside the accepted image. `ready` narrows it
-   * to rows whose bytes landed (what an `ai_refinement` save pins by default).
+   * The newest registration for a post whose derived status is one of
+   * `statuses` (default: `candidate` or `legacy` — what a UI may offer beside
+   * the accepted image; never `superseded`). `ready` narrows to rows whose
+   * bytes landed; `original` excludes derived copies. An implicit
+   * `ai_refinement` pick asks for `statuses: ["candidate"]`, `original`.
    */
-  latestCandidateGeneratedMedia(batchItemId, { ready = false } = {}) {
-    const row = rows(
+  latestCandidateGeneratedMedia(batchItemId, { ready = false, statuses = ["candidate", "legacy"], original = false } = {}) {
+    const statusOf = this.generatedMediaStatuses(batchItemId);
+    const found = rows(
       this.sql.exec(
-        `SELECT rowid AS seq, * FROM generated_media
-         WHERE batch_item_id = ? AND stale = 0 ${ready ? "AND bytes IS NOT NULL" : ""}
-         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        `SELECT rowid AS seq, id, batch_item_id, attachment_id, mime_type, byte_length, alt_text, generation_request,
+                stale, content_digest, derived_from, created_at, delivered_at
+         FROM generated_media
+         WHERE batch_item_id = ? ${ready ? "AND bytes IS NOT NULL" : ""} ${original ? "AND derived_from IS NULL" : ""}
+         ORDER BY created_at DESC, rowid DESC LIMIT 50`,
         batchItemId
       )
-    )[0];
-    return row ? hydrateGeneratedMedia(row) : null;
+    ).map(hydrateGeneratedMedia);
+    const hit = found.find((row) => statuses.includes(statusOf(row)));
+    return hit ? this.getGeneratedMedia(hit.id) : null;
   }
 
   /** Every registration for a post, newest first, without bytes — the drawer's generation history. */
   listGeneratedMediaFor(batchItemId, { limit = 20 } = {}) {
+    const statusOf = this.generatedMediaStatuses(batchItemId);
     return rows(
       this.sql.exec(
         `SELECT rowid AS seq, id, batch_item_id, attachment_id, mime_type, byte_length, alt_text, generation_request,
-                stale, content_digest, created_at, delivered_at, (bytes IS NOT NULL) AS has_bytes
+                stale, content_digest, derived_from, created_at, delivered_at, (bytes IS NOT NULL) AS has_bytes
          FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
         batchItemId,
         limit
       )
-    ).map((row) => ({ ...hydrateGeneratedMedia(row), ready: Number(row.has_bytes) === 1 }));
+    ).map((row) => {
+      const hydrated = hydrateGeneratedMedia(row);
+      return { ...hydrated, ready: Number(row.has_bytes) === 1, status: statusOf(hydrated) };
+    });
   }
 
   /** Registrations whose bytes never arrived — the delivery sweep reads these. */
@@ -2078,6 +2263,7 @@ function hydrateGeneratedMedia(row) {
     generationRequest: row.generation_request ?? null,
     stale: Number(row.stale ?? 0) === 1,
     contentDigest: row.content_digest ?? null,
+    derivedFrom: row.derived_from ?? null,
     // Insertion order (rowid) — orders rows created in the same millisecond.
     seq: row.seq == null ? null : Number(row.seq),
     createdAt: row.created_at,
@@ -2133,7 +2319,15 @@ function hydratePublication(row) {
     postId: row.post_id ?? null,
     version: row.version ?? null,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    lastCheckedAt: row.last_checked_at ?? null,
+    // Identifiers the publisher already gave us — never an invented URL.
+    receipt: {
+      postId: row.post_id ?? null,
+      version: row.version ?? null,
+      providerId: row.provider_id ?? null,
+      url: row.receipt_url ?? null
+    }
   };
 }
 
@@ -2212,6 +2406,11 @@ function hydrateRevision(row) {
     // The exact generated asset this revision was reviewed with (migration 16).
     acceptedGeneratedMediaId: row.accepted_generated_media_id ?? null,
     acceptedGeneratedMediaDigest: row.accepted_generated_media_digest ?? null,
+    // Schema 18: "recorded" (pinned at runtime with a digest), "unknown" (a
+    // pin migration 16 guessed), null when nothing is pinned.
+    acceptedGeneratedMediaProvenance: row.accepted_generated_media_provenance ?? null,
+    acceptanceSource: row.accepted_generated_media_source ?? null,
+    altText: row.alt_text ?? null,
     createdAt: row.created_at
   };
 }

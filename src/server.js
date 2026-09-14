@@ -272,6 +272,7 @@ export class Gadget extends DurableObject {
     "getGeneratedImage",
     "pendingGeneratedImages"
   ];
+  // saveDerivedGeneratedImage is a mutation, deliberately not listed above.
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -1542,6 +1543,8 @@ export class Gadget extends DurableObject {
       generation: JSON.stringify({
         id: generateId("gen"),
         base: 0,
+        // Requested (immutable) vs remaining (mutable) — see setGeneration.
+        scope: { caption: true, image: true },
         needs: { caption: true, image: true },
         at: new Date().toISOString()
       })
@@ -1620,6 +1623,7 @@ export class Gadget extends DurableObject {
         ? this.storage.getGeneratedMedia(latest.acceptedGeneratedMediaId)
         : null;
     const generatedImage = pinnedImage && pinnedImage.batchItemId === batchItem.id ? pinnedImage : null;
+    // Candidate or legacy only — a superseded result is history, never offered.
     const candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id);
     const generatedCandidate =
       candidateRow && candidateRow.id !== generatedImage?.id && (!generatedImage || candidateRow.seq > generatedImage.seq)
@@ -1668,12 +1672,20 @@ export class Gadget extends DurableObject {
         createdAt: revision.createdAt ?? null,
         acceptedVisualMode: revision.acceptedVisualMode,
         acceptedGeneratedMediaId: revision.acceptedGeneratedMediaId,
+        acceptedGeneratedMediaProvenance: revision.acceptedGeneratedMediaProvenance,
+        // "generation" | "owner_explicit" | null (no pin, or pre-18 row).
+        acceptanceSource: revision.acceptanceSource,
+        altText: revision.altText,
         publicationIntent: revision.publicationIntent
       })),
       // Registered generated images, newest first, without bytes.
       generatedHistory: this.storage
         .listGeneratedMediaFor(batchItem.id)
-        .map((row) => ({ ...projectGeneratedMedia(row), ready: row.ready, createdAt: row.createdAt })),
+        .map((row) => ({
+          ...projectGeneratedMedia(row, row.status),
+          ready: row.ready,
+          createdAt: row.createdAt
+        })),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
@@ -1692,12 +1704,25 @@ export class Gadget extends DurableObject {
       // The AI-generated image the CURRENT revision accepted (pinned under
       // `ai_refinement`). `ready` means its bytes are stored; `digest` is the
       // delivered bytes' fingerprint; `attachmentId` the platform upload.
-      generatedImage: generatedImage ? projectGeneratedMedia(generatedImage) : null,
+      generatedImage: generatedImage ? projectGeneratedMedia(generatedImage, "accepted") : null,
+      // "recorded" | "unknown" | null. "unknown" is a pin migration 16 guessed:
+      // filing refuses `generated_image_review_required` until re-accepted.
+      acceptedGeneratedMediaProvenance: latest?.acceptedGeneratedMediaProvenance ?? null,
+      // The owner's alt text on the current revision (null = none written).
+      altText: latest?.altText ?? null,
+      // Content thumbnail: the current revision's accepted, delivered asset
+      // with recorded provenance — never the source image.
+      outputThumbnail:
+        generatedImage?.bytes && latest?.acceptedGeneratedMediaProvenance === "recorded"
+          ? { generatedMediaId: generatedImage.id, mimeType: generatedImage.mimeType ?? null }
+          : null,
       // The newest non-stale registration that is NOT the accepted one —
       // pending (`ready: false`) or ready to be picked with
       // `saveRevision({ acceptedVisualMode: "ai_refinement",
       // acceptedGeneratedMediaId })`. Never ships until a revision pins it.
-      generatedCandidate: generatedCandidate ? projectGeneratedMedia(generatedCandidate) : null,
+      generatedCandidate: generatedCandidate
+        ? projectGeneratedMedia(generatedCandidate, this.storage.generatedMediaStatuses(batchItem.id)(generatedCandidate))
+        : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -1756,6 +1781,7 @@ export class Gadget extends DurableObject {
        * was made under.
        */
       let needs = null;
+      const replace = options && typeof options === "object" && options.replace === true;
       if (options !== undefined && options !== null) {
         const raw = typeof options === "object" ? options.needs : undefined;
         if (raw !== undefined) {
@@ -1793,6 +1819,28 @@ export class Gadget extends DurableObject {
             : "Every item in this batch has already been submitted."
         };
       }
+      /*
+       * Explicit serialization (audit 5ccaff1): an item whose mark still has
+       * outstanding work is refused by value, naming that request, unless the
+       * caller passes `replace: true` — then the old mark is superseded (its
+       * results become stale history). Never merged, never silently dropped.
+       * All-or-nothing: one conflicting item refuses the whole call.
+       */
+      const pendingItems = draftable
+        .map((item) => ({ item, mark: generationMark(item.generation) }))
+        .filter(({ mark }) => mark && (mark.needs.image || mark.needs.caption))
+        .map(({ item, mark }) => ({ batchItemId: item.id, requestId: mark.id, scope: mark.scope, needs: mark.needs }));
+      if (pendingItems.length && !replace) {
+        const [first] = pendingItems;
+        return {
+          ok: false,
+          code: "generation_pending",
+          message:
+            "A generation request for this post is still in progress. Wait for it, or replace it — replacing turns its results into history.",
+          pending: { requestId: first.requestId, scope: first.scope, needs: first.needs },
+          pendingItems
+        };
+      }
       // One request id for this ask; each item stamps it plus the revision
       // it was made against. A still-running older turn that saves later
       // cannot satisfy or clear this newer request — see
@@ -1810,7 +1858,8 @@ export class Gadget extends DurableObject {
         ok: true,
         request,
         requested: draftable.map((item) => item.id),
-        needs: needs ?? { image: true, caption: true }
+        needs: needs ?? { image: true, caption: true },
+        ...(pendingItems.length ? { replaced: pendingItems.map(({ batchItemId, requestId }) => ({ batchItemId, requestId })) } : {})
       };
     });
   }
@@ -1911,7 +1960,8 @@ export class Gadget extends DurableObject {
     acceptedVisualMode,
     ledger,
     generationRequest,
-    acceptedGeneratedMediaId
+    acceptedGeneratedMediaId,
+    altText
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -1930,6 +1980,12 @@ export class Gadget extends DurableObject {
       acceptedGeneratedMediaId
     });
     if (partIssue) return { ok: false, issues: [partIssue] };
+    if (altText !== undefined && altText !== null && (typeof altText !== "string" || altText.length > 1000)) {
+      return {
+        ok: false,
+        issues: [{ code: "alt_text_invalid", severity: "block", message: "Alt text is text of at most 1000 characters, or null to clear it." }]
+      };
+    }
 
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
@@ -2054,6 +2110,10 @@ export class Gadget extends DurableObject {
      */
     let pinnedId = null;
     let pinnedDigest = null;
+    let pinnedProvenance = null;
+    let pinnedSource = null;
+    const statusOf = this.storage.generatedMediaStatuses(batchItemId);
+    const correlated = typeof generationRequest === "string" && generationRequest !== "";
     if (acceptedGeneratedMediaId !== undefined && acceptedGeneratedMediaId !== null) {
       const row = typeof acceptedGeneratedMediaId === "string" ? this.storage.getGeneratedMedia(acceptedGeneratedMediaId) : null;
       if (visualMode !== "ai_refinement" || !row || row.batchItemId !== batchItemId || !row.bytes) {
@@ -2071,20 +2131,53 @@ export class Gadget extends DurableObject {
           ]
         };
       }
+      const status = statusOf(row);
+      /*
+       * A correlated generation save accepts its own request's result only.
+       * A superseded or legacy asset is the OWNER's explicit call (no request
+       * id), recorded as such on the revision.
+       */
+      if (correlated && row.id !== (previous?.acceptedGeneratedMediaId ?? null) &&
+          (status === "superseded" || status === "legacy" || row.generationRequest !== generationRequest)) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generated_media_not_current",
+              severity: "block",
+              message: "That image does not answer this generation request. Only the owner can accept an older image."
+            }
+          ]
+        };
+      }
       pinnedId = row.id;
       pinnedDigest = await digestBytes(row.bytes);
+      pinnedProvenance = "recorded";
+      pinnedSource = correlated ? "generation" : "owner_explicit";
     } else if (visualMode === "ai_refinement") {
       if (previous?.acceptedVisualMode === "ai_refinement" && previous.acceptedGeneratedMediaId) {
+        // Carried forward exactly — including an "unknown" provenance.
         pinnedId = previous.acceptedGeneratedMediaId;
         pinnedDigest = previous.acceptedGeneratedMediaDigest ?? null;
+        pinnedProvenance = previous.acceptedGeneratedMediaProvenance ?? (pinnedDigest ? "recorded" : "unknown");
+        pinnedSource = previous.acceptanceSource ?? null;
       } else {
-        const row = this.storage.latestCandidateGeneratedMedia(batchItemId, { ready: true });
+        // Implicit pick: a current `candidate` original only — never a
+        // superseded, legacy or derived row.
+        const row = this.storage.latestCandidateGeneratedMedia(batchItemId, {
+          ready: true,
+          statuses: ["candidate"],
+          original: true
+        });
         if (row?.bytes) {
           pinnedId = row.id;
           pinnedDigest = await digestBytes(row.bytes);
+          pinnedProvenance = "recorded";
+          pinnedSource = "generation";
         }
       }
     }
+    const effectiveAltText = altText === undefined ? (previous?.altText ?? null) : altText;
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption: effectiveCaption,
@@ -2099,7 +2192,10 @@ export class Gadget extends DurableObject {
       ledger: storedLedger,
       acceptedVisualMode: visualMode,
       acceptedGeneratedMediaId: pinnedId,
-      acceptedGeneratedMediaDigest: pinnedDigest
+      acceptedGeneratedMediaDigest: pinnedDigest,
+      acceptedGeneratedMediaProvenance: pinnedProvenance,
+      acceptedGeneratedMediaSource: pinnedSource,
+      altText: effectiveAltText
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -2215,7 +2311,10 @@ export class Gadget extends DurableObject {
       // the revision already holds so a re-render can't silently revert it.
       acceptedVisualMode: previous?.acceptedVisualMode ?? null,
       acceptedGeneratedMediaId: previous?.acceptedGeneratedMediaId ?? null,
-      acceptedGeneratedMediaDigest: previous?.acceptedGeneratedMediaDigest ?? null
+      acceptedGeneratedMediaDigest: previous?.acceptedGeneratedMediaDigest ?? null,
+      acceptedGeneratedMediaProvenance: previous?.acceptedGeneratedMediaProvenance ?? null,
+      acceptedGeneratedMediaSource: previous?.acceptanceSource ?? null,
+      altText: previous?.altText ?? null
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -2326,10 +2425,31 @@ export class Gadget extends DurableObject {
         issues: [{ code: "generated_media_not_image", severity: "block", message: "The delivered file is not a PNG or JPEG image." }]
       };
     }
+    const digest = await digestBytes(payload);
+    /*
+     * Delivered bytes are immutable (audit 5ccaff1 G4): the same bytes again
+     * are an idempotent no-op; different bytes are refused whether or not a
+     * revision pinned the row. A different representation is a new row —
+     * `saveDerivedGeneratedImage`.
+     */
+    if (row.bytes) {
+      const existing = row.contentDigest ?? (await digestBytes(row.bytes));
+      if (existing === digest) return { ok: true, id: row.id, byteLength: row.bytes.byteLength, unchanged: true };
+      return {
+        ok: false,
+        issues: [
+          {
+            code: "generated_media_immutable",
+            severity: "block",
+            message: "This generated image already has different bytes. Save a copy as a new image instead of replacing it."
+          }
+        ]
+      };
+    }
     const stored = this.storage.deliverGeneratedMedia(row.id, {
       bytes: payload,
       mimeType: format,
-      contentDigest: await digestBytes(payload)
+      contentDigest: digest
     });
     /*
      * Correlation rides on the STORED stamp, never a caller's echo: the
@@ -2338,7 +2458,9 @@ export class Gadget extends DurableObject {
      * registration made with no ask pending — or delivered after its ask
      * was superseded — keeps its bytes but touches no mark.
      */
-    if (row.generationRequest && !row.stale) {
+    // Freshness is re-derived NOW, not taken from registration time: a row
+    // whose request was superseded in between completes nothing.
+    if (row.generationRequest && this.storage.generatedMediaStatuses(row.batchItemId)(stored) === "candidate") {
       this.storage.satisfyItemGeneration(row.batchItemId, {
         request: row.generationRequest,
         needs: { image: true }
@@ -2348,6 +2470,59 @@ export class Gadget extends DurableObject {
     if (batchItem) this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "generated_image", batchItemId: row.batchItemId, generatedMediaId: row.id });
     return { ok: true, id: row.id, byteLength: stored?.byteLength ?? payload.byteLength };
+  }
+
+  /**
+   * A new generated_media row made from a delivered one's bytes — e.g. the
+   * JPEG copy of a PNG a JPEG-only destination needs. The source row is never
+   * changed. The copy inherits the source's request id (so its freshness
+   * status follows the same rules), attachment id and alt text; the format
+   * is sniffed and the digest recorded. It completes no generation need and
+   * is never picked implicitly: accepting it takes an explicit
+   * `acceptedGeneratedMediaId` save, which makes a new revision.
+   * Idempotent: the same bytes for the same source return the existing copy
+   * (`reused: true`) rather than a duplicate row.
+   */
+  saveDerivedGeneratedImage(args) {
+    return this.enqueueMutation(() => this.saveDerivedGeneratedImageLocked(args ?? {}));
+  }
+
+  async saveDerivedGeneratedImageLocked({ sourceMediaId, bytes, mimeType }) {
+    const source = typeof sourceMediaId === "string" ? this.storage.getGeneratedMedia(sourceMediaId) : null;
+    if (!source || !source.bytes) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_unknown", severity: "block", message: "The source image does not exist or has not arrived yet." }]
+      };
+    }
+    const payload = toBytes(bytes);
+    if (!payload) {
+      return {
+        ok: false,
+        issues: [{ code: "invalid_argument", severity: "block", message: "saveDerivedGeneratedImage needs image bytes (Uint8Array, ArrayBuffer or base64 string)." }]
+      };
+    }
+    const format = isPngSignature(payload) ? "image/png" : isJpegSignature(payload) ? "image/jpeg" : null;
+    if (!format) {
+      return {
+        ok: false,
+        issues: [{ code: "generated_media_not_image", severity: "block", message: "The derived file is not a PNG or JPEG image." }]
+      };
+    }
+    // `mimeType` is informational only; the sniffed format is what is stored.
+    void mimeType;
+    const digest = await digestBytes(payload);
+    const existing = this.storage.findDerivedGeneratedMedia(source.id, digest);
+    if (existing) return { ok: true, id: existing.id, mimeType: existing.mimeType, digest, reused: true };
+    const created = this.storage.saveDerivedGeneratedMedia({
+      id: generateId("gm"),
+      source,
+      bytes: payload,
+      mimeType: format,
+      contentDigest: digest
+    });
+    await this.broadcast({ type: "generated_image", batchItemId: source.batchItemId, generatedMediaId: created.id });
+    return { ok: true, id: created.id, mimeType: format, digest, reused: false };
   }
 
   /**
@@ -2553,6 +2728,23 @@ export class Gadget extends DurableObject {
         ? this.storage.getGeneratedMedia(revision.acceptedGeneratedMediaId)
         : null;
     const generatedImage = pinnedRow && pinnedRow.batchItemId === batchItemId && pinnedRow.bytes ? pinnedRow : null;
+    /*
+     * No pin, or a pin whose provenance is unknown (migration 16's guess), is
+     * not a reviewed image. Refused before anything is uploaded; the owner
+     * accepts an image again, which writes a new revision.
+     */
+    if (
+      wantsGenerated &&
+      (!revision.acceptedGeneratedMediaId || revision.acceptedGeneratedMediaProvenance === "unknown")
+    ) {
+      return {
+        ok: false,
+        code: "generated_image_review_required",
+        message: revision.acceptedGeneratedMediaId
+          ? "It is not known which generated image was reviewed for this version. Nothing was filed; accept the image again, then submit."
+          : "No generated image has been accepted for this version. Nothing was filed; accept an image, then submit."
+      };
+    }
     if (generatedImage && revision.acceptedGeneratedMediaDigest) {
       const digest = await digestBytes(generatedImage.bytes);
       if (digest !== revision.acceptedGeneratedMediaDigest) {
@@ -2574,7 +2766,7 @@ export class Gadget extends DurableObject {
           ok: false,
           code: "generated_image_format_stale",
           message:
-            "The generated image is a PNG, which Instagram's publish container rejects — re-deliver it as JPEG and submit again."
+            "The accepted generated image is a PNG, which Instagram's publish container rejects. Nothing was filed; accept a JPEG copy of the image, then submit again."
         };
       }
       try {
@@ -2593,7 +2785,8 @@ export class Gadget extends DurableObject {
                 kind: "image",
                 // The accepted asset's own alt text is the description;
                 // absent, fall back to the post's source description.
-                altText: generatedImage.altText || sourceMediaAltText(sourceItem),
+                // Revision alt text, then the asset's, then the source's.
+                altText: revision.altText || generatedImage.altText || sourceMediaAltText(sourceItem),
                 mimeType: uploaded.mimeType ?? mimeType,
                 byteSize: uploaded.byteSize ?? generatedImage.byteLength,
                 width: null,
@@ -2688,7 +2881,7 @@ export class Gadget extends DurableObject {
                 assetId: uploaded.assetId,
                 url: uploaded.url,
                 kind: "image",
-                altText: posterAltText(revision.posterLayout),
+                altText: revision.altText || posterAltText(revision.posterLayout),
                 mimeType: uploaded.mimeType ?? mimeType,
                 byteSize: uploaded.byteSize ?? poster.byteLength,
                 width,
@@ -3012,6 +3205,21 @@ export class Gadget extends DurableObject {
       if (publication.version) {
         const fresh = await socialReadStatus(this.env, publication.version);
         const freshTargets = isDoorRefusal(fresh) ? null : (fresh?.targets ?? null);
+        /*
+         * Every answered check stamps `lastCheckedAt`; identifiers the door
+         * returned fill in the receipt. A refusal/absent read changes nothing,
+         * and receipt fields are only ever filled, never cleared.
+         */
+        if (fresh && !isDoorRefusal(fresh)) {
+          const mine = (Array.isArray(freshTargets) ? freshTargets : []).find((entry) => {
+            const binding = this.toWorkspaceBindings([entry])[0]?.destinationBinding ?? entry?.destinationBinding;
+            return binding === publication.destinationBinding;
+          });
+          this.storage.recordPublicationCheck(publication.id, {
+            providerId: readString(mine?.providerPostId) ?? readString(mine?.providerId) ?? readString(mine?.provider_post_id) ?? null,
+            url: readString(mine?.receiptUrl) ?? readString(mine?.receipt_url) ?? null
+          });
+        }
         targets = normalizeTargets(this.toWorkspaceBindings(freshTargets), [publication.destinationBinding], null).map(
           (target) => ({
             ...target,
@@ -3058,7 +3266,9 @@ export class Gadget extends DurableObject {
       });
     }
 
-    return { publications, targets: publications.flatMap((publication) => publication.targets) };
+    const stored = new Map(this.storage.publicationsFor(batchItemId).map((row) => [row.id, row]));
+    const refreshed = publications.map((publication) => ({ ...(stored.get(publication.id) ?? publication), targets: publication.targets }));
+    return { publications: refreshed, targets: refreshed.flatMap((publication) => publication.targets) };
   }
 
   /**
@@ -3403,8 +3613,11 @@ function unrequestedPartIssue(storage, batchItem, { generationRequest, caption, 
   if (typeof generationRequest !== "string" || !generationRequest) return null;
   const mark = generationMark(batchItem.generation);
   if (!mark || mark.id !== generationRequest) return null;
+  // Authorized by what was REQUESTED (`scope`), not by what remains
+  // (`needs`): an image delivered first must not make the caption save that
+  // accepts it look unrequested (audit 5ccaff1 G1).
   const previous = storage.latestRevision(batchItem.id);
-  if (!mark.needs.caption && caption !== undefined && caption !== (previous?.caption ?? null)) {
+  if (!mark.scope.caption && caption !== undefined && caption !== (previous?.caption ?? null)) {
     return {
       code: "generation_part_not_requested",
       severity: "block",
@@ -3416,7 +3629,7 @@ function unrequestedPartIssue(storage, batchItem, { generationRequest, caption, 
     (acceptedGeneratedMediaId !== undefined &&
       acceptedGeneratedMediaId !== null &&
       acceptedGeneratedMediaId !== (previous?.acceptedGeneratedMediaId ?? null));
-  if (!mark.needs.image && visualChanged) {
+  if (!mark.scope.image && visualChanged) {
     return {
       code: "generation_part_not_requested",
       severity: "block",
@@ -3433,7 +3646,7 @@ function instructionOverridesOf(batchItem) {
 }
 
 /** The client-facing shape of one generated_media row. */
-function projectGeneratedMedia(row) {
+function projectGeneratedMedia(row, status = null) {
   return {
     id: row.id,
     ready: row.bytes != null,
@@ -3443,7 +3656,11 @@ function projectGeneratedMedia(row) {
     deliveredAt: row.deliveredAt,
     digest: row.contentDigest,
     generationRequest: row.generationRequest,
-    stale: row.stale
+    derivedFrom: row.derivedFrom ?? null,
+    // "accepted" | "candidate" | "superseded" | "legacy" (derived on read).
+    status,
+    // Derived, never the registration-time flag alone.
+    stale: status ? status === "superseded" : row.stale
   };
 }
 

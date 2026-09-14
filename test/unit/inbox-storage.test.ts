@@ -200,7 +200,7 @@ describe("saved inbox SQL", () => {
       expect(items.find((item: any) => item.batchItemId === "bi-a")?.phase).toBe("draft");
     });
 
-    it("a stale request id satisfies nothing; a manual save clears only the caption need", () => {
+    it("a stale request id and a manual owner save satisfy nothing; only the correlated request completes", () => {
       source("s1");
       batch("b");
       batchItem("bi-a", "b", "s1", { revision: 1 });
@@ -212,11 +212,16 @@ describe("saved inbox SQL", () => {
       expect(generation.id).toBe("gen-1");
       expect(generation.needs).toEqual({ caption: true, image: true });
 
-      // A manual owner save (no request id) answers the caption only — the
-      // image ask stays pending rather than reading as answered.
+      // A manual owner save (no request id) completes nothing (audit G1).
       storage.satisfyItemGeneration("bi-a", { request: null, needs: { caption: true, image: false } });
       generation = JSON.parse(storage.getBatchItem("bi-a").generation);
+      expect(generation.needs).toEqual({ caption: true, image: true });
+
+      // The correlated caption shrinks `needs`; `scope` stays what was asked.
+      storage.satisfyItemGeneration("bi-a", { request: "gen-1", needs: { caption: true } });
+      generation = JSON.parse(storage.getBatchItem("bi-a").generation);
       expect(generation.needs).toEqual({ caption: false, image: true });
+      expect(generation.scope).toEqual({ caption: true, image: true });
 
       // The correlated delivery answers the image need; the mark clears,
       // and the batch roll-up follows once no active item is still marked.

@@ -48,11 +48,24 @@ brief naming the batch) actually asked. New scanned content arriving on its
 own is not a drafting ask; never draft a batch nobody requested.
 
 When you save work for a marked item, echo its `generation.id` back as
-`generationRequest` on `saveRevision`/`savePoster`. That id is how your
-write is correlated to the ask you answered: a save that echoes a stale or
-missing id still writes its revision but cannot clear the item's mark — a
-newer request is never satisfied by an older result. Re-read the batch
+`generationRequest` on `saveRevision`/`savePoster`/`saveGeneratedImage`. That
+id is how your write is correlated to the ask you answered: a save carrying an
+older id is refused `generation_request_stale`, and a save with no id is the
+owner's own edit — it never completes a request. Re-read the batch
 immediately before saving so the id and `expectedRevision` are current.
+
+A mark has two part maps. `scope` is what was requested and never changes;
+`needs` is what is still outstanding and shrinks as parts arrive. Work only on
+parts in `scope`, and only those still `true` in `needs`. Delivering the image
+first does not take the image out of scope: the correlated caption save that
+accepts that same request's image is still allowed.
+
+Only one request per post is in progress at a time. `requestGeneration` for a
+post whose mark still has outstanding needs comes back
+`{ ok: false, code: "generation_pending", pending: { requestId, scope, needs } }`
+unless it was called with `replace: true`. Never pass `replace` on your own —
+replacing is the owner's decision, and it turns the old request's results into
+history.
 
 ## When a scan asked for the drafting, not a person
 
@@ -93,7 +106,9 @@ both. Do only the parts that are `true`:
 - `needs.image` only — generate the image and register it with
   `saveGeneratedImage` (it arrives as `generatedCandidate`; the owner accepts
   it). Do not change the caption. A correlated `saveRevision` that changes the
-  caption is refused `generation_part_not_requested`.
+  caption is refused `generation_part_not_requested`. A correlated save may
+  accept only an image registered under the same request; an older image is
+  the owner's choice (`generated_media_not_current`).
 - `needs.caption` only — save the new caption with `saveRevision`. Do not
   register or accept a different image; a correlated save that changes the
   accepted visual is refused the same way. The accepted image stays.

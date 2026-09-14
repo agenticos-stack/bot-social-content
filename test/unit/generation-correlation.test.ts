@@ -155,7 +155,8 @@ describe("generation request correlation", () => {
     seed(gadget);
 
     const oldAsk = (await gadget.requestGeneration("batch-1", ["item-1"])).request;
-    const newAsk = (await gadget.requestGeneration("batch-1", ["item-1"])).request;
+    // A pending request is serialized: superseding it is an explicit replace.
+    const newAsk = (await gadget.requestGeneration("batch-1", ["item-1"], { replace: true })).request;
     expect(newAsk).not.toBe(oldAsk);
 
     const late = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "old", generationRequest: oldAsk });
@@ -183,7 +184,7 @@ describe("generation request correlation", () => {
     const gadget = new Gadget(ctx as never, mockSocial([], []) as never);
     seed(gadget);
     const oldAsk = (await gadget.requestGeneration("batch-1", ["item-1"])).request;
-    const newAsk = (await gadget.requestGeneration("batch-1", ["item-1"])).request;
+    const newAsk = (await gadget.requestGeneration("batch-1", ["item-1"], { replace: true })).request;
 
     expect(await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "新的內容文字", generationRequest: newAsk })).toMatchObject({ ok: true, revision: 1 });
     const stale = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 1, caption: "舊的內容文字", generationRequest: oldAsk });
@@ -228,7 +229,9 @@ describe("the reviewed generated asset is pinned on the revision", () => {
   async function acceptedFirstImage(gadget: Gadget) {
     const first = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "first", altText: "first alt" });
     await gadget.deliverGeneratedImage({ id: first.id, bytes: JPEG });
-    const saved = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: CAPTION, acceptedVisualMode: "ai_refinement" });
+    // A registration with no request id is legacy: implicit selection never
+    // picks it, so the owner names it explicitly.
+    const saved = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: CAPTION, acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: first.id });
     expect(saved).toMatchObject({ ok: true, revision: 1 });
     return first.id as string;
   }
@@ -306,12 +309,14 @@ describe("the reviewed generated asset is pinned on the revision", () => {
   it("refuses to file when the pinned asset's bytes no longer match the reviewed digest", async () => {
     const created: unknown[] = [];
     const uploaded: unknown[] = [];
-    const { ctx } = sqliteContext();
+    const { ctx, db } = sqliteContext();
     const gadget = new Gadget(ctx as never, mockSocial(created, uploaded) as never);
     seed(gadget);
     const firstId = await acceptedFirstImage(gadget);
-    // A re-delivery to the SAME row swaps its bytes behind the revision.
-    await gadget.deliverGeneratedImage({ id: firstId, bytes: JPEG_B });
+    // A re-delivery with different bytes is refused (G4); the digest check at
+    // filing still catches bytes changed underneath the revision.
+    expect(await gadget.deliverGeneratedImage({ id: firstId, bytes: JPEG_B })).toMatchObject({ ok: false, issues: [{ code: "generated_media_immutable" }] });
+    db.prepare("UPDATE generated_media SET bytes = ? WHERE id = ?").run(JPEG_B, firstId);
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
     expect(result).toMatchObject({ ok: false, code: "generated_image_changed" });
@@ -332,24 +337,29 @@ describe("the reviewed generated asset is pinned on the revision", () => {
   });
 });
 
-describe("migration 16", () => {
-  it("pins an existing ai_refinement revision to the newest delivered image and files it", async () => {
+describe("migration 16 (no longer guesses)", () => {
+  it("leaves a historical ai_refinement revision unpinned; filing asks for review until the owner re-accepts", async () => {
     const created: unknown[] = [];
     const uploaded: any[] = [];
     const { ctx, db } = sqliteContext();
     const gadget = new Gadget(ctx as never, mockSocial(created, uploaded) as never);
     seed(gadget);
 
-    // Rewind to a schema-15 database holding a legacy ai_refinement revision
-    // (the schema-17 per-post instruction columns go too, so every later
-    // migration replays).
+    // Rewind to a schema-15 database holding a legacy ai_refinement revision.
     for (const [table, column] of [
       ["batch_items", "instruction_overrides"],
       ["batch_items", "last_generation"],
       ["generated_media", "stale"],
       ["generated_media", "content_digest"],
+      ["generated_media", "derived_from"],
       ["revisions", "accepted_generated_media_id"],
-      ["revisions", "accepted_generated_media_digest"]
+      ["revisions", "accepted_generated_media_digest"],
+      ["revisions", "accepted_generated_media_provenance"],
+      ["revisions", "accepted_generated_media_source"],
+      ["revisions", "alt_text"],
+      ["publications", "last_checked_at"],
+      ["publications", "provider_id"],
+      ["publications", "receipt_url"]
     ]) {
       db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
     }
@@ -365,16 +375,31 @@ describe("migration 16", () => {
     ).run(CAPTION);
     db.prepare("UPDATE batch_items SET current_revision = 1 WHERE id = 'item-1'").run();
 
-    expect(gadget.storage.migrate()).toBe(17);
-    const revision = gadget.storage.getRevision("item-1", 1);
-    expect(revision).toMatchObject({ acceptedGeneratedMediaId: "gm_old", acceptedGeneratedMediaDigest: null });
-    expect(gadget.storage.getGeneratedMedia("gm_pending")).toMatchObject({ stale: false, contentDigest: null });
+    expect(gadget.storage.migrate()).toBe(18);
+    expect(gadget.storage.getRevision("item-1", 1)).toMatchObject({
+      acceptedGeneratedMediaId: null,
+      acceptedGeneratedMediaDigest: null,
+      acceptedGeneratedMediaProvenance: null
+    });
 
-    const item = await projected(gadget);
-    expect(item.generatedImage).toMatchObject({ id: "gm_old", ready: true, digest: null });
-    expect(item.generatedCandidate).toMatchObject({ id: "gm_pending", ready: false });
+    let item = await projected(gadget);
+    expect(item.generatedImage).toBeNull();
+    expect(item.generatedHistory.map((row: any) => [row.id, row.status])).toEqual([
+      ["gm_pending", "legacy"],
+      ["gm_old", "legacy"]
+    ]);
 
-    expect(await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 })).not.toMatchObject({ ok: false });
+    expect(await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 })).toMatchObject({
+      ok: false,
+      code: "generated_image_review_required"
+    });
+    expect(uploaded).toEqual([]);
+
+    const reaccepted = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 1, acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: "gm_old" });
+    expect(reaccepted).toMatchObject({ ok: true, revision: 2 });
+    item = await projected(gadget);
+    expect(item.revisionHistory.at(-1)).toMatchObject({ acceptanceSource: "owner_explicit", acceptedGeneratedMediaProvenance: "recorded" });
+    expect(await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 2 })).not.toMatchObject({ ok: false });
     expect(Buffer.from(uploaded[0].dataBase64, "base64")).toEqual(Buffer.from(JPEG));
   });
 });

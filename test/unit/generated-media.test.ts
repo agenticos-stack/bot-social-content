@@ -198,7 +198,8 @@ describe("generated image registration and delivery", () => {
     await gadget.deliverGeneratedImage({ id: registered.id, bytes: JPEG });
     expect(JSON.parse(gadget.storage.getBatchItem("item-1").generation).needs).toEqual({ caption: true, image: false });
 
-    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字" });
+    // Only a save that echoes the request completes it; an owner save does not.
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", generationRequest: ask });
     expect(gadget.storage.getBatchItem("item-1").generation).toBeNull();
   });
 });
@@ -213,7 +214,7 @@ describe("generated image at submit", () => {
 
     const registered = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "u", altText: "AI alt" });
     await gadget.deliverGeneratedImage({ id: registered.id, bytes: JPEG });
-    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement" });
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: registered.id });
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
     expect(result).not.toMatchObject({ ok: false });
@@ -236,15 +237,16 @@ describe("generated image at submit", () => {
 
     const registered = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "u", altText: null });
     await gadget.deliverGeneratedImage({ id: registered.id, bytes: PNG });
-    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement" });
+    await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: registered.id });
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
     expect(result).toMatchObject({ ok: false, code: "generated_image_format_stale" });
+    expect(result.message).toMatch(/JPEG copy/);
     expect(created).toEqual([]);
     expect(uploaded).toEqual([]);
   });
 
-  it("an open source with generated mode chosen but no bytes refuses as generated_image_required", async () => {
+  it("an open source with generated mode chosen but no accepted image refuses as generated_image_review_required", async () => {
     const created: unknown[] = [];
     const uploaded: unknown[] = [];
     const { ctx } = sqliteContext();
@@ -253,13 +255,13 @@ describe("generated image at submit", () => {
     await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement" });
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).toMatchObject({ ok: false, code: "generated_image_required" });
+    expect(result).toMatchObject({ ok: false, code: "generated_image_review_required" });
     expect(created).toEqual([]);
   });
 
   // Product decision 2026-09-14: a generated-image revision never quietly
   // ships the source photograph instead — for an owned source too.
-  it("an owned source with generated mode chosen but no bytes refuses and files nothing", async () => {
+  it("an owned source with generated mode chosen but no accepted image refuses and files nothing", async () => {
     const created: unknown[] = [];
     const uploaded: unknown[] = [];
     const { ctx } = sqliteContext();
@@ -268,7 +270,7 @@ describe("generated image at submit", () => {
     await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: "第一稿內容文字", acceptedVisualMode: "ai_refinement" });
 
     const result = await gadget.submitForReview({ batchItemId: "item-1", expectedRevision: 1 });
-    expect(result).toMatchObject({ ok: false, code: "generated_image_required" });
+    expect(result).toMatchObject({ ok: false, code: "generated_image_review_required" });
     expect(uploaded).toEqual([]);
     expect(created).toEqual([]);
   });

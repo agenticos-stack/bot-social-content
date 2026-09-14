@@ -102,7 +102,8 @@ async function acceptedPost(gadget: Gadget) {
     batchItemId: "item-1",
     expectedRevision: 0,
     caption: "第一稿內容文字",
-    acceptedVisualMode: "ai_refinement"
+    acceptedVisualMode: "ai_refinement",
+    acceptedGeneratedMediaId: image.id
   });
   expect(saved).toMatchObject({ ok: true, revision: 1 });
   return image.id as string;

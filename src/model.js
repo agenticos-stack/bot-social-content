@@ -1239,13 +1239,21 @@ export function effectiveInstructions(config, overrides) {
 export function generationMark(mark) {
   if (!mark) return null;
   if (typeof mark === "object") {
+    const needs = {
+      caption: mark.needs?.caption !== false,
+      image: mark.needs?.image !== false
+    };
     return {
       id: typeof mark.id === "string" ? mark.id : null,
       base: Number.isFinite(mark.base) ? mark.base : null,
-      needs: {
-        caption: mark.needs?.caption !== false,
-        image: mark.needs?.image !== false
-      },
+      // What was REQUESTED is `scope` (immutable); what REMAINS is `needs`.
+      // A mark written before `scope` existed falls back to its needs — the
+      // narrowest reading, so an old mark never authorizes more than it asks.
+      scope:
+        mark.scope && typeof mark.scope === "object"
+          ? { caption: mark.scope.caption === true, image: mark.scope.image === true }
+          : { ...needs },
+      needs,
       // When the request was made, and the effective instructions it was made
       // under (`{ image, caption }`) — present only on marks that recorded them.
       at: typeof mark.at === "string" ? mark.at : undefined,
@@ -1261,7 +1269,7 @@ export function generationMark(mark) {
   }
   // Legacy 'requested'/'drafting' strings: a request with no identity that
   // still needs both caption and image output.
-  return { id: null, base: null, needs: { caption: true, image: true } };
+  return { id: null, base: null, scope: { caption: true, image: true }, needs: { caption: true, image: true } };
 }
 
 /**
