@@ -200,6 +200,14 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
        * that gap is the shared platform contract, not something this host
        * can fake.
        */
+      /*
+       * The canvas cannot hear the gadget's own broadcasts in this host: the
+       * local runtime has no push subscription. The host sees every change
+       * the agent and the delivery sweep make, so it announces them; an open
+       * drawer re-reads through the supported API when it hears one.
+       */
+      const hostEventListeners=new Set();
+      const emitHostEvent=(type)=>{for(const listener of [...hostEventListeners]){try{listener({type});}catch{}}};
       const deliverGeneratedAttachments=async()=>{
         await localReady;
         const callLocal=async(method,args)=>{
@@ -209,8 +217,11 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           return payload.value;
         };
         let pending;
-        try { pending=(await callLocal('pendingGeneratedImages',{}))?.pending ?? []; }
-        catch { return; }
+        // Arguments are an ARRAY, like every other local call. An object here
+        // threw inside the session gate, and a bare catch returned silently —
+        // a registered image then stayed pending forever with nothing logged.
+        try { pending=(await callLocal('pendingGeneratedImages',[]))?.pending ?? []; }
+        catch (error) { console.warn(`generated image sweep: pending read failed — ${error instanceof Error?error.message:error}`); return; }
         for (const registration of pending) {
           if(typeof registration?.attachmentId!=='string'||!registration.attachmentId) continue;
           try {
@@ -224,8 +235,8 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
             }
             const bytes=Buffer.from(await response.arrayBuffer());
             const mimeType=(response.headers.get('content-type')||'').split(';')[0]||undefined;
-            const delivered=await callLocal('deliverGeneratedImage',{id:registration.id,bytes:bytes.toString('base64'),mimeType});
-            if(delivered?.ok)console.log(`generated image ${registration.id}: delivered ${bytes.byteLength} bytes (${mimeType||'unknown'})`);
+            const delivered=await callLocal('deliverGeneratedImage',[{id:registration.id,bytes:bytes.toString('base64'),mimeType}]);
+            if(delivered?.ok){console.log(`generated image ${registration.id}: delivered ${bytes.byteLength} bytes (${mimeType||'unknown'})`);emitHostEvent('generated_image');}
             else console.warn(`generated image ${registration.id}: delivery refused — ${delivered?.issues?.[0]?.message||'unknown'}`);
           } catch (error) {
             console.warn(`generated image ${registration.id}: delivery failed — ${error instanceof Error?error.message:error}`);
@@ -240,7 +251,9 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
         // A successful registration kicks the transfer off; the sweep below
         // retries anything the kick missed (a transient read failure must not
         // strand a registration the agent already made).
-        if(method==='saveGeneratedImage'&&payload.value?.ok)deliverGeneratedAttachments().catch(()=>{});
+        if(method==='saveGeneratedImage'&&payload.value?.ok){emitHostEvent('generated_image');deliverGeneratedAttachments().catch((error)=>console.warn(`generated image delivery kick failed — ${error instanceof Error?error.message:error}`));}
+        if(['saveRevision','saveRevisions','savePoster','saveInstructionOverrides'].includes(method))emitHostEvent('revision');
+        if(method==='requestGeneration')emitHostEvent('drafts_changed');
         return payload.value;
       }});
       // Only granted doors appear, so an ungranted one is absent from `env` —
@@ -416,7 +429,10 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
             return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. Read this batch and summary, then generate a real image with the platform image tool and write a caption for each item whose own generation mark is set, honouring that mark's needs, the saved caption and image instructions and any per-post overrides; register each image with saveGeneratedImage (never a text poster, never the source photo), echoing that mark's id back as generationRequest on every saveRevision/savePoster. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions that accompany this message.`,instructions:archive.files['agent.md']},credential);
           }
         },
+        /** Host-observed changes, for the connected canvas's live updates. Returns an unsubscribe. */
+        events(listener){hostEventListeners.add(listener);return ()=>hostEventListeners.delete(listener);},
         dispose:async()=>{
+          hostEventListeners.clear();
           for (const watcher of watchers) watcher.close();
           clearTimeout(pending);
           clearInterval(deliverTimer);

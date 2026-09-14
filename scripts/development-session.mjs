@@ -62,6 +62,12 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
       if(typeof runtime.activate !== 'function')throw new Error('Activating doors is unavailable in this development session.');
       return runtime.activate(input);
     },
+    /** Subscribe the authenticated owner of the running session to host-observed changes. */
+    async events(request, listener){
+      const {runtime}=await acquire(request,false);
+      if(typeof runtime.events !== 'function')throw new Error('Live updates are unavailable in this development session.');
+      return runtime.events(listener);
+    },
     async dispose(){closed=true;if(pending)await (await pending).dispose();}
   };
 }

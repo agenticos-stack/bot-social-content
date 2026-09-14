@@ -269,6 +269,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-selectbox { position: absolute; z-index: 2; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.9); display: grid; place-items: center; cursor: pointer; }
 .sl-post-open { display: block; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; }
 .sl-media { display: block; position: relative; aspect-ratio: 1.15/1; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); }
+/* The "no accepted output" note sits in the open middle of the media box.
+   It had no rule at all, so it rendered as inline text on top of the
+   absolutely positioned account kicker in the top-left corner. */
+.sl-media-placeholder { position: absolute; inset: 32px 12px 32px; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; line-height: 1.4; color: var(--sl-muted); }
 .sl-media-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .sl-provider-glyph { position: absolute; left: 10px; bottom: 10px; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.92); font: 700 9px var(--sl-font); }
 .sl-media-kicker { position: absolute; left: 10px; top: 10px; font: 600 8px var(--sl-font); letter-spacing: .04em; color: var(--sl-muted); text-transform: uppercase; }

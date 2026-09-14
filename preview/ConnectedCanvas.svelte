@@ -8,6 +8,7 @@
   let frameGeneration=$state(0);
   let port=$state.raw();
   let controller;
+  let hostEvents;
   function connect(){
     port?.close();controller?.abort();
     controller=new AbortController();
@@ -36,6 +37,15 @@
     };
     // Opaque sandbox origin requires '*'; only this frame receives the port.
     frame.contentWindow.postMessage({type:'bot-dev-port'},'*',[channel.port2]);
+    // Host-observed changes (agent saves, delivered images) reach the canvas
+    // as the same events its subscriber already handles.
+    hostEvents?.close();
+    hostEvents=new EventSource('/api/dev/events');
+    hostEvents.onmessage=message=>{
+      let event;
+      try{event=JSON.parse(message.data);}catch{return;}
+      if(event && typeof event.type==='string' && port===current)current.postMessage({event:{type:event.type}});
+    };
   }
   /*
    * `gadget:grant-door` is a REQUEST, the same as in Studio: the canvas can
@@ -195,7 +205,7 @@
   function canAdd(family){
     return family.choices.length>0 && (family.max===null || family.members.length<family.max);
   }
-  onDestroy(()=>{port?.close();controller?.abort();});
+  onDestroy(()=>{port?.close();controller?.abort();hostEvents?.close();});
   $effect(()=>{revision;port?.postMessage({event:{type:'drafts_changed'}});});
 </script>
 <!--

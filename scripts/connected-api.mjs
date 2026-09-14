@@ -11,6 +11,7 @@ const localRoutes = new Map([
   ['/api/dev/agent', ['POST']],
   ['/api/dev/grant', ['POST']],
   ['/api/dev/activate', ['POST']],
+  ['/api/dev/events', ['GET']],
   ['/api/dev/connections', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
@@ -20,6 +21,7 @@ const remoteRoutes = new Map([
   ['/api/dev/agent', ['POST']],
   ['/api/dev/grant', ['POST']],
   ['/api/dev/activate', ['POST']],
+  ['/api/dev/events', ['GET']],
   ['/api/dev/connections', ['POST']]
 ]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
@@ -48,6 +50,35 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
     if (!routes.get(url.pathname)?.includes(request.method)) return fail(404,'Route unavailable in connected preview.');
     if (url.origin !== frontendOrigin || request.headers.get('sec-fetch-site') === 'cross-site') return fail(403,'Origin refused.');
     if (request.method !== 'GET' && request.headers.get('origin') !== frontendOrigin) return fail(403,'Origin refused.');
+    /*
+     * Host-observed changes for the connected canvas, as Server-Sent Events.
+     * The same authenticated session acquisition as every other development
+     * route: signed in, owning the running session, never starting one. Each
+     * event names only its type; the canvas re-reads through the gadget API.
+     */
+    if (url.pathname === '/api/dev/events') {
+      if (!development || typeof development.events !== 'function') return fail(503,'Live updates are not configured.');
+      let unsubscribe=()=>{};
+      let heartbeat;
+      const encoder=new TextEncoder();
+      let push;
+      try {
+        unsubscribe=await development.events(request,(event)=>push?.(event));
+      } catch (error) {
+        return fail(409,error instanceof Error?error.message:'Live updates are unavailable.');
+      }
+      const stream=new ReadableStream({
+        start(controller){
+          push=(event)=>{try{controller.enqueue(encoder.encode(`data: ${JSON.stringify({type:event?.type})}\n\n`));}catch{}};
+          controller.enqueue(encoder.encode(': connected\n\n'));
+          heartbeat=setInterval(()=>{try{controller.enqueue(encoder.encode(': keep-alive\n\n'));}catch{}},25000);
+          heartbeat.unref?.();
+          request.signal?.addEventListener?.('abort',()=>{clearInterval(heartbeat);unsubscribe();try{controller.close();}catch{}},{once:true});
+        },
+        cancel(){clearInterval(heartbeat);push=undefined;unsubscribe();}
+      });
+      return new Response(stream,{headers:{'content-type':'text/event-stream','cache-control':'no-store','connection':'keep-alive'}});
+    }
     const headers = new Headers({accept:'application/json'});
     for (const key of ['cookie','origin','content-type']) {
       const value=request.headers.get(key);if(value)headers.set(key,value);
