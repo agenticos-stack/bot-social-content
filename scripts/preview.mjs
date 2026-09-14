@@ -325,9 +325,22 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
         catch(error){doors=previousDoors;local=await startRuntime(archive.files);throw error;}
         finally{readyLocal();}
       };
-      const activateRuntime=async(force)=>{
+      const activateRuntime=async(force,requirementKey)=>{
         reloading=reloading.then(()=>refreshDoors(force),()=>refreshDoors(force));
-        try { await reloading; return {status:'ready'}; }
+        try {
+          await reloading;
+          // A refresh that finishes without throwing only proves the refresh
+          // ran — an unchanged, still-empty spec "finishes" the same way a
+          // real activation does. Require the requested door to actually be
+          // in the running spec before reporting ready (F02a); anything else
+          // is `refresh_failed`, the same vocabulary an isolate start failure
+          // already uses, so the caller never reads "the refresh completed"
+          // as "the door is live".
+          if(requirementKey && !doors?.spec?.[requirementKey]){
+            return {status:'refresh_failed',message:'The permission is saved, but the running local source does not have this door.'};
+          }
+          return {status:'ready'};
+        }
         catch(error){
           reloading=Promise.resolve();
           return {status:'refresh_failed',message:`The permission is saved, but the local runtime could not start it: ${error instanceof Error?error.message:error}`};

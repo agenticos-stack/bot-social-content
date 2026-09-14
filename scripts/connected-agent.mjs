@@ -327,8 +327,13 @@ export async function createConnectedAgent({
   async function doors(methodsByDoor) {
     await ensureConnected(remote ? devToken : cookie);
     const granted = await session.stub.developmentDoors();
+    // A non-array answer is unreadable, not an absence of doors: normalizing
+    // it here (F02b) let a malformed inventory settle into "no doors granted"
+    // — a confirmed-looking empty result the caller could not tell apart from
+    // an owner who genuinely granted nothing.
+    if (!Array.isArray(granted)) throw new Error('The platform door inventory could not be read.');
     const spec = {};
-    for (const door of Array.isArray(granted) ? granted : []) {
+    for (const door of granted) {
       if (!door?.granted) continue;
       // A connector family member is named by the owner's choice of account,
       // so the source cannot list it in advance; its methods are the
@@ -368,7 +373,13 @@ export async function createConnectedAgent({
   async function grantedDoorKeys() {
     await ensureConnected(remote ? devToken : cookie);
     const listed = await session.stub.developmentDoors();
-    return (Array.isArray(listed) ? listed : []).filter((door) => door?.granted === true).map((door) => door.requirementKey);
+    // Same rule as `doors()` (F02b): a non-array answer is unreadable, and an
+    // unreadable inventory must never collapse into the empty list a real,
+    // valid "nothing granted" answer produces. `door-runtime.mjs#activate`
+    // treats an empty array as confirmed absence — so normalizing garbage to
+    // `[]` here turned "the platform could not be read" into a false denial.
+    if (!Array.isArray(listed)) throw new Error('The platform grant list could not be read.');
+    return listed.filter((door) => door?.granted === true).map((door) => door.requirementKey);
   }
 
   async function grantDoor(input, currentCookie) {
@@ -379,14 +390,25 @@ export async function createConnectedAgent({
     if (remote) {
       await ensureConnected(devToken);
       const result = await session.stub.grantDevelopmentDoor(requirementKey);
-      return { requirementKey: result?.requirementKey ?? requirementKey, persistedToAgent: false };
+      // The platform's own confirmation must name the requested requirement.
+      // Substituting `requirementKey` for a missing/mismatched answer (F02a)
+      // let a malformed or empty response read as though the platform had
+      // confirmed exactly what was asked for — it never did.
+      if (result?.requirementKey !== requirementKey) throw new Error('The platform did not confirm which door was granted.');
+      return { requirementKey: result.requirementKey, persistedToAgent: false };
     }
     await ensureConnected(currentCookie);
     const result = await requestJson(`${apiOrigin}/v2/workspaces/${encodeURIComponent(workspaceId)}/door-grants`, {
       frontendOrigin, cookie: currentCookie, method: 'POST', body: { requirementKey, persistToAgent: input.persistToAgent }, fetchImpl
     });
+    const confirmedKey = result?.data?.grant?.requirementKey;
+    // Same rule over REST: `requestJson` already rejects a body it cannot
+    // parse, but a well-formed body that simply omits or misnames the grant
+    // is just as unconfirmed. Never fall back to the requested key — that is
+    // the requested identity standing in for a confirmed one.
+    if (confirmedKey !== requirementKey) throw new Error('The platform did not confirm which door was granted.');
     return {
-      requirementKey: result?.data?.grant?.requirementKey ?? requirementKey,
+      requirementKey: confirmedKey,
       persistedToAgent: result?.data?.persistedToAgent === true
     };
   }
@@ -497,7 +519,9 @@ async function requestJson(url, { frontendOrigin, cookie, authorization, method,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000)
   });
-  const value = await response.json().catch(() => null);
+  let value = null;
+  let readable = true;
+  try { value = await response.json(); } catch { readable = false; }
   if (!response.ok) {
     const message = value?.error?.message || value?.message;
     // A 4xx that explained itself is the API's refusal. A 5xx, a timeout-ish
@@ -507,6 +531,13 @@ async function requestJson(url, { frontendOrigin, cookie, authorization, method,
     }
     throw new Error(message || `API request failed (${response.status}).`);
   }
+  // HTTP 200 with a body nobody can parse is not a successful answer — it is
+  // an upstream that may have written before failing to respond. Returning
+  // null here let a caller (F02a) read the absence of every field as
+  // confirmed, including a field the caller then filled in with the
+  // REQUESTED value rather than a confirmed one. Throw instead, so an
+  // unreadable success is never distinguishable from "nothing came back".
+  if (!readable) throw new Error(`The API response for ${new URL(url).pathname} could not be read.`);
   return value;
 }
 
