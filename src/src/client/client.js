@@ -528,6 +528,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-stage-chip { position: absolute; z-index: 2; top: 12px; font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 4px 8px; color: #f3f0e9; background: rgba(13,12,10,.74); border: 1px solid rgba(243,240,233,.16); }
 .sl-stage-kind { left: 12px; }
 .sl-stage-count { right: 12px; font-variant-numeric: tabular-nums; }
+/* A text-only post has no frame kind or count: an empty chip drew as a dark block. */
+.sl-stage-chip:empty { display: none; }
 .sl-stage-nav { position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 34px; height: 56px; cursor: pointer; color: #f3f0e9; background: rgba(13,12,10,.6); border: 1px solid rgba(243,240,233,.18); font-size: 17px; line-height: 1; }
 .sl-stage-nav:hover { background: rgba(13,12,10,.9); }
 .sl-stage-prev { left: 8px; }
