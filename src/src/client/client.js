@@ -789,6 +789,9 @@ function App() {
   let wizard = createWizardState();
   let activePreviewItem = null;
   let activePreviewStage = null;
+  // Every media stage still on screen (preview dialog and drawer panels), so a
+  // host door notice reaches each one; a stage leaves the set when disposed.
+  const liveMediaStages = new Set();
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
 
@@ -858,7 +861,7 @@ function App() {
     } catch (error) {
       console.error(error);
     }
-    activePreviewStage?.notifyDoorsChanged(reason);
+    for (const stage of liveMediaStages) stage.notifyDoorsChanged(reason);
   }
   function askHost(type, requirementKey, timeoutMs) {
     const requestId = newGrantRequestId();
@@ -879,14 +882,18 @@ function App() {
   const requestDoorActivation = (requirementKey) => askHost("gadget:activate-door", requirementKey, 45_000);
 
   function mediaStageFor(target) {
-    return createMediaStage(rpc, target, locale, {
+    const stage = createMediaStage(rpc, target, locale, {
       requestGrant: () => requestDoorGrant("metered_fetch"),
       requestActivation: () => requestDoorActivation("metered_fetch"),
-      refreshSources: () => collectionHandlers.onRefresh(),
-      // F2: `notifyDoorsChanged()` calls this, fire-and-forget, on an
-      // unprompted host notice — a plain metadata read, never `getMedia`.
-      refreshPermissions: () => refreshSummary()
+      refreshSources: () => collectionHandlers.onRefresh()
     });
+    liveMediaStages.add(stage);
+    const dispose = stage.dispose;
+    stage.dispose = () => {
+      liveMediaStages.delete(stage);
+      dispose();
+    };
+    return stage;
   }
 
   function announce(title, body, action) {
