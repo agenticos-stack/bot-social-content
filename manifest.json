@@ -12,7 +12,7 @@
     },
     "version": 1
   },
-  "storageSchemaVersion": 15,
+  "storageSchemaVersion": 16,
   "files": [
     "client.js",
     "server.js",

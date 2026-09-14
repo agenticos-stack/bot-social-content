@@ -683,9 +683,77 @@ export function acceptedVisualOf(item, draft) {
   return draft?.acceptedVisualMode ?? item?.acceptedVisualMode ?? (item?.posterStored ? "text_poster" : "keep_original");
 }
 
-/** True when the accepted visual is a generated image whose bytes are not stored yet. */
+/*
+ * REVIEWABLE IS STRONGER THAN STORED. `generatedImage.ready` says the bytes
+ * are held; it does not say the approver can see them. Each accepted image is
+ * tracked per (post, asset, revision) as loading → ready (decoded) or failed,
+ * and submission waits for `ready`. A load that finishes after the asset or
+ * revision changed updates an entry nobody reads, so it cannot unlock a newer
+ * image.
+ */
+const reviewImages = new Map(); // key -> { status: "loading"|"ready"|"failed", url, message }
+
+function reviewImageKey(item) {
+  const id = item?.generatedImage?.id;
+  return id ? `${item.id}:${id}:${item.revision ?? 0}` : null;
+}
+
+/** Revokes object URLs for review images not in `keep` (all of them by default). */
+export function releaseReviewImages(keep = new Set()) {
+  for (const [key, entry] of reviewImages) {
+    if (keep.has(key)) continue;
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    reviewImages.delete(key);
+  }
+}
+
+/** The review image's state for this post's current accepted asset and revision. */
+export function reviewImageState(item) {
+  const key = reviewImageKey(item);
+  return key ? reviewImages.get(key)?.status ?? "idle" : "idle";
+}
+
+/**
+ * True when the accepted visual is a generated image the approver cannot
+ * review yet: not stored, or stored but not (yet) rendered in this review.
+ */
 export function generatedVisualBlocked(item, draft) {
-  return acceptedVisualOf(item, draft) === "ai_refinement" && item?.generatedImage?.ready !== true;
+  if (acceptedVisualOf(item, draft) !== "ai_refinement") return false;
+  if (item?.generatedImage?.ready !== true) return true;
+  return reviewImageState(item) !== "ready";
+}
+
+function loadReviewImage(item, handlers) {
+  const key = reviewImageKey(item);
+  if (!key || reviewImages.has(key) || typeof handlers?.loadGeneratedImage !== "function") return;
+  const entry = { status: "loading", url: null, message: null };
+  reviewImages.set(key, entry);
+  const settle = (status, url, message) => {
+    // Replaced, retried or released while loading: this answer is stale.
+    if (reviewImages.get(key) !== entry) { if (url) URL.revokeObjectURL(url); return; }
+    entry.status = status;
+    entry.url = url;
+    entry.message = message;
+    handlers.onReviewImageState?.();
+  };
+  handlers.loadGeneratedImage(item.generatedImage.id).then(
+    async ({ url }) => {
+      // Decode before calling it reviewable: bytes that arrive but do not
+      // render are exactly the image nobody can approve.
+      if (typeof Image === "function") {
+        const probe = new Image();
+        probe.src = url;
+        try {
+          if (typeof probe.decode === "function") await probe.decode();
+        } catch {
+          settle("failed", url, null);
+          return;
+        }
+      }
+      settle("ready", url, null);
+    },
+    (error) => settle("failed", null, error instanceof Error ? error.message : null)
+  );
 }
 
 function acceptedVisualNode(locale, item, draft, handlers) {
@@ -695,12 +763,28 @@ function acceptedVisualNode(locale, item, draft, handlers) {
     if (generated?.ready !== true || typeof handlers?.loadGeneratedImage !== "function") {
       return el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "reviewGeneratedNotReady"));
     }
-    const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
-    handlers
-      .loadGeneratedImage(generated.id)
-      .then(({ url }) => { img.src = url; })
-      .catch(() => img.replaceWith(el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedImageFailed"))));
-    return img;
+    loadReviewImage(item, handlers);
+    const entry = reviewImages.get(reviewImageKey(item));
+    if (entry?.status === "ready") {
+      return el("img", { class: "sl-pc-canvas", src: entry.url, alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
+    }
+    if (entry?.status === "failed") {
+      return el("div", { class: "sl-pc-media-empty", role: "alert" }, [
+        el("span", null, t(locale, "reviewImageFailed")),
+        el("button", {
+          type: "button",
+          class: "sl-secondary",
+          onclick: () => {
+            const key = reviewImageKey(item);
+            const stale = reviewImages.get(key);
+            if (stale?.url) URL.revokeObjectURL(stale.url);
+            reviewImages.delete(key);
+            handlers.onReviewImageState?.();
+          }
+        }, t(locale, "reviewImageRetry"))
+      ]);
+    }
+    return el("span", { class: "sl-pc-media-empty", role: "status", "aria-busy": "true" }, t(locale, "reviewImageLoading"));
   }
   if (mode === "keep_original") return el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerVisualSource"));
   return posterCanvas(locale, item);
@@ -763,6 +847,7 @@ function publicationOutcome(publication) {
 }
 
 export function renderPublish(root, state, ctx) {
+  releaseReviewImages(new Set((state.batch?.items ?? []).map(reviewImageKey).filter(Boolean)));
   const { locale, handlers, summary, policy } = ctx;
   const batch = state.batch;
   if (!batch) return replace(root, []);

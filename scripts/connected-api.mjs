@@ -10,6 +10,7 @@ const localRoutes = new Map([
   ['/api/dev/rpc', ['POST']],
   ['/api/dev/agent', ['POST']],
   ['/api/dev/grant', ['POST']],
+  ['/api/dev/activate', ['POST']],
   ['/api/dev/connections', ['POST']],
   ['/api/agenticos/v2/workspaces', ['GET']]
 ]);
@@ -18,6 +19,7 @@ const remoteRoutes = new Map([
   ['/api/dev/rpc', ['POST']],
   ['/api/dev/agent', ['POST']],
   ['/api/dev/grant', ['POST']],
+  ['/api/dev/activate', ['POST']],
   ['/api/dev/connections', ['POST']]
 ]);
 const tokenKeys = new Set(['token','access_token','accessToken']);
@@ -62,8 +64,9 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
     const starting = url.pathname === '/api/dev/session';
     const agent = url.pathname === '/api/dev/agent';
     const grant = url.pathname === '/api/dev/grant';
+    const activate = url.pathname === '/api/dev/activate';
     const connections = url.pathname === '/api/dev/connections';
-    if (starting || url.pathname === '/api/dev/rpc' || agent || grant || connections) {
+    if (starting || url.pathname === '/api/dev/rpc' || agent || grant || activate || connections) {
       if (!development) return fail(503,'Local source runtime is not configured.');
       if(connections){
         // Either "what could I connect" or one choice of account for one
@@ -87,6 +90,18 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
         if(keys!=='persistToAgent,requirementKey' || typeof input.requirementKey!=='string' || typeof input.persistToAgent!=='boolean')return fail(400,'A door and a scope are required.');
         try{return Response.json({data:await development.grant(request,input)},{headers:{'cache-control':'no-store'}});}
         catch(error){return fail(409,error instanceof Error?error.message:'That door could not be granted.');}
+      }
+      if(activate){
+        // Start a door this conversation already holds. The body names the
+        // door and nothing else; the development runtime refuses any key the
+        // platform does not list as granted, so this can never grant.
+        let input;
+        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
+        if(keys!=='requirementKey' || typeof input.requirementKey!=='string')return fail(400,'A door is required.');
+        if(typeof development.activate!=='function')return fail(501,'This host cannot activate a door.');
+        try{return Response.json({data:await development.activate(input)},{headers:{'cache-control':'no-store'}});}
+        catch(error){return fail(409,error instanceof Error?error.message:'That door could not be activated.');}
       }
       if(agent){
         let input;

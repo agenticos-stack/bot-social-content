@@ -1,9 +1,8 @@
 // Social Localization client — the source drawer's media stage.
 //
-// Split out of client.js because it owns three things that were tangled
-// together there and each got one of them wrong: which frame of the post is
-// showing, what the stage is doing right now (fetching / showing / refused),
-// and the lifetime of the blob URLs it mints.
+// Owns which frame of the post is showing, what each frame's read is doing
+// (fetching / held / refused, plus any recovery the owner started), and the
+// lifetime of the blob URLs it mints.
 //
 // The stage never sees a provider URL. `img-src blob: data:` with
 // `connect-src 'none'` means a picture reaches this document only as bytes the
@@ -13,16 +12,9 @@ import { el, replace } from "./dom.js";
 import { loadMediaAsBlobUrl } from "./rpc.js";
 import { t } from "./i18n.js";
 
-/**
- * How tall a frame may draw, as a LENGTH.
- *
- * A percentage max-height on a centred flex or grid item resolves against a
- * containing block that depends on the item, which cut a band out of the
- * middle of portrait frames. A length cannot fail that way.
- */
+/** A length, not a percentage: a percentage max-height on a centred item cut portrait frames. */
 const FRAME_MAX = "min(600px, 68dvh)";
 
-/** Bytes as an owner would say them. `getMedia` reports the exact count. */
 function readableBytes(total) {
   if (typeof total !== "number" || !Number.isFinite(total) || total <= 0) return null;
   if (total < 1024) return `${total} B`;
@@ -30,7 +22,6 @@ function readableBytes(total) {
   return `${(total / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** One post's frames, in the order the provider listed them. */
 function framesOf(item) {
   const list = Array.isArray(item?.media) ? item.media : [];
   return list.filter((entry) => entry && entry.id !== undefined && entry.id !== null);
@@ -38,41 +29,45 @@ function framesOf(item) {
 
 /**
  * What a refused frame offers, chosen from the server's `code` — never from
- * its sentence. Permission and activation are different owner situations: one
- * needs a yes, the other already has one and needs the session to start.
- * A gone source is explained, not retried. An uncertain answer is re-checked
- * without claiming anything was denied.
+ * its sentence.
+ *
+ * - `grant`: ask the host for consent (the host confirms; the canvas only asks).
+ * - `activate`: consent is saved, the running gadget lacks the door; ask the
+ *   host to start the door it already holds. Grants nothing.
+ * - `refresh`: the stored media link is stale; the owner may refresh sources.
+ * - `retry`: read this one frame again.
+ * - `null`: nothing to do from here (the file cannot be used).
  */
 const REFUSALS = {
   fetch_permission_required: { title: "drawerMediaPermissionTitle", body: "drawerMediaPermissionBody", action: "grant", label: "drawerMediaGrant" },
-  fetch_activation_failed: { title: "drawerMediaActivationTitle", body: "drawerMediaActivationBody", action: "recheck", label: "drawerMediaActivationRetry" },
+  fetch_activation_failed: { title: "drawerMediaActivationTitle", body: "drawerMediaActivationBody", action: "activate", label: "drawerMediaActivationRetry" },
   fetch_transient: { title: "drawerMediaTransientTitle", body: null, action: "retry", label: "drawerMediaRetry" },
-  source_unavailable: { title: "drawerMediaUnavailableTitle", body: "drawerMediaUnavailableBody", action: "retry", label: "drawerMediaCheckAgain" },
+  reference_media_stale: { title: "drawerMediaStaleTitle", body: "drawerMediaStaleBody", action: "refresh", label: "drawerMediaRefreshSources" },
+  media_unusable: { title: "drawerMediaUnusableTitle", body: null, action: null, label: null },
   fetch_uncertain: { title: "drawerMediaUncertainTitle", body: "drawerMediaUncertainBody", action: "retry", label: "drawerMediaCheckAgain" }
 };
 const DEFAULT_REFUSAL = { title: "drawerMediaRefusedTitle", body: null, action: "retry", label: "drawerMediaRetry" };
 
 /**
- * Builds the stage for one item and starts fetching its first frame.
+ * Builds the stage for one item and starts reading its first frame.
  *
- * `options.onGrantFetch()` asks the host for public-fetch consent (the canvas
- * only asks; the host confirms). `options.onRecheck()` re-reads the runtime's
- * door status. Neither fetches anything by itself.
+ * `options.requestGrant()` / `options.requestActivation()` resolve to the
+ * host's correlated `{ outcome, message }` (`grant-request.js` vocabulary).
+ * `options.refreshSources()` is the owner's deliberate re-scan. None of them
+ * reads media; only a confirmed `activated` (or the owner's own click) leads
+ * to a read, and only of the frame that asked.
  *
- * Returns `{ node, strip, frameCount, onDoorsChanged, frameStates, dispose }`.
- * `onDoorsChanged()` retries ONLY the frame the owner asked permission for,
- * and only when it is still waiting on that answer — never every frame of the
- * carousel, because each one is a metered read.
+ * Returns `{ node, strip, frameCount, frameStates, dispose }`.
  */
 export function createMediaStage(rpc, item, locale, options = {}) {
   const frames = framesOf(item);
-  const urls = new Map();     // media id -> blob URL, for frames already fetched
-  const facts = new Map();    // media id -> { total }, reported by getMedia
-  const states = new Map();   // media id -> { status: "fetching"|"held"|"refused", code, message }
-  const inFlight = new Map(); // media id -> promise, so a re-click does not refetch
+  const urls = new Map();      // media id -> blob URL
+  const facts = new Map();     // media id -> { total }
+  const states = new Map();    // media id -> { status, code, message, action, note }
+  const inFlight = new Map();  // media id -> { token, promise }
+  let tokens = 0;
   let index = 0;
   let live = true;
-  let awaitingGrantFor = null;
 
   const surface = el("div", { class: "sl-stage-surface" });
   const kindChip = el("span", { class: "sl-stage-chip sl-stage-kind" });
@@ -80,6 +75,9 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   const stage = el("div", { class: "sl-stage" }, [surface, kindChip, countChip]);
   const strip = el("div", { class: "sl-stage-strip", role: "tablist", "aria-label": t(locale, "drawerFrames") });
   const readNote = el("p", { class: "sl-stage-read", role: "status" });
+
+  const keyAt = (at) => (frames[at] ? String(frames[at].id) : "");
+  const isCurrent = (key) => live && keyAt(index) === key;
 
   function showFetching() {
     replace(surface, [
@@ -90,31 +88,27 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     ]);
   }
 
-  function showRefusal(key, code, message) {
-    const shape = REFUSALS[code] ?? DEFAULT_REFUSAL;
-    const waiting = awaitingGrantFor === key;
-    const run = () => {
-      if (shape.action === "grant") {
-        awaitingGrantFor = key;
-        options.onGrantFetch?.();
-        showRefusal(key, code, message);
-        return;
-      }
-      if (shape.action === "recheck") {
-        awaitingGrantFor = key;
-        Promise.resolve(options.onRecheck?.()).finally(() => retry(key));
-        return;
-      }
-      retry(key);
-    };
+  function showRefusal(key) {
+    const state = states.get(key);
+    const shape = REFUSALS[state?.code] ?? DEFAULT_REFUSAL;
+    const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
+    const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
+    const pending = Boolean(state?.action);
+    const pendingLabel = state?.action === "grant" ? "drawerMediaWaitingGrant" : state?.action === "activate" ? "drawerMediaStarting" : "drawerMediaFetching";
     replace(surface, [
-      el("div", { class: "sl-stage-state" }, [
+      el("div", { class: "sl-stage-state", "aria-busy": String(pending) }, [
         el("strong", null, t(locale, shape.title)),
-        el("p", null, shape.body ? t(locale, shape.body) : message || t(locale, "drawerMediaRefusedBody")),
-        waiting && shape.action === "grant"
-          ? el("p", { role: "status" }, t(locale, "drawerMediaWaitingGrant"))
-          : null,
-        el("button", { type: "button", class: "sl-stage-retry", onclick: run }, t(locale, shape.label))
+        el("p", null, shape.body ? t(locale, shape.body) : state?.message || t(locale, "drawerMediaRefusedBody")),
+        state?.note ? el("p", { role: "status" }, state.note) : null,
+        action
+          ? el("button", {
+              type: "button",
+              class: "sl-stage-retry",
+              disabled: pending,
+              "aria-disabled": String(pending),
+              onclick: () => act(key, action)
+            }, t(locale, pending ? pendingLabel : label))
+          : null
       ])
     ]);
   }
@@ -141,11 +135,7 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     kindChip.textContent = frameLabel(frame);
   }
 
-  /**
-   * What this frame is. A video is a cover image and nothing more: the stage
-   * draws a still, and nothing here (or in the agent) has watched the motion
-   * or heard the audio, so the label says so rather than "video".
-   */
+  /** A video is a cover image and nothing more: nothing here watched it or heard it. */
   function frameLabel(frame) {
     const parts = [t(locale, frame?.kind === "video" ? "drawerCoverOnly" : "drawerFormatImageShort")];
     const size = readableBytes(facts.get(String(frame?.id))?.total);
@@ -153,66 +143,131 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     return parts.join(" · ");
   }
 
-  /** The strip and the read count say which frames this session actually holds. */
   function paintStates() {
     for (const [position, button] of [...strip.children].entries()) {
-      const state = states.get(String(frames[position]?.id))?.status;
-      const key = state === "held" ? "drawerFrameStateHeld" : state === "refused" ? "drawerFrameStateBlocked" : "drawerFrameStateUnread";
+      const status = states.get(keyAt(position))?.status;
+      const key = status === "held" ? "drawerFrameStateHeld" : status === "refused" ? "drawerFrameStateBlocked" : "drawerFrameStateUnread";
       button.setAttribute("aria-label", t(locale, key, { n: position + 1 }));
-      button.setAttribute("data-state", state ?? "unread");
+      button.setAttribute("data-state", status ?? "unread");
       button.setAttribute("aria-selected", String(position === index));
     }
     const held = [...states.values()].filter((entry) => entry.status === "held").length;
     readNote.textContent = frames.length > 1 ? t(locale, "drawerFramesRead", { read: held, total: frames.length }) : "";
   }
 
-  function retry(key) {
-    inFlight.delete(key);
-    states.delete(key);
-    const at = frames.findIndex((frame) => String(frame.id) === key);
-    if (at >= 0) show(at);
+  function repaint(key) {
+    paintStates();
+    if (!isCurrent(key)) return;
+    if (urls.has(key)) showFrame(urls.get(key), frames[index]);
+    else if (states.get(key)?.status === "refused") showRefusal(key);
+    else showFetching();
   }
 
-  async function show(at) {
+  /**
+   * One read per frame at a time. A second ask while one is running joins it
+   * rather than discarding it; a completion is applied only if the stage is
+   * live and the read is still the one this frame is waiting on.
+   */
+  function startFetch(key) {
+    if (!live || !key || urls.has(key)) return;
+    if (inFlight.has(key)) return;
+    const token = ++tokens;
+    const promise = loadMediaAsBlobUrl(rpc, item.id, key, "preview");
+    inFlight.set(key, { token, promise });
+    states.set(key, { status: "fetching" });
+    repaint(key);
+    promise.then(
+      ({ url, total }) => {
+        if (inFlight.get(key)?.token !== token) { URL.revokeObjectURL(url); return; }
+        inFlight.delete(key);
+        if (!live) { URL.revokeObjectURL(url); return; }
+        urls.set(key, url);
+        facts.set(key, { total });
+        states.set(key, { status: "held" });
+        repaint(key);
+      },
+      (error) => {
+        if (inFlight.get(key)?.token !== token) return;
+        inFlight.delete(key);
+        if (!live) return;
+        const code = error && typeof error === "object" ? error.code ?? null : null;
+        states.set(key, { status: "refused", code, message: error instanceof Error ? error.message : String(error), action: null, note: null });
+        repaint(key);
+      }
+    );
+  }
+
+  /** The owner's recovery click. One pending action per frame; stale answers ignored. */
+  async function act(key, action) {
+    const state = states.get(key);
+    if (!live || !state || state.status !== "refused" || state.action) return;
+    if (action === "retry") { states.delete(key); startFetch(key); return; }
+    const request =
+      action === "grant" ? options.requestGrant
+        : action === "activate" ? options.requestActivation
+          : action === "refresh" ? options.refreshSources
+            : null;
+    if (typeof request !== "function") return;
+    const attempt = { ...state, action, note: null };
+    states.set(key, attempt);
+    repaint(key);
+    let answer;
+    try {
+      answer = await request();
+    } catch (error) {
+      answer = { outcome: "unconfirmed", message: error instanceof Error ? error.message : String(error) };
+    }
+    // Closed, replaced or already moved on: this answer belongs to nobody.
+    if (!live || states.get(key) !== attempt) return;
+    if (action === "refresh") {
+      // A deliberate re-scan changed what the reference points at; read the
+      // frame once, because the owner asked for exactly that.
+      states.delete(key);
+      startFetch(key);
+      return;
+    }
+    settle(key, attempt, answer ?? { outcome: "unconfirmed" });
+  }
+
+  function settle(key, attempt, { outcome, message }) {
+    const next = { ...attempt, action: null, note: null };
+    switch (outcome) {
+      case "activated":
+        states.delete(key);
+        startFetch(key);
+        return;
+      case "activation_failed":
+        states.set(key, { ...next, code: "fetch_activation_failed", message: message || attempt.message });
+        break;
+      case "cancelled":
+        states.set(key, { ...next, note: t(locale, "drawerMediaCancelled") });
+        break;
+      case "denied":
+        states.set(key, { ...next, note: message || t(locale, "drawerMediaDenied") });
+        break;
+      case "busy":
+        states.set(key, { ...next, note: t(locale, "drawerMediaBusy") });
+        break;
+      default:
+        // Unconfirmed: the grant may have landed. Offer activation of what may
+        // already be held, which verifies before starting anything.
+        states.set(key, { ...next, code: "fetch_activation_failed", note: t(locale, "drawerMediaUnconfirmed") });
+    }
+    repaint(key);
+  }
+
+  function show(at) {
+    if (!live) return;
     if (!frames.length) { showEmpty(); return; }
     index = (at + frames.length) % frames.length;
     const frame = frames[index];
     const key = String(frame.id);
     countChip.textContent = t(locale, "drawerFrameCount", { n: index + 1, total: frames.length });
-    paintStates();
-
-    if (urls.has(key)) { showFrame(urls.get(key), frame); return; }
-    const known = states.get(key);
     kindChip.textContent = frameLabel(frame);
-    // A refused frame stays refused until the owner acts — moving between
-    // frames must not quietly spend another metered read.
-    if (known?.status === "refused") { showRefusal(key, known.code, known.message); return; }
-    showFetching();
-
-    if (!inFlight.has(key)) {
-      states.set(key, { status: "fetching" });
-      inFlight.set(key, loadMediaAsBlobUrl(rpc, item.id, key, "preview"));
-    }
-    const requested = index;
-    try {
-      const { url, total } = await inFlight.get(key);
-      if (!live) { URL.revokeObjectURL(url); return; }
-      urls.set(key, url);
-      facts.set(key, { total });
-      states.set(key, { status: "held" });
-      if (awaitingGrantFor === key) awaitingGrantFor = null;
-      paintStates();
-      if (index === requested) showFrame(url, frame);
-    } catch (error) {
-      inFlight.delete(key);
-      if (!live) return;
-      const code = error && typeof error === "object" ? error.code ?? null : null;
-      const message = error instanceof Error ? error.message : String(error);
-      states.set(key, { status: "refused", code, message });
-      paintStates();
-      if (index !== requested) return;
-      showRefusal(key, code, message);
-    }
+    // Navigating never re-reads: a held frame draws, a refused one keeps its
+    // explanation, a running read keeps running. Only an unread frame reads.
+    if (!urls.has(key) && !states.has(key)) startFetch(key);
+    repaint(key);
   }
 
   if (frames.length > 1) {
@@ -243,7 +298,6 @@ export function createMediaStage(rpc, item, locale, options = {}) {
       type: "button", class: "sl-stage-nav sl-stage-next",
       "aria-label": t(locale, "drawerFrameNext"), onclick: () => show(index + 1)
     }, "›"));
-    // Beside the frames, not among them: the strip holds one control per frame.
     stage.appendChild(readNote);
   }
 
@@ -254,20 +308,13 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     node: stage,
     strip: frames.length > 1 ? strip : null,
     frameCount: frames.length,
-    /** Consent or activation changed: retry the one frame waiting on it, nothing else. */
-    onDoorsChanged() {
-      if (!live || !awaitingGrantFor) return false;
-      const key = awaitingGrantFor;
-      const state = states.get(key);
-      if (state?.status !== "refused") return false;
-      retry(key);
-      return true;
-    },
     frameStates() {
       return frames.map((frame) => ({ id: String(frame.id), status: states.get(String(frame.id))?.status ?? "unread" }));
     },
     dispose() {
       live = false;
+      inFlight.clear();
+      states.clear();
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
     }

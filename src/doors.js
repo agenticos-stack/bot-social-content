@@ -348,11 +348,26 @@ export async function fetchMedia(env, binding, media, rendition, origin) {
  * `unknown` outcome is uncertain, never a denial; anything else refused is
  * treated as retryable, because retrying one frame is safe and cheap to undo.
  */
-const SOURCE_GONE_CODES = new Set(["not_found", "gone", "expired", "source_unavailable"]);
+/*
+ * The platform's media reasons (api `fetchProviderMedia`), carried as `code`
+ * with the outcome beside it. Older runtimes sent the outcome itself as the
+ * code (`failed_safe` / `unknown`); both shapes are read, and neither is ever
+ * inferred from the message.
+ *
+ * `media_url_gone` is a 404/410 on the MEDIA URL. Provider CDN links expire,
+ * so it says the stored link is stale — not that the post was deleted. The
+ * owner is offered a deliberate refresh of the reference, never an automatic
+ * retry loop.
+ */
+const REFERENCE_STALE_CODES = new Set(["media_url_gone"]);
+const UNUSABLE_CODES = new Set(["host_not_allowed", "unsupported_type", "too_large", "invalid_input", "redirect_refused"]);
+const UNCERTAIN_CODES = new Set(["network", "unreadable_body", "unknown"]);
 function fetchRefusal(result) {
-  if (result && SOURCE_GONE_CODES.has(result.code)) return { outcome: "failed_safe", code: "source_unavailable" };
-  if (result && result.outcome === "unknown") return { outcome: "unknown", code: "fetch_uncertain" };
-  return { outcome: "failed_safe", code: "fetch_transient" };
+  const code = result && typeof result.code === "string" ? result.code : null;
+  if (code && REFERENCE_STALE_CODES.has(code)) return { outcome: "failed_safe", code: "reference_media_stale", reason: code };
+  if (code && UNUSABLE_CODES.has(code)) return { outcome: "failed_safe", code: "media_unusable", reason: code };
+  if ((code && UNCERTAIN_CODES.has(code)) || result?.outcome === "unknown") return { outcome: "unknown", code: "fetch_uncertain", reason: code };
+  return { outcome: "failed_safe", code: "fetch_transient", reason: code };
 }
 
 /** `env.workspace.notify({ title, body, href })` — TASK-104. Never throws; logs and continues. */

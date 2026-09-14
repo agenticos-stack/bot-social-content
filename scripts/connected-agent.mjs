@@ -344,6 +344,13 @@ export async function createConnectedAgent({
    * a Studio grant gets — and the platform re-verifies their membership on
    * every socket ticket.
    */
+  /** The requirement keys the platform lists as granted in this conversation — read, never inferred. */
+  async function grantedDoorKeys() {
+    await ensureConnected(remote ? devToken : cookie);
+    const listed = await session.stub.developmentDoors();
+    return (Array.isArray(listed) ? listed : []).filter((door) => door?.granted === true).map((door) => door.requirementKey);
+  }
+
   async function grantDoor(input, currentCookie) {
     const requirementKey = input?.requirementKey;
     if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
@@ -410,6 +417,7 @@ export async function createConnectedAgent({
     },
     doors,
     grantDoor,
+    grantedDoorKeys,
     handle,
     /**
      * Point the live session at new source.

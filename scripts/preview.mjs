@@ -291,9 +291,12 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
        */
       let reloading=Promise.resolve();
       let lastHash=connectedSourceHash;
-      const refreshDoors=async()=>{
+      // `force`: an activation retry restarts the isolate even when the spec
+      // reads the same, because "consent saved but the door is missing" is
+      // exactly the case where the running env disagrees with the grant list.
+      const refreshDoors=async(force=false)=>{
         const next=await agent.doors(doorMethodsByEnvKey());
-        if(JSON.stringify(next?.spec ?? {})===JSON.stringify(doors?.spec ?? {}))return;
+        if(!force && JSON.stringify(next?.spec ?? {})===JSON.stringify(doors?.spec ?? {}))return;
         const previousDoors=doors;
         await localReady;
         localReady=new Promise(resolve=>{readyLocal=resolve;});
@@ -301,6 +304,14 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
         try { doors=next;local=await startRuntime(archive.files); }
         catch(error){doors=previousDoors;local=await startRuntime(archive.files);throw error;}
         finally{readyLocal();}
+      };
+      const activateRuntime=async(force)=>{
+        reloading=reloading.then(()=>refreshDoors(force),()=>refreshDoors(force));
+        try { await reloading; return {status:'ready'}; }
+        catch(error){
+          reloading=Promise.resolve();
+          return {status:'refresh_failed',message:`The permission is saved, but the local runtime could not start it: ${error instanceof Error?error.message:error}`};
+        }
       };
       const reload=async()=>{
         let files;
@@ -372,15 +383,26 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           }
           return {granted};
         },
+        /*
+         * Consent and activation are separate answers. A grant that saved but
+         * could not start in the running isolate returns `refresh_failed` (the
+         * API's own `GrantRuntimeRefresh` vocabulary) instead of throwing, so
+         * the host can tell the canvas to retry activation rather than ask for
+         * consent the owner already gave.
+         */
         grant:async(input,credential)=>{
           const granted=await agent.grantDoor(input,credential);
-          reloading=reloading.then(refreshDoors,refreshDoors);
-          try { await reloading; }
-          catch(error){
-            reloading=Promise.resolve();
-            throw new Error(`The door was granted, but the local runtime could not load it: ${error instanceof Error?error.message:error}`);
-          }
-          return granted;
+          return {...granted,runtime:await activateRuntime(false)};
+        },
+        /*
+         * Start a door this conversation ALREADY holds. Grants nothing: a key
+         * the platform does not list as granted is refused before any restart.
+         */
+        activate:async(input)=>{
+          const requirementKey=typeof input?.requirementKey==='string'?input.requirementKey:'';
+          const listed=await agent.grantedDoorKeys();
+          if(!listed.includes(requirementKey))throw new Error('That permission has not been granted in this conversation.');
+          return {requirementKey,runtime:await activateRuntime(true)};
         },
         agent:{
           get info(){return agent.info;},

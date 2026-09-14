@@ -1,7 +1,7 @@
 <script>
   import {onDestroy} from 'svelte';
   import {LOCAL_RPC_MAX_BYTES} from '../scripts/local-rpc-contract.mjs';
-  import {canvasGrantPersistToAgent, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
+  import {canvasGrantPersistToAgent, gadgetGrantResultMessage, parseGadgetActivateDoorMessage, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
   import {SOCIAL_LOCALIZATION_DEFINITION} from '../definition.ts';
   let {onDraftRequested = () => {}, onMutation = () => {}, revision = 0} = $props();
   let frame=$state();
@@ -49,43 +49,91 @@
   let grantStatus=$state('confirm');
   let grantError=$state('');
   let persistToAssistant=$state(false);
+  /*
+   * One open request at a time, remembered with the identity the canvas gave
+   * it, so the answer goes back to the request that asked. A second request
+   * while one is open is answered `busy`, never queued behind the dialog.
+   */
+  let activeRequest=null;
+  function reply(request,outcome,message){
+    if(!frame?.contentWindow || !request)return;
+    // Opaque sandbox origin requires '*'; only this frame's window receives it.
+    frame.contentWindow.postMessage(gadgetGrantResultMessage({requestId:request.requestId,requirementKey:request.requirementKey,outcome,message}),'*');
+  }
+  function declaredRequirement(key){
+    return SOCIAL_LOCALIZATION_DEFINITION.requirements.find(row=>row.requirementKey===key) ?? null;
+  }
+  async function readResult(response){
+    const result=await response.json().catch(()=>null);
+    return {ok:response.ok,data:result?.data,message:result?.error?.message};
+  }
   function receiveGrant(event){
-    if(!frame || event.source!==frame.contentWindow || grantStatus==='pending')return;
-    const request=parseGadgetGrantDoorMessage(event.data);
+    if(!frame || event.source!==frame.contentWindow)return;
+    const grant=parseGadgetGrantDoorMessage(event.data);
+    const activate=grant?null:parseGadgetActivateDoorMessage(event.data);
+    const request=grant ?? activate;
     if(!request)return;
-    const declared=SOCIAL_LOCALIZATION_DEFINITION.requirements.find(row=>row.requirementKey===request.requirementKey);
-    if(!declared)return;
+    const declared=declaredRequirement(request.requirementKey);
+    if(!declared){reply(request,'denied','This gadget does not declare that permission.');return;}
+    if(activeRequest){reply(request,'busy','Another permission request is still open.');return;}
+    activeRequest={...request,label:declared.label,kind:grant?'grant':'activate'};
+    if(activate){void activateDoor(activeRequest);return;}
     grantRequest={requirementKey:declared.requirementKey,label:declared.label};
     persistToAssistant=false;grantStatus='confirm';grantError='';
     if(!dialog.open)dialog.showModal();
   }
   function cancelGrant(){
     if(grantStatus==='pending')return;
+    const request=activeRequest;
+    activeRequest=null;
     grantRequest=null;grantStatus='confirm';grantError='';persistToAssistant=false;
     dialog?.close();
+    // Cancelling writes nothing, and the canvas has to hear that to stop waiting.
+    reply(request,'cancelled');
+  }
+  /*
+   * The runtime answer, not the HTTP status alone: a grant can save consent
+   * and still fail to start in the running canvas. That is its own outcome,
+   * so the canvas offers to retry activation instead of asking again.
+   */
+  function outcomeOf(data){
+    return data?.runtime?.status==='refresh_failed'?'activation_failed':'activated';
   }
   async function confirmGrant(){
-    if(!grantRequest || grantStatus==='pending')return;
+    if(!grantRequest || !activeRequest || grantStatus==='pending')return;
+    const request=activeRequest;
     grantStatus='pending';grantError='';
+    let result;
     try{
-      const response=await fetch('/api/dev/grant',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},
-        body:JSON.stringify({requirementKey:grantRequest.requirementKey,persistToAgent:canvasGrantPersistToAgent(persistToAssistant)})});
-      const result=await response.json().catch(()=>null);
-      if(!response.ok)throw new Error(result?.error?.message || 'That permission was not granted.');
-      grantRequest=null;grantStatus='confirm';persistToAssistant=false;
-      dialog?.close();
-      // The host swapped the isolate onto the new doors. Tell the canvas
-      // instead of reloading it: a reload threw away the open drawer, the
-      // frames already loaded, the selection and any unsaved caption, which
-      // is exactly what an owner granting from a blocked frame is in the
-      // middle of. The canvas re-reads its door status and retries only the
-      // frame that asked.
-      const granted=grantRequest?.requirementKey;
-      port?.postMessage({event:{type:'doors_changed',requirementKey:granted}});
+      result=await readResult(await fetch('/api/dev/grant',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},
+        body:JSON.stringify({requirementKey:request.requirementKey,persistToAgent:canvasGrantPersistToAgent(persistToAssistant)})}));
     }catch(error){
+      // The request may or may not have landed; say so rather than guess.
+      activeRequest=null;grantRequest=null;grantStatus='confirm';persistToAssistant=false;dialog?.close();
+      reply(request,'unconfirmed',error instanceof Error?error.message:'The grant could not be confirmed.');
+      return;
+    }
+    if(!result.ok){
       // The refusal stays on screen until the owner cancels or tries again.
       grantStatus='failed';
-      grantError=error instanceof Error?error.message:'That permission was not granted.';
+      grantError=result.message || 'That permission was not granted.';
+      return;
+    }
+    activeRequest=null;grantRequest=null;grantStatus='confirm';persistToAssistant=false;
+    dialog?.close();
+    // No canvas reload: the open drawer, loaded frames, selection and unsaved
+    // edits belong to the owner's work in progress.
+    reply(request,outcomeOf(result.data),result.data?.runtime?.message);
+  }
+  async function activateDoor(request){
+    try{
+      const result=await readResult(await fetch('/api/dev/activate',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},
+        body:JSON.stringify({requirementKey:request.requirementKey})}));
+      reply(request,result.ok?outcomeOf(result.data):'denied',result.ok?result.data?.runtime?.message:result.message);
+    }catch(error){
+      reply(request,'unconfirmed',error instanceof Error?error.message:'Activation could not be confirmed.');
+    }finally{
+      if(activeRequest===request)activeRequest=null;
     }
   }
   /*

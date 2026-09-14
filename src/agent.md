@@ -160,8 +160,12 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
 
   You name the attachment — you never carry its bytes. The host fetches
   them through the authenticated attachment route and delivers them to the
-  gadget afterwards; `generatedImage` on the item reports `ready` when the
-  bytes actually landed. A `ready` generated image only ships when the
+  gadget afterwards. Always pass the item's CURRENT `generation.id`: an id
+  from an older ask is stored as stale history that answers nothing, and a
+  `saveRevision`/`savePoster` carrying an old id is refused with
+  `generation_request_stale`. `generatedImage` on the item is the image the
+  current revision accepted; a newer upload shows as `generatedCandidate`
+  and reports `ready` when its bytes actually landed. A `ready` generated image only ships when the
   revision's visual mode is `ai_refinement` (`acceptedVisualMode` on
   saveRevision, or the owner's own pick in the drawer); no text poster and no source photo is ever
   swapped in when it is not.

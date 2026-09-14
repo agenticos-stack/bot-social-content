@@ -1607,7 +1607,23 @@ export class Gadget extends DurableObject {
       claimsRequiringConfirmation: config?.claimsRequiringConfirmation
     });
     const currentPoster = this.storage.getPoster(batchItem.id, batchItem.currentRevision);
-    const generatedImage = this.storage.latestGeneratedMedia(batchItem.id);
+    /*
+     * The ACCEPTED image is the one the current revision pinned — never
+     * "whatever registered last", which a late or newer registration could
+     * swap without the revision changing. A newer non-stale registration is
+     * surfaced separately as the candidate, so "new image in progress" never
+     * replaces what the owner reviewed.
+     */
+    const pinnedImage =
+      latest?.acceptedVisualMode === "ai_refinement" && latest.acceptedGeneratedMediaId
+        ? this.storage.getGeneratedMedia(latest.acceptedGeneratedMediaId)
+        : null;
+    const generatedImage = pinnedImage && pinnedImage.batchItemId === batchItem.id ? pinnedImage : null;
+    const candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id);
+    const generatedCandidate =
+      candidateRow && candidateRow.id !== generatedImage?.id && (!generatedImage || candidateRow.seq > generatedImage.seq)
+        ? candidateRow
+        : null;
     const publications = this.storage.publicationsFor(batchItem.id);
     const targets = batchItem.targets ?? [];
     // §9.A — one presentation policy everywhere. The phase reads live
@@ -1653,19 +1669,15 @@ export class Gadget extends DurableObject {
       // to see (and re-render) that rather than file a post that holds.
       posterStored: currentPoster !== null,
       posterMimeType: currentPoster ? posterMimeType(currentPoster.bytes).mimeType : null,
-      // The accepted AI-generated image for this post, when the
-      // attachment→gadget transfer delivered one. `ready` means its bytes
-      // are stored — `attachmentId` is the platform upload's identity.
-      generatedImage: generatedImage
-        ? {
-            id: generatedImage.id,
-            ready: generatedImage.bytes != null,
-            mimeType: generatedImage.mimeType,
-            altText: generatedImage.altText,
-            attachmentId: generatedImage.attachmentId,
-            deliveredAt: generatedImage.deliveredAt
-          }
-        : null,
+      // The AI-generated image the CURRENT revision accepted (pinned under
+      // `ai_refinement`). `ready` means its bytes are stored; `digest` is the
+      // delivered bytes' fingerprint; `attachmentId` the platform upload.
+      generatedImage: generatedImage ? projectGeneratedMedia(generatedImage) : null,
+      // The newest non-stale registration that is NOT the accepted one —
+      // pending (`ready: false`) or ready to be picked with
+      // `saveRevision({ acceptedVisualMode: "ai_refinement",
+      // acceptedGeneratedMediaId })`. Never ships until a revision pins it.
+      generatedCandidate: generatedCandidate ? projectGeneratedMedia(generatedCandidate) : null,
       confirmedClaims: latest?.confirmedClaims ?? [],
       refinementBrief: latest?.refinementBrief ?? normalizeRefinementBrief(this.storage.getConfig()?.refinementBrief),
       protectedOverrides: latest?.protectedOverrides ?? [],
@@ -1799,7 +1811,8 @@ export class Gadget extends DurableObject {
     publicationIntent,
     acceptedVisualMode,
     ledger,
-    generationRequest
+    generationRequest,
+    acceptedGeneratedMediaId
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -1808,6 +1821,9 @@ export class Gadget extends DurableObject {
         issues: [{ code: "batch_item_unknown", severity: "block", message: `No batch item ${batchItemId}.` }]
       };
     }
+    // Late work from a superseded ask must not overwrite the newer draft.
+    const staleIssue = staleGenerationIssue(batchItem, generationRequest);
+    if (staleIssue) return { ok: false, issues: [staleIssue] };
 
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
@@ -1921,6 +1937,49 @@ export class Gadget extends DurableObject {
     const derived =
       derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
+    /*
+     * The accepted generated asset, pinned on the revision. An explicit
+     * `acceptedGeneratedMediaId` must be this item's DELIVERED row (a stale
+     * row is allowed only when named explicitly — the owner may keep late
+     * bytes). Otherwise a revision that was already `ai_refinement` carries
+     * its pin forward unchanged (a caption-only save never swaps the image),
+     * and a fresh switch to `ai_refinement` pins the newest ready, non-stale
+     * row — or nothing yet, which filing refuses as `generated_image_required`.
+     */
+    let pinnedId = null;
+    let pinnedDigest = null;
+    if (acceptedGeneratedMediaId !== undefined && acceptedGeneratedMediaId !== null) {
+      const row = typeof acceptedGeneratedMediaId === "string" ? this.storage.getGeneratedMedia(acceptedGeneratedMediaId) : null;
+      if (visualMode !== "ai_refinement" || !row || row.batchItemId !== batchItemId || !row.bytes) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generated_media_invalid",
+              severity: "block",
+              message:
+                visualMode !== "ai_refinement"
+                  ? "A generated image can only be accepted with the generated-image visual."
+                  : "That generated image does not belong to this post or has not arrived yet."
+            }
+          ]
+        };
+      }
+      pinnedId = row.id;
+      pinnedDigest = await digestBytes(row.bytes);
+    } else if (visualMode === "ai_refinement") {
+      if (previous?.acceptedVisualMode === "ai_refinement" && previous.acceptedGeneratedMediaId) {
+        pinnedId = previous.acceptedGeneratedMediaId;
+        pinnedDigest = previous.acceptedGeneratedMediaDigest ?? null;
+      } else {
+        const row = this.storage.latestCandidateGeneratedMedia(batchItemId, { ready: true });
+        if (row?.bytes) {
+          pinnedId = row.id;
+          pinnedDigest = await digestBytes(row.bytes);
+        }
+      }
+    }
+
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption: effectiveCaption,
       posterLayout: layout,
@@ -1932,7 +1991,9 @@ export class Gadget extends DurableObject {
       derivedMediaRefs: derived,
       publicationIntent: intent.intent,
       ledger: storedLedger,
-      acceptedVisualMode: visualMode
+      acceptedVisualMode: visualMode,
+      acceptedGeneratedMediaId: pinnedId,
+      acceptedGeneratedMediaDigest: pinnedDigest
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -1969,6 +2030,9 @@ export class Gadget extends DurableObject {
         issues: [{ code: "batch_item_unknown", severity: "block", message: `No batch item ${batchItemId}.` }]
       };
     }
+
+    const staleIssue = staleGenerationIssue(batchItem, generationRequest);
+    if (staleIssue) return { ok: false, issues: [staleIssue] };
 
     const bytes = toBytes(png);
     // A caller bug, not an owner-facing condition — `steps.js`'s
@@ -2043,7 +2107,9 @@ export class Gadget extends DurableObject {
       ledger: previous?.ledger ?? { spans: [], media: [] },
       // A poster materialization is not a visual-mode pick — carry the one
       // the revision already holds so a re-render can't silently revert it.
-      acceptedVisualMode: previous?.acceptedVisualMode ?? null
+      acceptedVisualMode: previous?.acceptedVisualMode ?? null,
+      acceptedGeneratedMediaId: previous?.acceptedGeneratedMediaId ?? null,
+      acceptedGeneratedMediaDigest: previous?.acceptedGeneratedMediaDigest ?? null
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -2086,20 +2152,29 @@ export class Gadget extends DurableObject {
       };
     }
     const id = generateId("gm");
+    /*
+     * The stamp is the CALLER's request id, validated against the item's
+     * current mark — never the mark read here, which would relabel an old
+     * job's image as the answer to a newer ask. A mismatched id (superseded,
+     * already answered, or no mark at all) is kept as explicit stale history:
+     * its delivery satisfies nothing and it is never auto-accepted. No id at
+     * all is unattributed — it answers no mark, pending or not.
+     */
+    const request = typeof generationRequest === "string" && generationRequest ? generationRequest : null;
+    const stale = request !== null && staleGenerationIssue(batchItem, request) !== null;
     this.storage.saveGeneratedMedia({
       id,
       batchItemId,
       attachmentId: typeof attachmentId === "string" ? attachmentId : null,
       altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
       mimeType: typeof mimeType === "string" ? mimeType : null,
-      // The stamp is the item's CURRENT mark id, read here — a caller echoing
-      // an older request id cannot correlate its delivery to a newer ask.
-      generationRequest: generationMark(batchItem.generation)?.id ?? null
+      generationRequest: request,
+      stale
     });
     // Registering the asset does not satisfy the mark — only delivered
     // bytes do (deliverGeneratedImage). The row just records WHICH upload
     // answers the ask, so a later byte delivery can be correlated.
-    return { ok: true, id };
+    return { ok: true, id, generationRequest: request, stale };
   }
 
   /** Registrations still waiting on bytes — the delivery sweep's read. */
@@ -2145,7 +2220,11 @@ export class Gadget extends DurableObject {
         issues: [{ code: "generated_media_not_image", severity: "block", message: "The delivered file is not a PNG or JPEG image." }]
       };
     }
-    const stored = this.storage.deliverGeneratedMedia(row.id, { bytes: payload, mimeType: format });
+    const stored = this.storage.deliverGeneratedMedia(row.id, {
+      bytes: payload,
+      mimeType: format,
+      contentDigest: await digestBytes(payload)
+    });
     /*
      * Correlation rides on the STORED stamp, never a caller's echo: the
      * registration recorded which ask it answered, and a delivery clears
@@ -2153,7 +2232,7 @@ export class Gadget extends DurableObject {
      * registration made with no ask pending — or delivered after its ask
      * was superseded — keeps its bytes but touches no mark.
      */
-    if (row.generationRequest) {
+    if (row.generationRequest && !row.stale) {
       this.storage.satisfyItemGeneration(row.batchItemId, {
         request: row.generationRequest,
         needs: { image: true }
@@ -2356,8 +2435,29 @@ export class Gadget extends DurableObject {
      * `ai_refinement` chosen but no bytes delivered is not "fine": for an
      * open source that is the same refusal the missing poster gets.
      */
-    const generatedImage = this.storage.latestGeneratedMedia(batchItemId);
+    /*
+     * The asset shipped is the one THIS revision pinned (migration 16), never
+     * the newest registration — a later image cannot change what files
+     * without a new revision. A pin whose bytes changed since review (a
+     * re-delivery to the same row) refuses rather than filing unseen pixels.
+     */
     const wantsGenerated = revision.acceptedVisualMode === "ai_refinement";
+    const pinnedRow =
+      wantsGenerated && revision.acceptedGeneratedMediaId
+        ? this.storage.getGeneratedMedia(revision.acceptedGeneratedMediaId)
+        : null;
+    const generatedImage = pinnedRow && pinnedRow.batchItemId === batchItemId && pinnedRow.bytes ? pinnedRow : null;
+    if (generatedImage && revision.acceptedGeneratedMediaDigest) {
+      const digest = await digestBytes(generatedImage.bytes);
+      if (digest !== revision.acceptedGeneratedMediaDigest) {
+        return {
+          ok: false,
+          code: "generated_image_changed",
+          message:
+            "The generated image stored for this post no longer matches the one that was reviewed. Nothing was filed; review the image and save again."
+        };
+      }
+    }
     if (wantsGenerated && generatedImage?.bytes) {
       const { mimeType, extension } = posterMimeType(generatedImage.bytes);
       const jpegOnly = bindings.some((binding) =>
@@ -3154,6 +3254,51 @@ function duplicatePublicationRefusal(conflictsByBinding, itemId) {
       `${itemId} already has an active publication to ${bindings.join(", ")} in ${where}.` +
       " Open it, or create a new version to send this post there again.",
     duplicates
+  };
+}
+
+/**
+ * The fingerprint a revision pins its generated asset by. WebCrypto SHA-256
+ * where the runtime has it (workerd and Node both do); `length:<n>` only as
+ * a documented fallback — weaker, still compared literally.
+ */
+async function digestBytes(bytes) {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle && typeof subtle.digest === "function") {
+    const hash = new Uint8Array(await subtle.digest("SHA-256", bytes));
+    return `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `length:${bytes.byteLength}`;
+}
+
+/**
+ * A caller-supplied `generationRequest` that is not the item's current mark
+ * id is late work from a superseded (or already answered) ask. Returns the
+ * block issue, or null when the id is absent or current.
+ */
+function staleGenerationIssue(batchItem, generationRequest) {
+  if (typeof generationRequest !== "string" || !generationRequest) return null;
+  const mark = generationMark(batchItem.generation);
+  if (mark?.id && mark.id === generationRequest) return null;
+  return {
+    code: "generation_request_stale",
+    severity: "block",
+    message: "This work answers a generation request that is no longer the post's current one, so it was not saved over the newer draft."
+  };
+}
+
+/** The client-facing shape of one generated_media row. */
+function projectGeneratedMedia(row) {
+  return {
+    id: row.id,
+    ready: row.bytes != null,
+    mimeType: row.mimeType,
+    altText: row.altText,
+    attachmentId: row.attachmentId,
+    deliveredAt: row.deliveredAt,
+    digest: row.contentDigest,
+    generationRequest: row.generationRequest,
+    stale: row.stale
   };
 }
 

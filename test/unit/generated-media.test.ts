@@ -186,8 +186,15 @@ describe("generated image registration and delivery", () => {
     const gadget = new Gadget(ctx as never, mockSocial([], []) as never);
     seed(gadget);
 
-    await gadget.requestGeneration("batch-1", ["item-1"]);
-    const registered = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "u", altText: null });
+    const ask = (await gadget.requestGeneration("batch-1", ["item-1"])).request;
+    // The caller echoes the ask it answers — an unattributed registration
+    // no longer borrows the pending mark (generation-correlation.test.ts).
+    const registered = await gadget.saveGeneratedImage({
+      batchItemId: "item-1",
+      attachmentId: "u",
+      altText: null,
+      generationRequest: ask
+    });
     await gadget.deliverGeneratedImage({ id: registered.id, bytes: JPEG });
     expect(JSON.parse(gadget.storage.getBatchItem("item-1").generation).needs).toEqual({ caption: true, image: false });
 

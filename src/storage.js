@@ -28,7 +28,7 @@ import {
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -454,6 +454,38 @@ const MIGRATIONS = {
    */
   15(sql) {
     sql.exec("ALTER TABLE revisions ADD COLUMN accepted_visual_mode TEXT");
+  },
+
+  /*
+   * Generation continuity (QA d57d357 "existing generation acceptance
+   * risks"). Two facts that used to be inferred at read time are stored:
+   *
+   * - `generated_media.stale` — the registration named a generation request
+   *   that was not the item's current mark. It keeps the caller's id (so it
+   *   is honest history), never satisfies a mark, and is never auto-accepted.
+   *   `content_digest` is the delivered bytes' fingerprint
+   *   (`sha256:<hex>`, or `length:<n>` where WebCrypto is absent).
+   * - `revisions.accepted_generated_media_id` / `_digest` — the exact asset
+   *   an `ai_refinement` revision was reviewed with. Filing ships that asset
+   *   and nothing newer.
+   *
+   * LEGACY BACKFILL. An existing `ai_refinement` revision pins the item's
+   * newest DELIVERED row — exactly what filing would have shipped before this
+   * migration, frozen so a later registration can no longer move it. SQL
+   * cannot hash, so backfilled pins and pre-16 rows carry a NULL digest;
+   * filing then checks identity and delivery but has no digest to compare.
+   */
+  16(sql) {
+    sql.exec("ALTER TABLE generated_media ADD COLUMN stale INTEGER NOT NULL DEFAULT 0");
+    sql.exec("ALTER TABLE generated_media ADD COLUMN content_digest TEXT");
+    sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_id TEXT");
+    sql.exec("ALTER TABLE revisions ADD COLUMN accepted_generated_media_digest TEXT");
+    sql.exec(`UPDATE revisions SET accepted_generated_media_id = (
+        SELECT gm.id FROM generated_media gm
+        WHERE gm.batch_item_id = revisions.batch_item_id AND gm.bytes IS NOT NULL
+        ORDER BY gm.created_at DESC, gm.rowid DESC LIMIT 1
+      )
+      WHERE accepted_visual_mode = 'ai_refinement' AND accepted_generated_media_id IS NULL`);
   }
 };
 
@@ -1635,8 +1667,9 @@ export class Storage {
         `INSERT INTO revisions (
           batch_item_id, revision, caption, poster_layout_json, confirmed_claims_json, issues_json,
           refinement_brief_json, protected_overrides_json, original_media_refs_json, derived_media_refs_json,
-          publication_intent_json, ledger_json, accepted_visual_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          publication_intent_json, ledger_json, accepted_visual_mode,
+          accepted_generated_media_id, accepted_generated_media_digest, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         batchItemId,
         next,
         patch.caption ?? null,
@@ -1650,6 +1683,8 @@ export class Storage {
         patch.publicationIntent ? JSON.stringify(patch.publicationIntent) : null,
         patch.ledger ? JSON.stringify(patch.ledger) : null,
         patch.acceptedVisualMode ?? null,
+        patch.acceptedGeneratedMediaId ?? null,
+        patch.acceptedGeneratedMediaDigest ?? null,
         nowIso()
       );
       this.sql.exec(
@@ -1749,10 +1784,18 @@ export class Storage {
    * `deliverGeneratedMedia` — image payloads never ride inside a model's
    * tool result.
    */
-  saveGeneratedMedia({ id, batchItemId, attachmentId = null, altText = null, mimeType = null, generationRequest = null }) {
+  saveGeneratedMedia({
+    id,
+    batchItemId,
+    attachmentId = null,
+    altText = null,
+    mimeType = null,
+    generationRequest = null,
+    stale = false
+  }) {
     this.sql.exec(
-      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, stale, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          attachment_id = excluded.attachment_id, alt_text = excluded.alt_text`,
       id,
@@ -1761,17 +1804,19 @@ export class Storage {
       mimeType,
       altText,
       generationRequest,
+      stale ? 1 : 0,
       nowIso()
     );
   }
 
   /** Fill in the bytes for a registered row. Returns the hydrated row. */
-  deliverGeneratedMedia(id, { bytes, mimeType }) {
+  deliverGeneratedMedia(id, { bytes, mimeType, contentDigest = null }) {
     this.sql.exec(
-      "UPDATE generated_media SET bytes = ?, byte_length = ?, mime_type = ?, delivered_at = ? WHERE id = ?",
+      "UPDATE generated_media SET bytes = ?, byte_length = ?, mime_type = ?, content_digest = ?, delivered_at = ? WHERE id = ?",
       bytes,
       bytes?.byteLength ?? 0,
       mimeType,
+      contentDigest,
       nowIso(),
       id
     );
@@ -1779,7 +1824,7 @@ export class Storage {
   }
 
   getGeneratedMedia(id) {
-    const row = rows(this.sql.exec("SELECT * FROM generated_media WHERE id = ?", id))[0];
+    const row = rows(this.sql.exec("SELECT rowid AS seq, * FROM generated_media WHERE id = ?", id))[0];
     return row ? hydrateGeneratedMedia(row) : null;
   }
 
@@ -1787,7 +1832,25 @@ export class Storage {
   latestGeneratedMedia(batchItemId) {
     const row = rows(
       this.sql.exec(
-        "SELECT * FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        // rowid breaks a same-millisecond tie in insertion order; a random id does not.
+        "SELECT rowid AS seq, * FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        batchItemId
+      )
+    )[0];
+    return row ? hydrateGeneratedMedia(row) : null;
+  }
+
+  /**
+   * The newest NON-STALE registration for a post, delivered or not — the
+   * candidate a UI may offer beside the accepted image. `ready` narrows it
+   * to rows whose bytes landed (what an `ai_refinement` save pins by default).
+   */
+  latestCandidateGeneratedMedia(batchItemId, { ready = false } = {}) {
+    const row = rows(
+      this.sql.exec(
+        `SELECT rowid AS seq, * FROM generated_media
+         WHERE batch_item_id = ? AND stale = 0 ${ready ? "AND bytes IS NOT NULL" : ""}
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
         batchItemId
       )
     )[0];
@@ -1796,7 +1859,7 @@ export class Storage {
 
   /** Registrations whose bytes never arrived — the delivery sweep reads these. */
   pendingGeneratedMedia() {
-    return rows(this.sql.exec("SELECT * FROM generated_media WHERE bytes IS NULL ORDER BY created_at")).map(
+    return rows(this.sql.exec("SELECT rowid AS seq, * FROM generated_media WHERE bytes IS NULL ORDER BY created_at, rowid")).map(
       hydrateGeneratedMedia
     );
   }
@@ -1959,6 +2022,10 @@ function hydrateGeneratedMedia(row) {
     byteLength: row.byte_length ?? null,
     altText: row.alt_text ?? null,
     generationRequest: row.generation_request ?? null,
+    stale: Number(row.stale ?? 0) === 1,
+    contentDigest: row.content_digest ?? null,
+    // Insertion order (rowid) — orders rows created in the same millisecond.
+    seq: row.seq == null ? null : Number(row.seq),
     createdAt: row.created_at,
     deliveredAt: row.delivered_at ?? null
   };
@@ -2076,6 +2143,9 @@ function hydrateRevision(row) {
     // The owner's explicit visual pick for this revision — NULL is "no pick
     // recorded", which is not the same as `keep_original` (see migration 15).
     acceptedVisualMode: row.accepted_visual_mode ?? null,
+    // The exact generated asset this revision was reviewed with (migration 16).
+    acceptedGeneratedMediaId: row.accepted_generated_media_id ?? null,
+    acceptedGeneratedMediaDigest: row.accepted_generated_media_digest ?? null,
     createdAt: row.created_at
   };
 }

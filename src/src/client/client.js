@@ -33,6 +33,7 @@ import { resolveLocale, t } from "./i18n.js";
 import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
+import { newGrantRequestId, parseGadgetGrantResultMessage } from "../../grant-request.js";
 import { computePosterLayout, drawPoster, renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
 import { detectProtectedLiterals, generationMark, itemPresentation } from "../../model.js";
@@ -59,6 +60,7 @@ import {
   publicationStateSummary,
   refusalMessage,
   renderPublish,
+  releaseReviewImages,
   renderSetup,
   resumeBatch,
   setPublishError,
@@ -753,19 +755,48 @@ function App() {
   }
 
   /*
-   * Media stages that are on screen, so a host `doors_changed` event can hand
-   * the consent/activation change to the one frame that asked for it.
+   * The host's answers to door requests, correlated by request id and
+   * requirement key. Only the parent window speaks for the host; an answer
+   * nobody is waiting for is dropped, so a grant for another door (or an old
+   * request's late reply) cannot start work here.
    */
-  const liveStages = new Set();
-  function mediaStageFor(target) {
-    const stage = createMediaStage(rpc, target, locale, {
-      onGrantFetch: () => window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "metered_fetch" }, "*"),
-      onRecheck: () => refreshSummary()
+  const pendingDoorRequests = new Map();
+  // A sandboxed canvas always has a window to listen on; guarded so the
+  // client still boots where there is none (unit shims, a detached render).
+  if (typeof window.addEventListener === "function") window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const result = parseGadgetGrantResultMessage(event.data);
+    if (!result?.requestId) return;
+    const pending = pendingDoorRequests.get(result.requestId);
+    if (!pending || pending.requirementKey !== result.requirementKey) return;
+    pendingDoorRequests.delete(result.requestId);
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve({ outcome: result.outcome, message: result.message });
+  });
+  function askHost(type, requirementKey, timeoutMs) {
+    const requestId = newGrantRequestId();
+    return new Promise((resolve) => {
+      const timer = timeoutMs
+        ? setTimeout(() => {
+            if (!pendingDoorRequests.delete(requestId)) return;
+            resolve({ outcome: "unconfirmed", message: null });
+          }, timeoutMs)
+        : null;
+      pendingDoorRequests.set(requestId, { requirementKey, resolve, timer });
+      window.parent.postMessage({ type, requirementKey, requestId }, "*");
     });
-    const dispose = stage.dispose;
-    stage.dispose = () => { liveStages.delete(stage); dispose(); };
-    liveStages.add(stage);
-    return stage;
+  }
+  // Consent waits on the owner, so it has no deadline; activation is a
+  // machine answer and is unconfirmed if it does not arrive in time.
+  const requestDoorGrant = (requirementKey) => askHost("gadget:grant-door", requirementKey, 0);
+  const requestDoorActivation = (requirementKey) => askHost("gadget:activate-door", requirementKey, 45_000);
+
+  function mediaStageFor(target) {
+    return createMediaStage(rpc, target, locale, {
+      requestGrant: () => requestDoorGrant("metered_fetch"),
+      requestActivation: () => requestDoorActivation("metered_fetch"),
+      refreshSources: () => collectionHandlers.onRefresh()
+    });
   }
 
   function announce(title, body, action) {
@@ -1952,6 +1983,9 @@ function App() {
   const wizardHandlers = {
     // Review draws the same accepted generated image the drawer shows.
     loadGeneratedImage: (id) => loadGeneratedImageAsBlobUrl(rpc, id),
+    // A review image finished loading, decoding or failing: redraw so the
+    // card's submit reflects whether the approver can actually see it.
+    onReviewImageState: () => { if (wizard.step === "publish") renderCurrentView(); },
     // --- Publish step: the send decision is per item, made at submit -------
     onToggleBinding: (id, binding) => {
       wizard = togglePublishBinding(wizard, id, binding);
@@ -2129,6 +2163,8 @@ function App() {
   function renderCurrentView() {
     if (!summary?.configured) return; // setup screen owns viewHost until configured
     if (!wizard.batch) {
+      // Leaving Review releases the image object URLs it owned.
+      releaseReviewImages();
       const section = activeSection || 'sources';
       const body = el('div');
       const navigation = el('nav', { class: 'sl-main-nav', 'aria-label': t(locale, 'appTitle') }, [
@@ -2290,8 +2326,24 @@ function App() {
        * additive re-derive; what it added (or that it added nothing) is said
        * beside the button.
        */
-      onGrantFetch: () => {
-        window.parent.postMessage({ type: "gadget:grant-door", requirementKey: "metered_fetch" }, "*");
+      onGrantFetch: async () => {
+        if (grantsBusy) return;
+        grantsBusy = true;
+        grantsNote = null;
+        draw();
+        const answer = await requestDoorGrant("metered_fetch");
+        // Re-read what is granted and redraw THIS form: the draft, the open
+        // sources and anything typed stay exactly as they were.
+        await refreshSummary().catch(() => {});
+        grantsBusy = false;
+        grantsNote =
+          answer.outcome === "activated" ? null
+            : answer.outcome === "activation_failed" ? t(locale, "drawerMediaActivationBody")
+              : answer.outcome === "cancelled" ? t(locale, "drawerMediaCancelled")
+                : answer.outcome === "busy" ? t(locale, "drawerMediaBusy")
+                  : answer.outcome === "unconfirmed" ? t(locale, "drawerMediaUnconfirmed")
+                    : answer.message || t(locale, "drawerMediaDenied");
+        draw();
       },
 
       onRefreshGrants: async () => {
@@ -2415,15 +2467,6 @@ function App() {
   }
 
   async function handleOperation(event) {
-    if (event?.type === "doors_changed") {
-      // Re-read what the runtime now reports, in place. Nothing re-renders
-      // the drawer, so loaded frames, selection and unsaved edits stay; only
-      // a frame that was waiting on this answer is fetched again.
-      await refreshSummary();
-      if (!summary?.configured) { await runSetup(); return; }
-      for (const stage of liveStages) stage.onDoorsChanged();
-      return;
-    }
     if(event?.type==='drafts_changed'){
       await refreshSummary();
       inboxState=setInboxSummaries(inboxState,await rpc.listBatchSummaries({limit:50}));
