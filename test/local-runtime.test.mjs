@@ -80,3 +80,39 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
     assert.equal(typeof stillValid.counts.total, 'number');
   } finally { await session?.dispose(); await rm(root,{recursive:true,force:true}); }
 });
+
+test('browser bridge carries image bytes to generated and derived image saves', {skip: !process.env.BOT_SDK_SOURCE}, async () => {
+  const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
+  const names = manifest.files.filter(name => name.endsWith('.js') && name !== 'client.js');
+  const files = Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(new URL('../src/'+name, import.meta.url), 'utf8')])));
+  const origin = 'http://localhost:17921';
+  const root = await mkdtemp(join(tmpdir(),'social-bytes-test-'));
+  let session;
+  try {
+    session = await createSocialRuntime({files, sdkSource: process.env.BOT_SDK_SOURCE, origins:[origin], stateDirectory:join(root,'state')});
+    const sent = [];
+    const browser = {location:{origin}, btoa, parent:{postMessage(){}},
+      fetch: async (url, options) => { sent.push(options.body.length); return session.handle(new Request(origin+url, {...options,headers:{...options.headers,origin}})); }};
+    const { DECODE_BYTES_SOURCE } = await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE, 'packages/testkit/src/rpc-bytes.js')));
+    runInNewContext(browserBridge(session.token, DECODE_BYTES_SOURCE), browser);
+    const gadget = browser.gadget;
+    const created = await gadget.createBatch({itemIds:['fixture-0'], destinationBindings:['LOCAL_DRAFT']});
+    const batchId = created.batch?.id ?? created.id ?? created.batchId;
+    const item = (await gadget.getBatch(batchId)).items[0];
+    const png = new Uint8Array(40 * 1024); png.set([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+    const jpeg = new Uint8Array(20 * 1024); jpeg.set([0xff,0xd8,0xff,0xe0]);
+    const registered = await gadget.saveGeneratedImage({batchItemId:item.id, attachmentId:'synthetic', mimeType:'image/png'});
+    const delivered = await gadget.deliverGeneratedImage({id:registered.id, bytes:png});
+    assert.equal(delivered.ok, true);
+    assert.equal(delivered.byteLength, png.byteLength);
+    const derived = await gadget.saveDerivedGeneratedImage({sourceMediaId:registered.id, bytes:jpeg, mimeType:'image/jpeg'});
+    assert.equal(derived.ok, true, JSON.stringify(derived));
+    assert.notEqual(derived.id, registered.id);
+    // Base64 is ~1.33x the bytes; an index-keyed object would be several times
+    // that, and over the local session's 64 KB request cap.
+    assert.ok(Math.max(...sent) < png.byteLength * 1.5, `largest request ${Math.max(...sent)} bytes`);
+  } finally {
+    await session?.close?.();
+    await rm(root, {recursive:true, force:true});
+  }
+});

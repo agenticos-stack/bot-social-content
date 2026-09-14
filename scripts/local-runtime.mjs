@@ -67,7 +67,7 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * sweep's poll. Absent from `browsing` the whole contract silently
    * refused at the session gate.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage','saveDerivedGeneratedImage'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
@@ -82,8 +82,23 @@ export function browserBridge(token, decodeBytes) {
   return `
   ${decodeBytes}
   globalThis.RpcTarget = class {};
+  // JSON has no bytes: a Uint8Array would serialise as an index-keyed object
+  // (~10x larger, and unreadable to toBytes). Send base64, which the server's
+  // byte arguments already accept.
+  function __botArgBytes(value) {
+    if (value instanceof ArrayBuffer) value = new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return btoa(binary);
+    }
+    if (Array.isArray(value)) return value.map(__botArgBytes);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, __botArgBytes(entry)]));
+    return value;
+  }
   async function localCall(method, args) {
-    const response = await fetch('/local-rpc', {method:'POST',credentials:'omit',headers:{'content-type':'application/json','x-bot-local-session':${JSON.stringify(token)}},body:JSON.stringify({method,args})});
+    const response = await fetch('/local-rpc', {method:'POST',credentials:'omit',headers:{'content-type':'application/json','x-bot-local-session':${JSON.stringify(token)}},body:JSON.stringify({method,args:__botArgBytes(args)})});
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error('Local runtime: '+(result.error || 'call failed')+'. Agent, provider, setup and publishing actions are unavailable.');
     return __botDecodeBytes(result.value);
