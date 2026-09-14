@@ -92,7 +92,7 @@
   });
   async function generate(batchId){
     busy=true;error='';failedDraft=null;
-    messages=[...messages,{role:'user',text:'Generate captions and posters for the selected references.'}];
+    messages=[...messages,{role:'user',text:'Generate an image and a caption for each selected reference, using the saved instructions.'}];
     try{
       const result=await request({operation:'draft',batchId});
       addAssistant(result?.result);

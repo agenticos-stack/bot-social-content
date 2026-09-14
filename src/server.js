@@ -1546,7 +1546,14 @@ export class Gadget extends DurableObject {
         // Requested (immutable) vs remaining (mutable) — see setGeneration.
         scope: { caption: true, image: true },
         needs: { caption: true, image: true },
-        at: new Date().toISOString()
+        at: new Date().toISOString(),
+        // The same snapshot requestGeneration stamps: the instructions this
+        // first ask was made under, so the drawer can say what produced the
+        // output even when the owner never pressed Regenerate.
+        instructions: (() => {
+          const effective = effectiveInstructions(this.storage.getConfig(), null);
+          return { image: effective.image.text, caption: effective.caption.text };
+        })()
       })
     });
     for (const binding of destinationBindings) {

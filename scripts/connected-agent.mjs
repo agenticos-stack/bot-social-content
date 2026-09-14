@@ -12,6 +12,28 @@ import {
 
 const SESSION_FILE = 'agent-session.json';
 const MAX_MESSAGE_LENGTH = 16_000;
+const MAX_INSTRUCTIONS_LENGTH = 64_000;
+
+/**
+ * The text of one agent turn, from what a person typed and, separately, the
+ * gadget's own instructions.
+ *
+ * The 16,000-character cap is for the MESSAGE — what the owner (or the host,
+ * speaking for the owner) asks. A development registration carries no files
+ * the agent can read, so the host hands the gadget's `agent.md` over with the
+ * turn; that document is not the owner's message and is bounded on its own.
+ * Folding it into the message made every draft exceed the cap once the notes
+ * grew past it, and no turn started at all.
+ */
+export function composeRunMessage(input) {
+  const message = typeof input?.message === 'string' ? input.message.trim() : '';
+  if (!message || message.length > MAX_MESSAGE_LENGTH) throw new Error('Enter a message up to 16,000 characters.');
+  if (input?.instructions === undefined || input?.instructions === null) return message;
+  if (typeof input.instructions !== 'string') throw new Error('Gadget instructions must be text.');
+  const instructions = input.instructions.trim();
+  if (instructions.length > MAX_INSTRUCTIONS_LENGTH) throw new Error('Gadget instructions exceed 64,000 characters.');
+  return instructions ? `${message}\n\n${instructions}` : message;
+}
 
 // The API issues a hard 30-minute lease and revokes on replacement, socket
 // break, unsubscribe or expiry (workers/api/src/v2/development-gadget-registration.ts).
@@ -249,10 +271,7 @@ export async function createConnectedAgent({
     const operation = input.operation;
     if (!['run', 'pending', 'answer', 'history'].includes(operation)) throw new Error('Unsupported agent operation.');
     let message;
-    if (operation === 'run') {
-      message = typeof input.message === 'string' ? input.message.trim() : '';
-      if (!message || message.length > MAX_MESSAGE_LENGTH) throw new Error('Enter a message up to 16,000 characters.');
-    }
+    if (operation === 'run') message = composeRunMessage(input);
     if (operation === 'answer' && (typeof input.actionId !== 'string' || typeof input.approve !== 'boolean'))
       throw new Error('An action id and decision are required.');
 
