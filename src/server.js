@@ -2207,16 +2207,26 @@ export class Gadget extends DurableObject {
     if (!result.ok) return conflictResult(result.revision);
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
-    // The saved revision answers this item's drafting ask — but only the
-    // parts it actually delivered, and only when correlated: a write that
-    // echoes the mark's own `generationRequest` id satisfies the caption
-    // need (and the image need when a layout came with it); a manual owner
-    // save (no request id) satisfies the caption alone — a pending image
-    // ask must never read as answered by a caption; a mismatched id is a
-    // stale result and satisfies nothing.
+    /*
+     * The saved revision answers this item's drafting ask — only for the
+     * parts THIS call explicitly delivered (audit b7de9dd R2), and only when
+     * correlated (`satisfyItemGeneration` ignores owner saves and stale ids).
+     * Carried-forward content is preserved on the revision, never credited:
+     * - caption: only when the call supplied a `caption` field. An explicit
+     *   caption equal to the previous text still counts — equality is not
+     *   proof of no work. Alt-text- or image-only saves do not answer it.
+     * - image: only an explicitly accepted generated asset registered under
+     *   this same request. A retained poster layout, a carried-forward pin or
+     *   an implicit pick never does — a text poster is not an AI image.
+     */
+    const acceptedForRequest =
+      correlated &&
+      acceptedGeneratedMediaId !== undefined &&
+      acceptedGeneratedMediaId !== null &&
+      this.storage.getGeneratedMedia(pinnedId)?.generationRequest === generationRequest;
     this.storage.satisfyItemGeneration(batchItemId, {
-      request: typeof generationRequest === "string" ? generationRequest : null,
-      needs: { caption: true, image: Boolean(layout) }
+      request: correlated ? generationRequest : null,
+      needs: { caption: caption !== undefined, image: acceptedForRequest }
     });
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
@@ -2327,12 +2337,9 @@ export class Gadget extends DurableObject {
 
     this.storage.savePoster(batchItemId, result.revision, template, bytes);
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
-    // Poster bytes are image output — they satisfy the mark's image need
-    // (correlated as above), never the caption.
-    this.storage.satisfyItemGeneration(batchItemId, {
-      request: typeof generationRequest === "string" ? generationRequest : null,
-      needs: { image: true }
-    });
+    // A text poster is not a generated image (audit b7de9dd R2): its bytes
+    // complete no generation need. Only a correlated generated-image
+    // delivery or acceptance answers `needs.image`.
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
     return { ok: true, revision: result.revision };
