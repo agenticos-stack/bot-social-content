@@ -9,6 +9,7 @@ import {
   assertLocalFrontendOrigin,
   assertRemoteApiOrigin
 } from './platform-origin.mjs';
+import { refuse } from './door-certainty.mjs';
 
 const SESSION_FILE = 'agent-session.json';
 const MAX_MESSAGE_LENGTH = 16_000;
@@ -373,8 +374,8 @@ export async function createConnectedAgent({
   async function grantDoor(input, currentCookie) {
     const requirementKey = input?.requirementKey;
     if (typeof requirementKey !== 'string' || !requirements.some((row) => row?.requirementKey === requirementKey))
-      throw new Error('That door is not one this gadget declared.');
-    if (typeof input?.persistToAgent !== 'boolean') throw new Error('Say whether this grant is for this conversation only.');
+      throw refuse('That door is not one this gadget declared.', 'not_declared');
+    if (typeof input?.persistToAgent !== 'boolean') throw refuse('Say whether this grant is for this conversation only.', 'invalid_request');
     if (remote) {
       await ensureConnected(devToken);
       const result = await session.stub.grantDevelopmentDoor(requirementKey);
@@ -497,7 +498,15 @@ async function requestJson(url, { frontendOrigin, cookie, authorization, method,
     signal: AbortSignal.timeout(15_000)
   });
   const value = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(value?.error?.message || value?.message || `API request failed (${response.status}).`);
+  if (!response.ok) {
+    const message = value?.error?.message || value?.message;
+    // A 4xx that explained itself is the API's refusal. A 5xx, a timeout-ish
+    // 408, or a body nobody can read may have written before failing.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && typeof message === 'string' && message) {
+      throw refuse(message, typeof value?.error?.code === 'string' ? value.error.code : 'upstream_refused');
+    }
+    throw new Error(message || `API request failed (${response.status}).`);
+  }
   return value;
 }
 

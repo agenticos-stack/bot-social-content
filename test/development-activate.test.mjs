@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createConnectedApi } from '../scripts/connected-api.mjs';
 import { createDevelopmentSessions } from '../scripts/development-session.mjs';
+import { refuse } from '../scripts/door-certainty.mjs';
 
 const origin = 'http://127.0.0.1:17931';
 
@@ -84,11 +85,13 @@ test('signed out: refused before any runtime work', async () => {
 });
 
 test('a door the conversation does not hold is refused by the runtime, not granted', async () => {
-  const h = host({ activate: () => { throw new Error('That permission has not been granted in this conversation.'); } });
+  const h = host({ activate: () => { throw refuse('That permission has not been granted in this conversation.', 'not_granted'); } });
   await h.development.start(new Request(origin));
   const response = await h.post({ requirementKey: 'metered_fetch' });
   assert.equal(response.status, 409);
-  assert.match((await response.json()).error.message, /has not been granted/);
+  const body = await response.json();
+  assert.match(body.error.message, /has not been granted/);
+  assert.equal(body.error.certainty, 'refused');
   await h.development.dispose();
 });
 

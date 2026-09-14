@@ -1,5 +1,6 @@
 import { assertLocalApiOrigin, assertLocalFrontendOrigin, assertRemoteApiOrigin } from './platform-origin.mjs';
 import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
+import { doorFailureResponse } from './door-certainty.mjs';
 
 const localRoutes = new Map([
   ['/api/auth/get-session', ['GET']],
@@ -47,6 +48,7 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
   return async function handle(request) {
     const url = new URL(request.url);
     const fail = (status,error)=>Response.json({error:{message:error}},{status,headers:{'cache-control':'no-store'}});
+    const refused = (status,message,code)=>Response.json({error:{message,code,certainty:'refused'}},{status,headers:{'cache-control':'no-store'}});
     if (!routes.get(url.pathname)?.includes(request.method)) return fail(404,'Route unavailable in connected preview.');
     if (url.origin !== frontendOrigin || request.headers.get('sec-fetch-site') === 'cross-site') return fail(403,'Origin refused.');
     if (request.method !== 'GET' && request.headers.get('origin') !== frontendOrigin) return fail(403,'Origin refused.');
@@ -116,23 +118,25 @@ export function createConnectedApi({apiOrigin, frontendOrigin, development, fetc
         // and whether it also applies to the assistant. Anything else in the
         // body is refused rather than forwarded.
         let input;
-        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        try { input=JSON.parse(body.toString()); } catch { return refused(400,'Invalid JSON.','invalid_request'); }
         const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
-        if(keys!=='persistToAgent,requirementKey' || typeof input.requirementKey!=='string' || typeof input.persistToAgent!=='boolean')return fail(400,'A door and a scope are required.');
+        if(keys!=='persistToAgent,requirementKey' || typeof input.requirementKey!=='string' || typeof input.persistToAgent!=='boolean')return refused(400,'A door and a scope are required.','invalid_request');
+        // Only a classified refusal is a 409. Anything else may have saved
+        // consent before the answer was lost: 502, certainty unknown.
         try{return Response.json({data:await development.grant(request,input)},{headers:{'cache-control':'no-store'}});}
-        catch(error){return fail(409,error instanceof Error?error.message:'That door could not be granted.');}
+        catch(error){return doorFailureResponse(error,'That door could not be granted.');}
       }
       if(activate){
         // Start a door this conversation already holds. The body names the
         // door and nothing else; the development runtime refuses any key the
         // platform does not list as granted, so this can never grant.
         let input;
-        try { input=JSON.parse(body.toString()); } catch { return fail(400,'Invalid JSON.'); }
+        try { input=JSON.parse(body.toString()); } catch { return refused(400,'Invalid JSON.','invalid_request'); }
         const keys=input && typeof input==='object' && !Array.isArray(input) ? Object.keys(input).sort().join(',') : '';
-        if(keys!=='requirementKey' || typeof input.requirementKey!=='string')return fail(400,'A door is required.');
-        if(typeof development.activate!=='function')return fail(501,'This host cannot activate a door.');
+        if(keys!=='requirementKey' || typeof input.requirementKey!=='string')return refused(400,'A door is required.','invalid_request');
+        if(typeof development.activate!=='function')return refused(501,'This host cannot activate a door.','unsupported');
         try{return Response.json({data:await development.activate(request,input)},{headers:{'cache-control':'no-store'}});}
-        catch(error){return fail(409,error instanceof Error?error.message:'That door could not be activated.');}
+        catch(error){return doorFailureResponse(error,'That door could not be activated.');}
       }
       if(agent){
         let input;

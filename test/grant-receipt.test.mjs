@@ -21,12 +21,19 @@ test('HTTP 200 that cannot be read, or says nothing about the runtime, is unconf
   }
 });
 
-test('an explained client refusal is denied; a server error or unreadable refusal is unconfirmed', () => {
-  assert.deepEqual(grantReceiptOutcome({ ok: false, status: 409, bodyText: JSON.stringify({ error: { message: 'That permission has not been granted in this conversation.' } }) }), {
+test('a classified client refusal is denied; a server error or unreadable refusal is unconfirmed', () => {
+  assert.deepEqual(grantReceiptOutcome({ ok: false, status: 409, bodyText: JSON.stringify({ error: { message: 'That permission has not been granted in this conversation.', code: 'not_granted', certainty: 'refused' } }) }), {
     outcome: 'denied',
     message: 'That permission has not been granted in this conversation.'
   });
   assert.equal(grantReceiptOutcome({ ok: false, status: 502, bodyText: '' }).outcome, 'unconfirmed');
   assert.equal(grantReceiptOutcome({ ok: false, status: 409, bodyText: '<html>' }).outcome, 'unconfirmed');
   assert.equal(grantReceiptOutcome({ ok: false, status: 500, bodyText: JSON.stringify({ error: { message: 'boom' } }) }).outcome, 'unconfirmed');
+});
+
+test('F02: an explained 4xx without certainty refused (older router) is unconfirmed, not denied', () => {
+  assert.equal(grantReceiptOutcome({ ok: false, status: 409, bodyText: JSON.stringify({ error: { message: 'The upstream response was lost.' } }) }).outcome, 'unconfirmed');
+  assert.equal(grantReceiptOutcome({ ok: false, status: 409, bodyText: JSON.stringify({ error: { message: 'x', certainty: 'unknown' } }) }).outcome, 'unconfirmed');
+  assert.equal(grantReceiptOutcome({ ok: false, status: 502, bodyText: JSON.stringify({ error: { message: 'x', certainty: 'refused' } }) }).outcome, 'unconfirmed');
+  assert.equal(grantReceiptOutcome({ ok: false, status: 400, bodyText: JSON.stringify({ error: { message: 'A door is required.', code: 'invalid_request', certainty: 'refused' } }) }).outcome, 'denied');
 });

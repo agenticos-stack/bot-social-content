@@ -24,9 +24,11 @@ export function grantReceiptOutcome(response) {
   const status = Number(response?.status);
   if (!response?.ok) {
     const message = readable && typeof body?.error?.message === "string" ? body.error.message : null;
-    // An explicit refusal: a client error the host explained. Anything else —
-    // a server error, or a refusal nobody can read — may have landed or not.
-    if (Number.isInteger(status) && status >= 400 && status < 500 && message) {
+    // A denial only when the host classified it as a refusal before any
+    // effect. A server error, an unreadable body, or an explained 4xx without
+    // `certainty: "refused"` (an older router flattened every throw into 409)
+    // may have saved consent: unconfirmed, recheckable by activation.
+    if (Number.isInteger(status) && status >= 400 && status < 500 && message && body?.error?.certainty === "refused") {
       return { outcome: "denied", message };
     }
     return { outcome: "unconfirmed", message: message ?? "The permission answer could not be confirmed." };

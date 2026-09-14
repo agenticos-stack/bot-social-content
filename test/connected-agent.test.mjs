@@ -481,3 +481,50 @@ test('a gadget-dev token connects an account over the socket', async () => {
     agent.close();
   });
 });
+
+test('F02: grantDoor classifies upstream answers — structured 4xx refused, 5xx/unreadable/network unknown', async () => {
+  const cases = [
+    { name: 'structured 403', respond: () => jsonResponse(403, { error: { message: 'Only the owner can grant this.', code: 'not_owner' } }), certainty: 'refused', code: 'not_owner' },
+    { name: 'structured 409 without code', respond: () => jsonResponse(409, { error: { message: 'Not declared.' } }), certainty: 'refused', code: 'upstream_refused' },
+    { name: 'unreadable 400', respond: () => ({ ok: false, status: 400, json: async () => { throw new SyntaxError('bad'); } }), certainty: undefined },
+    { name: '408', respond: () => jsonResponse(408, { error: { message: 'timeout' } }), certainty: undefined },
+    { name: '500 with message', respond: () => jsonResponse(500, { error: { message: 'boom' } }), certainty: undefined },
+    { name: '502 empty', respond: () => jsonResponse(502, null), certainty: undefined },
+    { name: 'network', respond: () => { throw new TypeError('fetch failed'); }, certainty: undefined }
+  ];
+  for (const scenario of cases) {
+    await withStateDirectory(async (stateDirectory) => {
+      const transport = createFakeTransport({ now: () => 1_000_000 });
+      const fetchImpl = (url, options) => new URL(url).pathname.endsWith('/door-grants')
+        ? Promise.resolve().then(scenario.respond)
+        : transport.fetchImpl(url, options);
+      const agent = await createConnectedAgent({
+        apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+        sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+        callLocal: async () => ({}), now: () => 1_000_000, ...transport, fetchImpl
+      });
+      const error = await agent.grantDoor({ requirementKey: 'metered_fetch', persistToAgent: false }, 'session=alice').then(() => null, (e) => e);
+      assert.ok(error, scenario.name);
+      assert.equal(error.certainty, scenario.certainty, scenario.name);
+      if (scenario.code) assert.equal(error.code, scenario.code, scenario.name);
+      agent.close();
+    });
+  }
+});
+
+test('F02: grantDoor local validation refusals are classified refused', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, requirements: [{ requirementKey: 'metered_fetch', kind: 'capability' }],
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    const undeclared = await agent.grantDoor({ requirementKey: 'email', persistToAgent: false }).catch((e) => e);
+    assert.equal(undeclared.certainty, 'refused');
+    assert.equal(undeclared.code, 'not_declared');
+    const noScope = await agent.grantDoor({ requirementKey: 'metered_fetch' }).catch((e) => e);
+    assert.equal(noScope.certainty, 'refused');
+    agent.close();
+  });
+});

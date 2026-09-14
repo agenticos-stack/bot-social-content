@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {refuse} from './door-certainty.mjs';
 
 /** Host-owned local runtime registry. No marketplace, API conversation or model loop. */
 export function createDevelopmentSessions({appKey, authenticate, createRuntime, origin}) {
@@ -6,13 +7,13 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
   let pending;
   let closed=false;
   async function acquire(request, start) {
-    if(closed)throw new Error('Development host is closed.');
+    if(closed)throw refuse('Development host is closed.','no_session');
     const identity=await authenticate(request);
-    if(closed)throw new Error('Development host is closed.');
-    if(!identity?.userId || !identity?.orgId)throw new Error('Sign in to a local organization first.');
+    if(closed)throw refuse('Development host is closed.','no_session');
+    if(!identity?.userId || !identity?.orgId)throw refuse('Sign in to a local organization first.','not_signed_in');
     const key=createHash('sha256').update(JSON.stringify([appKey,identity.orgId,identity.userId])).digest('hex');
-    if(owner && owner!==key)throw new Error('Restart this development host to switch account or organization.');
-    if(!pending && !start)throw new Error('Start the development session first.');
+    if(owner && owner!==key)throw refuse('Restart this development host to switch account or organization.','wrong_account');
+    if(!pending && !start)throw refuse('Start the development session first.','no_session');
     if(!pending){
       owner=key;
       pending=Promise.resolve().then(()=>createRuntime(key, identity, request)).catch(error=>{pending=undefined;owner=undefined;throw error;});
@@ -46,7 +47,7 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
     },
     async grant(request, input){
       const {runtime,identity}=await acquire(request,false);
-      if(typeof runtime.grant !== 'function')throw new Error('Granting doors is unavailable in this development session.');
+      if(typeof runtime.grant !== 'function')throw refuse('Granting doors is unavailable in this development session.','unsupported');
       return runtime.grant(input, identity.devToken ?? identity.cookie);
     },
     /*
@@ -59,7 +60,7 @@ export function createDevelopmentSessions({appKey, authenticate, createRuntime, 
      */
     async activate(request, input){
       const {runtime}=await acquire(request,false);
-      if(typeof runtime.activate !== 'function')throw new Error('Activating doors is unavailable in this development session.');
+      if(typeof runtime.activate !== 'function')throw refuse('Activating doors is unavailable in this development session.','unsupported');
       return runtime.activate(input);
     },
     /** Subscribe the authenticated owner of the running session to host-observed changes. */

@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectedApi} from '../scripts/connected-api.mjs';
+import { refuse } from '../scripts/door-certainty.mjs';
 const frontendOrigin='http://social.localhost:18000';
 test('poster requests pass the connected BFF without increasing the agent-message budget',async()=>{
   const body=JSON.stringify({method:'savePoster',args:[{png:{$bot_bytes_b64:'a'.repeat(150000)}}]});
@@ -68,10 +69,15 @@ test('connected BFF forwards only the owner answer to a door grant',async()=>{
   assert.equal(response.status,200);
   assert.deepEqual(await response.json(),{data:{requirementKey:'metered_fetch',persistedToAgent:false}});
   assert.deepEqual(inputs,[{requirementKey:'metered_fetch',persistToAgent:false}]);
-  const refused=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async()=>{throw new Error('That door is not one this gadget declared.');}}});
+  const refused=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async()=>{throw refuse('That door is not one this gadget declared.','not_declared');}}});
   const failed=await refused(request({requirementKey:'email',persistToAgent:false}));
   assert.equal(failed.status,409);
-  assert.equal((await failed.json()).error.message,'That door is not one this gadget declared.');
+  assert.deepEqual((await failed.json()).error,{message:'That door is not one this gadget declared.',code:'not_declared',certainty:'refused'});
+  // An unclassified throw may follow a saved grant: never a 409 refusal.
+  const lost=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin,development:{grant:async()=>{throw new Error('The upstream response was lost.');}}});
+  const unknown=await lost(request({requirementKey:'metered_fetch',persistToAgent:false}));
+  assert.equal(unknown.status,502);
+  assert.deepEqual((await unknown.json()).error,{message:'The upstream response was lost.',certainty:'unknown'});
 });
 test('connected BFF admits only a connection listing or one account choice',async()=>{
   const inputs=[];

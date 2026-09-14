@@ -15,6 +15,7 @@ import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
 import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
+import { createDoorRuntime } from './door-runtime.mjs';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
@@ -409,20 +410,11 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
          * the host can tell the canvas to retry activation rather than ask for
          * consent the owner already gave.
          */
-        grant:async(input,credential)=>{
-          const granted=await agent.grantDoor(input,credential);
-          return {...granted,runtime:await activateRuntime(false)};
-        },
+        ...createDoorRuntime({agent,activateRuntime}),
         /*
          * Start a door this conversation ALREADY holds. Grants nothing: a key
          * the platform does not list as granted is refused before any restart.
          */
-        activate:async(input)=>{
-          const requirementKey=typeof input?.requirementKey==='string'?input.requirementKey:'';
-          const listed=await agent.grantedDoorKeys();
-          if(!listed.includes(requirementKey))throw new Error('That permission has not been granted in this conversation.');
-          return {requirementKey,runtime:await activateRuntime(true)};
-        },
         agent:{
           get info(){return agent.info;},
           handle:async(input,credential)=>{
