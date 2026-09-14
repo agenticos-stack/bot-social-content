@@ -2535,10 +2535,45 @@ export class Gadget extends DurableObject {
      * files nothing. The owner's `createNewVersion` opt-in retires the
      * conflicting rows as the new filing succeeds, never before.
      */
+    /*
+     * The pair is (post, RESOURCE), not (post, alias). Two env names granted
+     * over one account resolve to the same `resolvedId`; keyed by alias, the
+     * second name would file the post again and a submission naming both
+     * would send it twice. Asked live (the row may predate the field), falling
+     * back to the stored description, then the alias itself for the plain
+     * legacy door that has no describe().
+     */
+    const described = new Map();
+    const resourceOf = (binding) =>
+      readString(described.get(binding)?.resolvedId) ??
+      readString(this.storage.getDestination(binding)?.describe?.resolvedId) ??
+      binding;
+    for (const binding of bindings) described.set(binding, await describeConnector(this.env, binding));
+    const aliasesOf = (resource) => [
+      ...new Set([
+        ...this.storage
+          .listDestinations()
+          .filter((row) => readString(row.describe?.resolvedId) === resource)
+          .map((row) => row.binding),
+        ...bindings.filter((binding) => resourceOf(binding) === resource)
+      ])
+    ];
+    const seenResources = new Map();
+    const aliasSkips = [];
+    for (const binding of [...bindings]) {
+      const resource = resourceOf(binding);
+      if (seenResources.has(resource)) {
+        aliasSkips.push({ destinationBinding: binding, reason: "same_resource", sameAs: seenResources.get(resource) });
+        bindings.splice(bindings.indexOf(binding), 1);
+      } else {
+        seenResources.set(resource, binding);
+      }
+    }
+
     const conflictsByBinding = new Map();
     for (const binding of bindings) {
-      const conflicts = this.storage
-        .activePublicationsForPair(batchItem.itemId, binding)
+      const conflicts = aliasesOf(resourceOf(binding))
+        .flatMap((alias) => this.storage.activePublicationsForPair(batchItem.itemId, alias))
         .filter((publication) => publication.batchItemId !== batchItemId);
       if (conflicts.length) conflictsByBinding.set(binding, conflicts);
     }

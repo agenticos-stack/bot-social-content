@@ -94,12 +94,12 @@ export function doorGrantStatus(env) {
 
 /**
  * Whether one connector binding's grant is live right now — `doorGrantStatus`'s
- * question asked of the env name the owner chose at grant time (`IG_FAVCRM`)
+ * question asked of the env name the owner chose at grant time (e.g. `DEST_ACCOUNT`)
  * rather than a fixed door key. A stored destination row is history: it proves
  * the binding was configured once, never that it still is. The consent
  * projection is the truth when the runtime supplies one — but it is keyed by
- * REQUIREMENT key (`connector:IG_FAVCRM`, or a family member's
- * `source:IG_FAVCRM`), whose env name is the suffix after the first colon,
+ * REQUIREMENT key (`connector:DEST_ACCOUNT`, or a family member's
+ * `source:DEST_ACCOUNT`), whose env name is the suffix after the first colon,
  * while a plain door's key is its env name verbatim. Without a projection
  * (unit-test envs, a runtime that predates it) the minted stub's own presence
  * is the answer the door gate would enforce.
@@ -118,7 +118,7 @@ export function bindingGranted(env, binding) {
  * Calls one pinned action on a granted connector door.
  *
  * `binding` is the owner-chosen label slug the door was granted under
- * (`env.IG_ESSENTIAL_FOODS`, TASK-101, PR #1484); `method` is the pinned
+ * (e.g. `env.SOURCE_ACCOUNT`, TASK-101, PR #1484); `method` is the pinned
  * action's own name. As shipped, the only READ actions are
  * `instagram_list_media` and `facebook_list_page_posts` (full underscored
  * slugs, not `list_media`/`list_page_posts`) — see `listInstagramMedia` /

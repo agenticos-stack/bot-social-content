@@ -869,8 +869,8 @@ function App() {
            *
            * This showed `item.sourceLabel` first, which is the account being
            * watched — so four of the twelve posts a real account produced were
-           * headed @essentialfoodsofficial while belonging to @hilde.oest,
-           * @junior_the_copenhagen_lab, @nordictail and @arcticspots. Those
+           * headed with the watched account while belonging to four other
+           * authors it had reposted or tagged. Those
            * are precisely the posts whose authors are somebody else — the
            * one screen that has to get the author right had it wrong.
            */
