@@ -41,6 +41,9 @@ function framesOf(item) {
 const REFUSALS = {
   fetch_permission_required: { title: "drawerMediaPermissionTitle", body: "drawerMediaPermissionBody", action: "grant", label: "drawerMediaGrant" },
   fetch_activation_failed: { title: "drawerMediaActivationTitle", body: "drawerMediaActivationBody", action: "activate", label: "drawerMediaActivationRetry" },
+  // The host could not confirm whether consent was saved. Not "permission
+  // saved": activation checks what is actually held before starting anything.
+  fetch_grant_unconfirmed: { title: "drawerMediaGrantUnconfirmedTitle", body: "drawerMediaGrantUnconfirmedBody", action: "activate", label: "drawerMediaActivationRetry" },
   fetch_transient: { title: "drawerMediaTransientTitle", body: null, action: "retry", label: "drawerMediaRetry" },
   reference_media_stale: { title: "drawerMediaStaleTitle", body: "drawerMediaStaleBody", action: "refresh", label: "drawerMediaRefreshSources" },
   media_unusable: { title: "drawerMediaUnusableTitle", body: null, action: null, label: null },
@@ -158,9 +161,19 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   function repaint(key) {
     paintStates();
     if (!isCurrent(key)) return;
+    // Redrawing replaces the control the owner just used. Keep focus in the
+    // stage (on its next action, else the state itself) instead of dropping it
+    // to the document body.
+    const doc = surface.ownerDocument;
+    const hadFocus = Boolean(doc?.activeElement && doc.activeElement !== doc.body && surface.contains?.(doc.activeElement));
     if (urls.has(key)) showFrame(urls.get(key), frames[index]);
     else if (states.get(key)?.status === "refused") showRefusal(key);
     else showFetching();
+    if (!hadFocus) return;
+    const target = surface.querySelector?.("button:not([disabled])") ?? surface.querySelector?.(".sl-stage-state, .sl-stage-img");
+    if (!target || typeof target.focus !== "function") return;
+    if (target.tagName !== "BUTTON") target.setAttribute("tabindex", "-1");
+    target.focus();
   }
 
   /**
@@ -251,7 +264,7 @@ export function createMediaStage(rpc, item, locale, options = {}) {
       default:
         // Unconfirmed: the grant may have landed. Offer activation of what may
         // already be held, which verifies before starting anything.
-        states.set(key, { ...next, code: "fetch_activation_failed", note: t(locale, "drawerMediaUnconfirmed") });
+        states.set(key, { ...next, code: "fetch_grant_unconfirmed", message: message || null });
     }
     repaint(key);
   }

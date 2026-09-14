@@ -129,7 +129,10 @@ describe("carousel frame recovery", () => {
     await flushAsyncWork();
     expect(calls).toBe(1);
     expect(d.asked).toEqual([]);
-    expect(texts(stage.node)).toContain("Could not confirm whether the permission was saved");
+    // Unconfirmed is not "permission saved": the owner is told it is unknown.
+    expect(texts(stage.node)).toContain("Could not confirm the permission");
+    expect(texts(stage.node)).toContain("It is not known whether the permission was saved");
+    expect(texts(stage.node)).not.toContain("Permission saved, fetching not started");
     expect(button(stage.node, "Retry activation").disabled).toBe(false);
   });
 
