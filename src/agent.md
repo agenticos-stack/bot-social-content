@@ -72,6 +72,32 @@ instructions: what the generated picture should show and how it should look.
 Older workspaces may still hold wording that asks for a text poster; do not
 produce one for new content. Ask the owner to update the instruction instead.
 
+Those are the saved DEFAULTS. The owner can override either one for a single
+post: each item carries `instructionOverrides` (`{ image, caption }`, null
+meaning "use the default") and `effectiveInstructions` (`{ image: { text,
+source }, caption: { text, source } }`, `source` being `post` or `default`).
+Draft a post from its `effectiveInstructions`, never from the defaults when
+the post has its own. A request also snapshots the instructions it was made
+under as `generation.instructions`; when that snapshot is present, use it —
+it is what the owner asked for when they pressed the button. Editing
+instructions is not a request: never draft or rewrite a post because its
+instructions changed.
+
+## Asking for one part: `generation.needs`
+
+A mark's `needs` says which parts the owner asked for. "Regenerate image"
+marks `{ image: true, caption: false }`; "Rewrite caption" marks
+`{ image: false, caption: true }`; a first draft or a plain Regenerate marks
+both. Do only the parts that are `true`:
+
+- `needs.image` only — generate the image and register it with
+  `saveGeneratedImage` (it arrives as `generatedCandidate`; the owner accepts
+  it). Do not change the caption. A correlated `saveRevision` that changes the
+  caption is refused `generation_part_not_requested`.
+- `needs.caption` only — save the new caption with `saveRevision`. Do not
+  register or accept a different image; a correlated save that changes the
+  accepted visual is refused the same way. The accepted image stays.
+
 If you ever ARE handed a structured brief, it looks like this:
 
 ```

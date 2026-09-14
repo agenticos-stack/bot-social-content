@@ -340,8 +340,12 @@ describe("migration 16", () => {
     const gadget = new Gadget(ctx as never, mockSocial(created, uploaded) as never);
     seed(gadget);
 
-    // Rewind to a schema-15 database holding a legacy ai_refinement revision.
+    // Rewind to a schema-15 database holding a legacy ai_refinement revision
+    // (the schema-17 per-post instruction columns go too, so every later
+    // migration replays).
     for (const [table, column] of [
+      ["batch_items", "instruction_overrides"],
+      ["batch_items", "last_generation"],
       ["generated_media", "stale"],
       ["generated_media", "content_digest"],
       ["revisions", "accepted_generated_media_id"],
@@ -361,7 +365,7 @@ describe("migration 16", () => {
     ).run(CAPTION);
     db.prepare("UPDATE batch_items SET current_revision = 1 WHERE id = 'item-1'").run();
 
-    expect(gadget.storage.migrate()).toBe(16);
+    expect(gadget.storage.migrate()).toBe(17);
     const revision = gadget.storage.getRevision("item-1", 1);
     expect(revision).toMatchObject({ acceptedGeneratedMediaId: "gm_old", acceptedGeneratedMediaDigest: null });
     expect(gadget.storage.getGeneratedMedia("gm_pending")).toMatchObject({ stale: false, contentDigest: null });

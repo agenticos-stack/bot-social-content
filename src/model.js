@@ -1212,6 +1212,30 @@ const EDITABLE_ITEM_STATES = new Set(["drafting", "expired"]);
  * parses (legacy rows), as an unidentifiable request needing both.
  * `null`/absent means nothing is being generated.
  */
+function generationInstructions(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const text = (entry) => (typeof entry === "string" ? entry : null);
+  return { image: text(value.image), caption: text(value.caption) };
+}
+
+/**
+ * The owner's per-post instruction overrides and the saved defaults, resolved
+ * to what a generation request for this post would actually use. An override
+ * that is absent or blank falls back to the saved default.
+ */
+export function effectiveInstructions(config, overrides) {
+  const pick = (override, fallback) => {
+    const own = typeof override === "string" && override.trim() ? override : null;
+    return own !== null
+      ? { text: own, source: "post" }
+      : { text: typeof fallback === "string" ? fallback : "", source: "default" };
+  };
+  return {
+    image: pick(overrides?.image, config?.posterPrompt),
+    caption: pick(overrides?.caption, config?.contentPrompt)
+  };
+}
+
 export function generationMark(mark) {
   if (!mark) return null;
   if (typeof mark === "object") {
@@ -1221,7 +1245,11 @@ export function generationMark(mark) {
       needs: {
         caption: mark.needs?.caption !== false,
         image: mark.needs?.image !== false
-      }
+      },
+      // When the request was made, and the effective instructions it was made
+      // under (`{ image, caption }`) — present only on marks that recorded them.
+      at: typeof mark.at === "string" ? mark.at : undefined,
+      instructions: generationInstructions(mark.instructions)
     };
   }
   if (typeof mark === "string" && mark.startsWith("{")) {

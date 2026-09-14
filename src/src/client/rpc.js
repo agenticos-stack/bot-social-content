@@ -35,7 +35,11 @@ export function createRpc(gadget) {
     getBatch: (batchId) => gadget.getBatch(batchId),
     // `itemIds` scopes a re-draft to the named posts; omitted means the
     // legacy batch-wide request (still used by createBatch's first run).
-    requestGeneration: (batchId, itemIds) => gadget.requestGeneration(batchId, itemIds),
+    // `options.needs` ({ image, caption }) asks for one part and keeps the other.
+    requestGeneration: (batchId, itemIds, options) =>
+      options === undefined ? gadget.requestGeneration(batchId, itemIds) : gadget.requestGeneration(batchId, itemIds, options),
+    // Per-post image/caption instructions; null resets a part to the saved default.
+    saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),

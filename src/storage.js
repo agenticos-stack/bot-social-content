@@ -28,7 +28,7 @@ import {
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -486,6 +486,20 @@ const MIGRATIONS = {
         ORDER BY gm.created_at DESC, gm.rowid DESC LIMIT 1
       )
       WHERE accepted_visual_mode = 'ai_refinement' AND accepted_generated_media_id IS NULL`);
+  },
+
+  /*
+   * Per-post instructions. `instruction_overrides` is the owner's own image
+   * and caption instructions for ONE post (`{ image, caption }`, each a
+   * string or null = use the saved default); editing it never generates or
+   * rewrites anything. `last_generation` keeps a copy of the most recent
+   * request mark — its needs, time and the effective instructions it was made
+   * under — after the mark itself clears, so the drawer can say which
+   * instructions produced the output on screen. Both NULL on existing rows.
+   */
+  17(sql) {
+    sql.exec("ALTER TABLE batch_items ADD COLUMN instruction_overrides TEXT");
+    sql.exec("ALTER TABLE batch_items ADD COLUMN last_generation TEXT");
   }
 };
 
@@ -1071,31 +1085,58 @@ export class Storage {
    * against. A later request SUPersedes an earlier one outright — a result
    * written for an older `id` can satisfy nothing on the newer mark.
    */
-  setGeneration(batchId, itemIds = null, request = null) {
+  setGeneration(batchId, itemIds = null, request = null, { needs = null, instructionsFor = null } = {}) {
     this.sql.exec("UPDATE batches SET generation = 'requested' WHERE id = ?", batchId);
     const stamp = nowIso();
-    const markFor = (item) =>
-      JSON.stringify({
+    // `needs` scopes the ask to one part: an image-only request leaves the
+    // caption need unset (and vice versa), so the part not asked for is not
+    // the agent's work on this request.
+    const wanted = {
+      caption: needs ? needs.caption === true : true,
+      image: needs ? needs.image === true : true
+    };
+    const write = (item) => {
+      const mark = JSON.stringify({
         id: request,
         // `listBatchItems` hydrates `current_revision` to `currentRevision` —
         // reading the column name off the hydrated row stamps base: 0 forever.
         base: item.currentRevision ?? item.current_revision ?? item.revision ?? 0,
-        needs: { caption: true, image: true },
-        at: stamp
+        needs: wanted,
+        at: stamp,
+        ...(typeof instructionsFor === "function" ? { instructions: instructionsFor(item) } : {})
       });
+      this.sql.exec(
+        "UPDATE batch_items SET generation = ?, last_generation = ?, updated_at = ? WHERE id = ?",
+        mark,
+        mark,
+        stamp,
+        item.id
+      );
+    };
     if (Array.isArray(itemIds) && itemIds.length) {
       const byId = new Map(this.listBatchItems(batchId).map((item) => [item.id, item]));
       for (const id of itemIds) {
         const item = byId.get(id);
-        if (!item) continue;
-        this.sql.exec("UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?", markFor(item), stamp, id);
+        if (item) write(item);
       }
       return;
     }
     for (const item of this.listBatchItems(batchId)) {
       if (!item.active || !["drafting", "expired"].includes(item.state)) continue;
-      this.sql.exec("UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?", markFor(item), stamp, item.id);
+      write(item);
     }
+  }
+
+  /** The owner's per-post instruction overrides — `{ image, caption }`, null meaning the saved default. */
+  setInstructionOverrides(batchItemId, overrides) {
+    const image = typeof overrides?.image === "string" && overrides.image.trim() ? overrides.image : null;
+    const caption = typeof overrides?.caption === "string" && overrides.caption.trim() ? overrides.caption : null;
+    this.sql.exec(
+      "UPDATE batch_items SET instruction_overrides = ?, updated_at = ? WHERE id = ?",
+      image === null && caption === null ? null : JSON.stringify({ image, caption }),
+      nowIso(),
+      batchItemId
+    );
   }
 
   /**
@@ -1128,7 +1169,7 @@ export class Storage {
     }
     this.sql.exec(
       "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
-      JSON.stringify({ id: mark.id, base: mark.base, needs: remaining }),
+      JSON.stringify({ id: mark.id, base: mark.base, needs: remaining, at: mark.at, instructions: mark.instructions }),
       nowIso(),
       batchItemId
     );
@@ -1857,6 +1898,19 @@ export class Storage {
     return row ? hydrateGeneratedMedia(row) : null;
   }
 
+  /** Every registration for a post, newest first, without bytes — the drawer's generation history. */
+  listGeneratedMediaFor(batchItemId, { limit = 20 } = {}) {
+    return rows(
+      this.sql.exec(
+        `SELECT rowid AS seq, id, batch_item_id, attachment_id, mime_type, byte_length, alt_text, generation_request,
+                stale, content_digest, created_at, delivered_at, (bytes IS NOT NULL) AS has_bytes
+         FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+        batchItemId,
+        limit
+      )
+    ).map((row) => ({ ...hydrateGeneratedMedia(row), ready: Number(row.has_bytes) === 1 }));
+  }
+
   /** Registrations whose bytes never arrived — the delivery sweep reads these. */
   pendingGeneratedMedia() {
     return rows(this.sql.exec("SELECT rowid AS seq, * FROM generated_media WHERE bytes IS NULL ORDER BY created_at, rowid")).map(
@@ -2100,9 +2154,21 @@ function hydrateBatchItem(row) {
     version: row.version ?? null,
     targets: row.targets_json ? JSON.parse(row.targets_json) : null,
     generation: row.generation ?? null,
+    instructionOverrides: parseJsonObject(row.instruction_overrides),
+    lastGeneration: row.last_generation ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function parseJsonObject(json) {
+  if (typeof json !== "string" || !json) return null;
+  try {
+    const value = JSON.parse(json);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function hydrateLedger(row) {

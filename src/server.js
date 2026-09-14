@@ -88,6 +88,7 @@ import {
   applyProtectedOverridesToLedger,
   draftOrigin,
   generationMark,
+  effectiveInstructions,
   itemPresentation,
 
   posterPngConstraints,
@@ -1654,6 +1655,25 @@ export class Gadget extends DurableObject {
       // caption/image placeholders; the agent echoes `id` back as
       // `generationRequest` so its save can be correlated to THIS ask.
       generation: generationMark(batchItem.generation),
+      // The most recent request's mark, kept after it clears — its needs,
+      // time and the effective instructions it was made under.
+      lastGeneration: generationMark(batchItem.lastGeneration),
+      // This post's own instruction overrides (`{ image, caption }`, null =
+      // saved default) and what a request would use right now.
+      instructionOverrides: instructionOverridesOf(batchItem),
+      effectiveInstructions: effectiveInstructions(config, batchItem.instructionOverrides),
+      // Every saved revision, oldest first — history, not editable state.
+      revisionHistory: this.storage.listRevisions(batchItem.id).map((revision) => ({
+        revision: revision.revision,
+        createdAt: revision.createdAt ?? null,
+        acceptedVisualMode: revision.acceptedVisualMode,
+        acceptedGeneratedMediaId: revision.acceptedGeneratedMediaId,
+        publicationIntent: revision.publicationIntent
+      })),
+      // Registered generated images, newest first, without bytes.
+      generatedHistory: this.storage
+        .listGeneratedMediaFor(batchItem.id)
+        .map((row) => ({ ...projectGeneratedMedia(row), ready: row.ready, createdAt: row.createdAt })),
       // REQ-016 — the door's own caption limit for THIS item's destinations,
       // so `steps.js`'s `computeIssues(item, ..., limits: item.limits)`
       // checks the number the server will enforce rather than reading a field
@@ -1725,8 +1745,36 @@ export class Gadget extends DurableObject {
    * Refuses when the batch is unknown or the named items have nothing left
    * to draft (already submitted).
    */
-  requestGeneration(batchId, batchItemIds = undefined) {
+  requestGeneration(batchId, batchItemIds = undefined, options = undefined) {
     return this.enqueueMutation(() => {
+      /*
+       * `options.needs` — `{ image?: boolean, caption?: boolean }` — asks for
+       * ONE part: "Regenerate image" keeps the caption, "Rewrite caption"
+       * keeps the accepted image. Omitted, both parts are asked for, as
+       * before. The mark stamps exactly these needs and the effective
+       * instructions (saved defaults, or this post's overrides) the request
+       * was made under.
+       */
+      let needs = null;
+      if (options !== undefined && options !== null) {
+        const raw = typeof options === "object" ? options.needs : undefined;
+        if (raw !== undefined) {
+          const valid =
+            raw !== null &&
+            typeof raw === "object" &&
+            Object.keys(raw).every((key) => ["image", "caption"].includes(key)) &&
+            [raw.image, raw.caption].every((value) => value === undefined || typeof value === "boolean") &&
+            (raw.image === true || raw.caption === true);
+          if (!valid) {
+            return {
+              ok: false,
+              code: "generation_needs_invalid",
+              message: "Ask for the image, the caption, or both — `needs` takes { image, caption } booleans with at least one true."
+            };
+          }
+          needs = { image: raw.image === true, caption: raw.caption === true };
+        }
+      }
       const batch = this.storage.getBatch(String(batchId));
       if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
       const items = this.storage.listBatchItems(batch.id);
@@ -1750,8 +1798,59 @@ export class Gadget extends DurableObject {
       // cannot satisfy or clear this newer request — see
       // `satisfyItemGeneration`.
       const request = generateId("gen");
-      this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request);
-      return { ok: true, request, requested: draftable.map((item) => item.id) };
+      const config = this.storage.getConfig();
+      this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request, {
+        needs,
+        instructionsFor: (item) => {
+          const effective = effectiveInstructions(config, item.instructionOverrides);
+          return { image: effective.image.text, caption: effective.caption.text };
+        }
+      });
+      return {
+        ok: true,
+        request,
+        requested: draftable.map((item) => item.id),
+        needs: needs ?? { image: true, caption: true }
+      };
+    });
+  }
+
+  /**
+   * The owner's own image/caption instructions for ONE post. Each key:
+   * omitted keeps the stored override, a string replaces it, null or blank
+   * resets to the saved default. Nothing is generated or rewritten here — a
+   * change applies to the NEXT request the owner makes, and an approved
+   * revision stays exactly as it was reviewed.
+   */
+  saveInstructionOverrides(input) {
+    return this.enqueueMutation(() => {
+      const batchItemId = typeof input?.batchItemId === "string" ? input.batchItemId : "";
+      const batchItem = batchItemId ? this.storage.getBatchItem(batchItemId) : null;
+      if (!batchItem) {
+        return { ok: false, code: "batch_item_unknown", message: "This post is no longer available." };
+      }
+      const current = batchItem.instructionOverrides ?? {};
+      const next = {};
+      for (const key of ["image", "caption"]) {
+        const value = input[key];
+        if (value === undefined) next[key] = current[key] ?? null;
+        else if (value === null) next[key] = null;
+        else if (typeof value === "string") next[key] = value.slice(0, 4000);
+        else {
+          return {
+            ok: false,
+            code: "instruction_override_invalid",
+            message: "An instruction override is text, or null to use the saved default."
+          };
+        }
+      }
+      this.storage.setInstructionOverrides(batchItemId, next);
+      const saved = this.storage.getBatchItem(batchItemId);
+      return {
+        ok: true,
+        instructionOverrides: instructionOverridesOf(saved),
+        effectiveInstructions: effectiveInstructions(this.storage.getConfig(), saved.instructionOverrides)
+      };
     });
   }
 
@@ -1824,6 +1923,13 @@ export class Gadget extends DurableObject {
     // Late work from a superseded ask must not overwrite the newer draft.
     const staleIssue = staleGenerationIssue(batchItem, generationRequest);
     if (staleIssue) return { ok: false, issues: [staleIssue] };
+    const partIssue = unrequestedPartIssue(this.storage, batchItem, {
+      generationRequest,
+      caption,
+      acceptedVisualMode,
+      acceptedGeneratedMediaId
+    });
+    if (partIssue) return { ok: false, issues: [partIssue] };
 
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
@@ -3285,6 +3391,45 @@ function staleGenerationIssue(batchItem, generationRequest) {
     severity: "block",
     message: "This work answers a generation request that is no longer the post's current one, so it was not saved over the newer draft."
   };
+}
+
+/**
+ * A correlated save (it echoes the current mark's id) that changes a part the
+ * request did not ask for. "Regenerate image" must keep the caption and
+ * "Rewrite caption" must keep the accepted image — the owner's own saves (no
+ * request id) are never limited by this.
+ */
+function unrequestedPartIssue(storage, batchItem, { generationRequest, caption, acceptedVisualMode, acceptedGeneratedMediaId }) {
+  if (typeof generationRequest !== "string" || !generationRequest) return null;
+  const mark = generationMark(batchItem.generation);
+  if (!mark || mark.id !== generationRequest) return null;
+  const previous = storage.latestRevision(batchItem.id);
+  if (!mark.needs.caption && caption !== undefined && caption !== (previous?.caption ?? null)) {
+    return {
+      code: "generation_part_not_requested",
+      severity: "block",
+      message: "This request asked for a new image only, so the caption was left as it is. Save the image without changing the caption."
+    };
+  }
+  const visualChanged =
+    (acceptedVisualMode !== undefined && acceptedVisualMode !== (previous?.acceptedVisualMode ?? null)) ||
+    (acceptedGeneratedMediaId !== undefined &&
+      acceptedGeneratedMediaId !== null &&
+      acceptedGeneratedMediaId !== (previous?.acceptedGeneratedMediaId ?? null));
+  if (!mark.needs.image && visualChanged) {
+    return {
+      code: "generation_part_not_requested",
+      severity: "block",
+      message: "This request asked for a new caption only, so the accepted image was left as it is. Save the caption without changing the image."
+    };
+  }
+  return null;
+}
+
+function instructionOverridesOf(batchItem) {
+  const stored = batchItem?.instructionOverrides ?? {};
+  const text = (value) => (typeof value === "string" && value.trim() ? value : null);
+  return { image: text(stored.image), caption: text(stored.caption) };
 }
 
 /** The client-facing shape of one generated_media row. */
