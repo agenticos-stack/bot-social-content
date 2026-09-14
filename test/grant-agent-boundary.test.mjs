@@ -223,6 +223,63 @@ test('a genuinely empty authoritative list is a confirmed absence: denied', asyn
   });
 });
 
+// 8a. F02c: an array-shaped inventory whose own entries are malformed is
+// still unreadable, not a confirmed absence. The bug checked only
+// `Array.isArray` and then filtered `granted === true`, so an entry with no
+// fields at all, or one that names the right requirementKey but answers
+// `granted` with something other than a real boolean, silently vanished from
+// the filtered list — a valid-looking [] the caller could not tell apart
+// from an owner who genuinely granted nothing. Reproduces
+// grant-entry-shape-probe.mjs cases 1 and 2.
+for (const [label, entry] of [
+  ['an entry missing every required field', {}],
+  ['a matching entry whose granted is not a boolean', { requirementKey, granted: 'unreadable' }]
+]) {
+  test(`F02c: ${label} is unconfirmed, never a confirmed denial`, async () => {
+    await withHost({
+      onGrant: () => { throw new Error('Grant must never be called for an activation-only case'); },
+      onList: () => [entry]
+    }, async ({ post, state }) => {
+      const answer = await post('activate');
+      assert.equal(answer.status, 502);
+      assert.equal(answer.body.error.certainty, 'unknown');
+      assert.equal(answer.receipt.outcome, 'unconfirmed');
+      assert.equal(state.grantAttempts, 0, 'a malformed entry never triggers a grant');
+      assert.equal(state.activations, 0, 'a malformed entry never reaches runtime activation');
+    });
+  });
+}
+
+// 8b. A row with unknown additive fields (a connector family's `family`,
+// `methods`, or anything else the platform might add) is still read
+// normally: only the three required fields are checked.
+test('F02c: an inventory row with unknown additive fields is still read as granted', async () => {
+  await withHost({
+    onList: () => [{ requirementKey, envKey: requirementKey, granted: true, family: 'social', methods: ['post'] }],
+    runtimeSpec: () => new Set([requirementKey])
+  }, async ({ post, state }) => {
+    const answer = await post('activate');
+    assert.equal(answer.status, 200);
+    assert.equal(answer.receipt.outcome, 'activated');
+    assert.equal(state.grantAttempts, 0, 'activation never re-sends a grant for an already-granted door');
+  });
+});
+
+// 8c. A valid, well-formed granted row proceeds to activation exactly as
+// before — the stricter validation never rejects the shape the platform
+// actually sends.
+test('F02c: a valid matching granted row lets activation proceed', async () => {
+  await withHost({
+    onList: () => [{ requirementKey, envKey: requirementKey, granted: true }],
+    runtimeSpec: () => new Set([requirementKey])
+  }, async ({ post, state }) => {
+    const answer = await post('activate');
+    assert.equal(answer.status, 200);
+    assert.equal(answer.receipt.outcome, 'activated');
+    assert.equal(state.grantAttempts, 0);
+  });
+});
+
 // 9. Granted but runtime lacks the door → activation_failed.
 test('the platform confirms the grant but the running local source never has the door: activation_failed', async () => {
   await withHost({ runtimeSpec: () => new Set() }, async ({ post, state }) => {
