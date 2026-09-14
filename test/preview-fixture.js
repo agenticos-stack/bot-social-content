@@ -33,6 +33,12 @@ const fixture = {
     item.revisionHistory = [...(item.revisionHistory ?? []), { revision: item.revision, generatedMediaId: item.generatedImage?.id ?? null }];
     return { ok: true, revision: item.revision };
   },
+  // The drawer saves through the batch form; each entry answers like saveRevision.
+  async saveRevisions({ revisions }) {
+    const results = [];
+    for (const entry of revisions) results.push(await fixture.saveRevision(entry));
+    return { results };
+  },
   async summary() {
     return {
       configured: new URL(location.href).searchParams.get("setup") !== "1",
