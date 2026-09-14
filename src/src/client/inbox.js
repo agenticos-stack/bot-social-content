@@ -195,6 +195,27 @@ export function drawerProjection(batch, sourceItem, batchItemId) {
   };
 }
 
+/**
+ * Content multi-select before review. `entries` are the selected rows, each
+ * carrying its own `batchId`; `batches` maps batchId -> the fetched batch (or
+ * null). Every selected post lands in exactly one list: `eligible` keeps its
+ * batch identity, `blocked` names why (an i18n key) — an already-filed post
+ * is never eligible, so it can never be submitted a second time.
+ */
+export function classifyReviewSelection(entries, batches) {
+  const eligible = [];
+  const blocked = [];
+  for (const entry of entries ?? []) {
+    const containing = batches?.get?.(entry.batchId) ?? null;
+    const item = containing?.items?.find((candidate) => candidate.id === entry.batchItemId) ?? null;
+    if (!item || item.active === false) blocked.push({ entry, item, reason: "reviewBlockedUnavailable" });
+    else if (!isEditableItem(item)) blocked.push({ entry, item, reason: "reviewBlockedFiled" });
+    else if ((item.revision ?? 0) === 0) blocked.push({ entry, item, reason: "reviewBlockedNoDraft" });
+    else eligible.push({ batchId: entry.batchId, item });
+  }
+  return { eligible, blocked };
+}
+
 export function isEditableItem(item) {
   // `active !== false` keeps summary items (which carry no `active` field)
   // editable while retired batch items — superseded rows that keep their

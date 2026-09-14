@@ -34,10 +34,25 @@ import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
 import { createMediaStage } from "./preview-media.js";
 import { newGrantRequestId, parseGadgetGrantResultMessage } from "../../grant-request.js";
-import { computePosterLayout, drawPoster, renderPosterImage } from "./poster.js";
+import { renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
-import { detectProtectedLiterals, generationMark, itemPresentation } from "../../model.js";
 import {
+  DRAWER_FOOTER_HINT_ID,
+  dirtyParts,
+  drawerPanelId,
+  drawerTabId,
+  footerState,
+  instructionPatchFor,
+  renderDrawerTablist,
+  renderHistoryPanel,
+  renderInstructionsPanel,
+  renderOutputPanel,
+  renderReferencePanel,
+  revisionEntryFor
+} from "./drawer.js";
+import { detectProtectedLiterals, itemPresentation } from "../../model.js";
+import {
+  classifyReviewSelection,
   clearInboxSelection,
   createInboxState,
   isEditableItem,
@@ -216,6 +231,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
 .sl-drawer-section { padding: 12px 0; }
+.sl-drawer-tablist { display: flex; gap: 2px; border-bottom: 1px solid var(--sl-line); overflow-x: auto; scrollbar-width: none; }
+.sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 13px; font-weight: 600; box-shadow: none; }
+.sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
+.sl-drawer-meta { font-size: 12px; color: var(--sl-muted); }
+.sl-drawer-state { display: block; margin-top: 2px; }
+.sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+.sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; }
+.sl-output-frame img { width: 100%; height: 100%; object-fit: contain; }
+.sl-output-frame .sl-pc-media-empty { padding: 12px; text-align: center; }
+.sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
+.sl-part-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
+.sl-reference-text { color: var(--sl-muted); }
+.sl-instructions-part { margin: 0 0 18px; }
+.sl-instructions-used { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-history-list { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; }
+.sl-history-delivery, .sl-history-earlier { margin-bottom: 10px; }
+.sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 6px; }
+.sl-drawer-footer-actions { display: flex; gap: 8px; }
+.sl-drawer-footer-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
+.sl-drawer-footer-hint { margin: 0; font-size: 12px; color: var(--sl-muted); min-height: 1em; }
+.sl-drawer-footer-hint:empty { display: none; }
 .sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
 .sl-drawer-regen-row { margin: 0 0 16px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
@@ -462,7 +500,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
 .sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: -18px 0 40px -16px rgba(24,24,27,.28); }
 .sl-preview-sheet.sl-sheet-drawer { grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.sl-sheet-drawer .sl-drawer-tabs { padding: 12px 24px 0; }
+.sl-sheet-drawer .sl-drawer-tabs { padding: 8px 24px 0; display: grid; gap: 8px; }
 .sl-sheet-drawer .sl-drawer-tabs:empty { padding: 0; }
 .sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
@@ -1001,23 +1039,23 @@ function App() {
         targets: item?.targets ?? []
       }).phase;
 
-    // Unsaved caption text survives sibling switches inside this drawer and
-    // never leaves it — a post's buffer is only committed by that post's own
-    // Save/Review, or by the close guard's explicit "save and leave".
-    const draftCaptions = new Map(); // batchItemId -> unsaved caption text
+    // The owner's unsaved work, per post, never applied to a sibling:
+    // `{ caption?, imageId?, instructions?: { image?, caption? } }`. A post's
+    // buffer is committed only by that post's own Save/Review, or by the
+    // close guard's explicit "save and leave".
+    const buffers = new Map(); // batchItemId -> buffer
+    const bufferOf = (id) => buffers.get(id) ?? {};
+    const patchBuffer = (id, patch) => buffers.set(id, { ...bufferOf(id), ...patch });
     const itemNotes = new Map();     // batchItemId -> live note element (current render)
-    const visualChoices = new Map(); // batchItemId -> staged visualTreatment the owner picked
     const generatedUrls = new Map(); // generatedMediaId -> live blob: URL (revoked on redraw/close)
     const stages = [];
+    let activeTab = "output";
     let closing = false;
     let saving = false;
 
     /*
      * What must survive a rewrite, marked where the owner is looking at the
-     * caption — not a fact the owner has to already know to check for. A
-     * textarea cannot carry inline marks, so an editable item gets this as
-     * a small read-only preview above its composer, shown only when there
-     * is something protected to show (nothing to mark is nothing to add).
+     * caption — not a fact the owner has to already know to check for.
      */
     const highlightedCaption = (text) => {
       const value = text || "";
@@ -1034,42 +1072,12 @@ function App() {
       return frag;
     };
 
-    // The poster renders at the Publish composition's own scale — the old
-    // 200px thumb read as a decoration, and the audit asked for the
-    // generated image to be the drawer's primary content.
-    const posterCanvas = (item) => {
-      const layout = item.posterLayout;
-      if (!layout?.template) return null;
-      const canvas = el("canvas", { class: "sl-pc-canvas", "aria-label": t(locale, "posterTitle") });
-      const computed = computePosterLayout({ template: layout.template, headline: layout.headline, subline: layout.subline, align: layout.align });
-      canvas.width = computed.width;
-      canvas.height = computed.height;
-      const ctx2d = canvas.getContext("2d");
-      if (ctx2d) drawPoster(ctx2d, computed, { headline: layout.headline, subline: layout.subline, background: { value: layout.background?.value }, textColor: layout.textColor });
-      return canvas;
-    };
-
     /**
-     * The pick the drawer DISPLAYS for a revision that never recorded one:
-     * what submit would actually ship — a stored poster when bytes exist at
-     * this revision, else the source media. `acceptedVisualMode` NULL is
-     * "nobody picked", not "keep_original" (migration 15), so defaulting the
-     * radio to the shipping answer keeps the checked box truthful.
-     */
-    const displayedVisual = (item) =>
-      item?.acceptedVisualMode ?? (item?.posterStored ? "text_poster" : "keep_original");
-
-    /**
-     * Poster bytes exist only when the client renders them — render and
-     * persist them for ONE item. A stored poster in a format the renderer
-     * no longer produces (a PNG saved before the JPEG switch) is
-     * re-rendered here rather than filed into a provider hold.
+     * Legacy poster bytes exist only when the client renders them. Only a
+     * revision whose recorded pick ships the poster (or a pre-picker revision
+     * with a stored layout) needs them; new content never has a layout.
      */
     const materializePoster = async (item) => {
-      // Only a revision whose visual pick ships the poster needs poster
-      // bytes — materializing one for `ai_refinement`/`keep_original` would
-      // append a revision carrying pixels the post will never use. No pick
-      // recorded (null) keeps the legacy ship-the-stored-poster behaviour.
       if (item.acceptedVisualMode === "ai_refinement" || item.acceptedVisualMode === "keep_original") {
         return { ok: true, revision: item.revision ?? 0 };
       }
@@ -1093,85 +1101,90 @@ function App() {
       return { ok: true, revision: stored?.revision ?? null };
     };
 
-    /** One `saveRevisions` for the named items only. Per-item issues land on that item's own note line. */
+    const refetchItems = async () => {
+      try {
+        const fresh = await rpc.getBatch(batch.id);
+        if (fresh?.items) { items = fresh.items; return true; }
+      } catch (error) {
+        console.error(error);
+      }
+      return false;
+    };
+
+    /**
+     * Save the named posts: one `saveRevisions` for caption edits and staged
+     * images (accepting a candidate pins its id), then each post's
+     * instruction overrides. Per-item issues land on that item's note line;
+     * a failed part keeps its buffer.
+     */
     const saveItems = async (ids) => {
-      const dirty = ids
-        .map((idToSave) => {
-          const item = items.find((entry) => entry.id === idToSave);
-          const caption = draftCaptions.get(idToSave);
-          const visual = visualChoices.get(idToSave);
-          // Compare against what the radio showed — an item with no recorded
-          // pick displays the mode its content would actually ship under, so
-          // re-picking the displayed choice sends nothing.
-          const currentVisual = item ? displayedVisual(item) : "keep_original";
-          return {
-            item,
-            caption: caption !== undefined && caption !== (item?.caption || "") ? caption : undefined,
-            visual: visual !== undefined && visual !== currentVisual ? visual : undefined
-          };
-        })
-        .filter((entry) => entry.item && (entry.caption !== undefined || entry.visual !== undefined));
-      if (!dirty.length) return true;
+      const work = ids
+        .map((idToSave) => items.find((entry) => entry.id === idToSave))
+        .filter(Boolean)
+        .map((item) => ({ item, entry: revisionEntryFor(item, bufferOf(item.id)), patch: instructionPatchFor(item, bufferOf(item.id)) }))
+        .filter((job) => job.entry || job.patch);
+      if (!work.length) return true;
       saving = true;
-      for (const entry of dirty) {
-        const note = itemNotes.get(entry.item.id);
+      redrawFooter();
+      for (const job of work) {
+        const note = itemNotes.get(job.item.id);
         if (note) note.textContent = t(locale, "saving");
       }
+      let allOk = true;
       try {
-        const result = await rpc.saveRevisions({
-          revisions: dirty.map((entry) => ({
-            batchItemId: entry.item.id,
-            expectedRevision: entry.item.revision,
-            ...(entry.caption !== undefined ? { caption: entry.caption } : {}),
-            ...(entry.visual !== undefined ? { acceptedVisualMode: entry.visual } : {})
-          }))
-        });
-        let allOk = true;
-        for (const [index, entry] of dirty.entries()) {
-          const one = result?.results?.[index];
-          const note = itemNotes.get(entry.item.id);
-          if (one?.ok) {
-            entry.item.revision = one.revision;
-            if (entry.caption !== undefined) entry.item.caption = entry.caption;
-            if (entry.visual !== undefined) {
-              entry.item.acceptedVisualMode = entry.visual;
-              visualChoices.delete(entry.item.id);
+        const revisionJobs = work.filter((job) => job.entry);
+        if (revisionJobs.length) {
+          const result = await rpc.saveRevisions({ revisions: revisionJobs.map((job) => job.entry) });
+          for (const [index, job] of revisionJobs.entries()) {
+            const one = result?.results?.[index];
+            const note = itemNotes.get(job.item.id);
+            if (one?.ok) {
+              job.item.revision = one.revision;
+              if (job.entry.caption !== undefined) job.item.caption = job.entry.caption;
+              job.item.generation = one.generation ?? null;
+              job.item.phase = null;
+              const { caption: _caption, imageId: _imageId, ...rest } = bufferOf(job.item.id);
+              buffers.set(job.item.id, rest);
+              if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
+            } else {
+              allOk = false;
+              if (note) note.textContent = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
             }
-            // The server may keep a partial mark (a pending image ask is not
-            // answered by a caption) — mirror whatever it reports, and drop
-            // the cached phase so it recomputes off the new fields.
-            entry.item.generation = one.generation ?? null;
-            entry.item.phase = null;
-            draftCaptions.delete(entry.item.id);
-            if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
-          } else {
-            allOk = false;
-            if (note) note.textContent = (one?.issues || []).map((issue) => issue.message).join(" ") || t(locale, "saveFailed");
           }
         }
-        if (allOk) {
-          try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+        for (const job of work.filter((entry) => entry.patch)) {
+          const saved = await rpc.saveInstructionOverrides(job.patch);
+          if (saved?.ok) {
+            job.item.instructionOverrides = saved.instructionOverrides;
+            job.item.effectiveInstructions = saved.effectiveInstructions;
+            const { instructions: _instructions, ...rest } = bufferOf(job.item.id);
+            buffers.set(job.item.id, rest);
+          } else {
+            allOk = false;
+            announce(refusalMessage(saved ?? {}) || t(locale, "saveFailed"), "");
+          }
         }
-        return allOk;
+      } catch (error) {
+        allOk = false;
+        announce(error instanceof Error ? error.message : t(locale, "saveFailed"), "");
       } finally {
         saving = false;
       }
+      // The saved rows are canonical (a pinned candidate becomes the accepted
+      // image); keep what the save acknowledged when the reread fails.
+      await refetchItems();
+      if (allOk) {
+        try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+      }
+      return allOk;
     };
 
-    const dirtyItemIds = () =>
-      items.filter((item) => {
-        const draft = draftCaptions.get(item.id);
-        if (draft !== undefined && draft !== (item.caption || "")) return true;
-        const visual = visualChoices.get(item.id);
-        return visual !== undefined && visual !== displayedVisual(item);
-      }).map((item) => item.id);
+    const dirtyItemIds = () => items.filter((item) => dirtyParts(item, bufferOf(item.id)).any).map((item) => item.id);
 
     /**
-     * The one exit guard every drawer dismissal runs — Close, Escape,
-     * Review and Re-draft all call it. Dirty buffers are an explicit
-     * keep/discard/save decision: reviewing one post can never silently
-     * save or discard another's edits, and a failed save keeps the editor
-     * and its text.
+     * The one exit guard every drawer dismissal runs — Close, Escape and
+     * Review call it. Unsaved caption, staged image and instruction edits
+     * are one decision: keep editing, discard, or save and leave.
      */
     const requestExit = async () => {
       if (closing || saving) return false;
@@ -1180,29 +1193,20 @@ function App() {
       const decision = await confirmUnsavedNavigation(leaveDialog, locale);
       if (decision === "keep") return false;
       if (decision === "save" && !(await saveItems(dirty))) return false;
-      // "discard" must actually drop the buffers — leaving them would let a
-      // later saveItems (e.g. Review's own) resurrect text the owner chose
-      // to throw away. The staged visual choice is part of the same buffer.
-      if (decision === "discard") for (const id of dirty) {
-        draftCaptions.delete(id);
-        visualChoices.delete(id);
-      }
+      // "discard" must actually drop the buffers, so a later save (Review's
+      // own) cannot resurrect what the owner threw away.
+      if (decision === "discard") for (const id of dirty) buffers.delete(id);
       return true;
     };
 
     /**
-     * Review this ONE post: save its caption if dirty, materialize its
-     * poster bytes when missing or stale, then resume the wizard on the
-     * FINAL acknowledged revision. The refetch after savePoster is a
-     * REQUIRED read — an acknowledged revision-2 poster can never enter
-     * review as revision 1, so a lost response keeps the drawer open with
-     * an explanation rather than handing the wizard a stale snapshot.
-     * "Review post" IS the retry: it re-reads canonical state and never
-     * duplicates a save or a submission.
+     * Review this ONE post: save its buffer, materialize a legacy poster when
+     * one is still what ships, then resume the wizard on the FINAL
+     * acknowledged revision (a required reread — never a stale snapshot).
      */
     const reviewPost = async (item) => {
       if (saving) return;
-      if (!(await requestExit())) return;
+      if (dirtyItemIds().some((id) => id !== item.id) && !(await requestExit())) return;
       if (!(await saveItems([item.id]))) return;
       const note = () => itemNotes.get(item.id);
       const readFailed = () => {
@@ -1215,8 +1219,6 @@ function App() {
       let current = fresh?.items?.find((entry) => entry.id === item.id);
       if (!current) { readFailed(); return; }
       if (!isEditableItem(current)) {
-        // Filed (or retired) while the owner looked — refresh the drawer to
-        // the canonical rows rather than review a post that no longer edits.
         items = fresh.items;
         redraw();
         announce(t(locale, "batchUnavailable"), "");
@@ -1232,14 +1234,11 @@ function App() {
       }
       try { fresh = await rpc.getBatch(batch.id); } catch { fresh = null; }
       current = fresh?.items?.find((entry) => entry.id === item.id) ?? null;
-      // The wizard gets the read AFTER the poster write — never the
-      // pre-poster snapshot, and never a revision older than the write that
-      // was just acknowledged.
       if (!current || (materialized.revision != null && (current.revision ?? 0) < materialized.revision)) {
         readFailed();
         return;
       }
-      draftCaptions.delete(item.id);
+      buffers.delete(item.id);
       closing = true;
       batchDialog.close();
       wizard = resumeBatch(wizard, { ...fresh, id: batch.id, items: [current] });
@@ -1248,9 +1247,6 @@ function App() {
         announce(t(locale, "batchUnavailable"), "");
         return;
       }
-      // The merged Publish step reads publication rows off
-      // wizard.publishByItem — fetch them on the way in rather than
-      // showing a picker for pairs that are already filed.
       await refreshPublishState();
       renderCurrentView();
     };
@@ -1258,79 +1254,140 @@ function App() {
     const requestClose = async () => {
       if (!(await requestExit())) return;
       closing = true;
-      draftCaptions.clear();
-      visualChoices.clear();
+      buffers.clear();
       for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
       generatedUrls.clear();
       batchDialog.close();
     };
 
-    const bodyEl = el("div", { class: "sl-preview-scroll" });
-    const tabsEl = el("div", { class: "sl-drawer-tabs" });
-    const footerEl = el("footer", { class: "sl-preview-actions" });
+    /**
+     * "Regenerate image" / "Rewrite caption": a scoped request for ONE part
+     * of THIS post. The drawer stays open on the refreshed projection; the
+     * other part and every unsaved buffer are left alone. Rewriting the
+     * caption over an unsaved caption edit asks first.
+     */
+    const requestPart = async (item, part) => {
+      if (saving) return;
+      if (part === "caption" && dirtyParts(item, bufferOf(item.id)).caption) {
+        const decision = await confirmUnsavedNavigation(leaveDialog, locale);
+        if (decision === "keep") return;
+        if (decision === "save" && !(await saveItems([item.id]))) return;
+        if (decision === "discard") {
+          const { caption: _caption, ...rest } = bufferOf(item.id);
+          buffers.set(item.id, rest);
+        }
+      }
+      try {
+        const result = await rpc.requestGeneration(batch.id, [item.id], { needs: { [part]: true } });
+        if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+      } catch (error) {
+        announce(error instanceof Error ? error.message : String(error), "");
+        return;
+      }
+      await refetchItems();
+      redraw();
+      announce(t(locale, "drawerRequestSent"), "");
+      try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+    };
 
-    const deliveryRow = (delivery) => {
-      const note = [
-        delivery.detail && delivery.detail !== delivery.outcome ? delivery.detail : null,
-        delivery.guidance
-      ].filter(Boolean).join(" — ");
-      return el("div", { class: "sl-target-row" }, [
-        el("div", { class: "sl-who" }, [
-          el("strong", null, destinationLabel(delivery.destinationBinding)),
-          (delivery.revision ?? 0) > 0 ? el("span", null, t(locale, "drawerRevision", { n: delivery.revision })) : null
-        ]),
-        el("span", { class: `sl-state-badge sl-state-${delivery.outcome}` }, publicationStateSummary(locale, delivery.outcome)),
-        delivery.receiptUrl
-          ? el("a", { class: "sl-receipt", href: delivery.receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
-          : null,
-        note ? el("p", { class: "sl-guidance" }, note) : null
-      ]);
+    const headerMeta = el("div", { class: "sl-drawer-meta" });
+    const tabsEl = el("div", { class: "sl-drawer-tabs" });
+    const bodyEl = el("div", { class: "sl-preview-scroll", tabindex: "-1" });
+    const footerEl = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
+
+    /*
+     * The accepted image is drawn from the gadget's own bytes. JPEG conversion
+     * lives here, at the one place a canvas exists: Instagram's publish
+     * container rejects PNG, so a PNG accepted for a JPEG-only destination is
+     * converted and re-delivered. A conversion failure leaves the delivered
+     * PNG on screen; submit's format refusal is the backstop.
+     */
+    const loadImage = (item) => (generated, img, onFail) => {
+      const forId = generated.id;
+      loadGeneratedImageAsBlobUrl(rpc, forId)
+        .then(async ({ url, mime }) => {
+          generatedUrls.set(forId, url);
+          img.src = url;
+          if (forId !== item.generatedImage?.id) return;
+          const jpegOnly = (item.destinationBindings ?? []).some((binding) =>
+            (summary?.destinations ?? []).some((d) => (d.destinationBinding ?? d.binding) === binding && d.provider === "instagram"));
+          if (!jpegOnly || mime !== "image/png") return;
+          try {
+            const jpegBlob = await new Promise((resolveConvert, rejectConvert) => {
+              const probe = new Image();
+              probe.onload = () => {
+                const canvas = document.createElement("canvas");
+                canvas.width = probe.naturalWidth;
+                canvas.height = probe.naturalHeight;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) { rejectConvert(new Error("no 2d context")); return; }
+                ctx.drawImage(probe, 0, 0);
+                canvas.toBlob((result) => (result ? resolveConvert(result) : rejectConvert(new Error("canvas.toBlob returned no blob"))), "image/jpeg", 0.92);
+              };
+              probe.onerror = () => rejectConvert(new Error("generated image did not decode"));
+              probe.src = url;
+            });
+            const buffer = await jpegBlob.arrayBuffer();
+            const redelivered = await rpc.deliverGeneratedImage({ id: forId, bytes: new Uint8Array(buffer), mimeType: "image/jpeg" });
+            if (redelivered?.ok) generated.mimeType = "image/jpeg";
+          } catch (error) {
+            console.error("generated image JPEG conversion failed:", error);
+          }
+        })
+        .catch(() => onFail());
     };
 
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
-      const editable = isEditableItem(item);
-      const dirty = dirtyItemIds().includes(item.id);
-      if (editable) {
-        // Drafts edit + save + review. A revision-0 post (queued, nothing
-        // drafted) cannot review until the owner has typed or the agent has
-        // saved output — the disabled button carries that reason.
+      if (isEditableItem(item)) {
+        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
+        const reason = state.review.reason || state.save.reason;
         replace(footerEl, [
-          el("button", {
-            type: "button", class: "sl-secondary",
-            disabled: !dirty || saving,
-            onclick: () => saveItems([item.id]).then((ok) => { if (ok) redraw(); })
-          }, t(locale, "drawerSaveDraft")),
-          el("button", {
-            type: "button", class: "sl-primary",
-            disabled: saving || ((item.revision ?? 0) === 0 && !(draftCaptions.get(item.id) ?? "").trim()),
-            title: (item.revision ?? 0) === 0 ? t(locale, "drawerReviewNeedsOutput") : "",
-            onclick: () => reviewPost(item)
-          }, t(locale, "drawerReviewPost"))
+          el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
+          el("div", { class: "sl-drawer-footer-actions" }, [
+            el("button", {
+              type: "button", class: "sl-secondary",
+              disabled: state.save.disabled,
+              title: state.save.reason || null,
+              "aria-describedby": state.save.disabled ? DRAWER_FOOTER_HINT_ID : null,
+              onclick: () => saveItems([item.id]).then(() => redraw())
+            }, t(locale, "drawerSaveDraft")),
+            el("button", {
+              type: "button", class: "sl-primary",
+              disabled: state.review.disabled,
+              title: state.review.reason || null,
+              "aria-describedby": state.review.disabled ? DRAWER_FOOTER_HINT_ID : null,
+              onclick: () => reviewPost(item)
+            }, t(locale, "drawerReviewPost"))
+          ])
         ]);
         return;
       }
       // Filed/published/attention posts: no second submission from this
-      // drawer — the outcome rows carry the receipt, and Check status
-      // re-reads the canonical state through the supported path.
+      // drawer — History carries the outcome, and Check status re-reads the
+      // canonical state through the supported path.
       replace(footerEl, [
-        el("button", {
-          type: "button", class: "sl-secondary",
-          onclick: async () => {
-            try {
-              await rpc.readPublishState(item.id);
-              const fresh = await rpc.getBatch(batch.id);
-              if (fresh?.items) {
-                items = fresh.items;
-                redraw();
+        el("div", { class: "sl-drawer-footer-actions" }, [
+          el("button", {
+            type: "button", class: "sl-secondary",
+            onclick: async () => {
+              try {
+                await rpc.readPublishState(item.id);
+                if (await refetchItems()) redraw();
+              } catch (error) {
+                announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
               }
-            } catch (error) {
-              announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
             }
-          }
-        }, t(locale, "drawerCheckStatus"))
+          }, t(locale, "drawerCheckStatus"))
+        ])
       ]);
+    };
+
+    const selectTab = (key, { focus } = {}) => {
+      activeTab = key;
+      redraw();
+      if (focus) document.getElementById?.(drawerTabId(key))?.focus?.();
     };
 
     const redraw = () => {
@@ -1340,6 +1397,7 @@ function App() {
       itemNotes.clear();
       const item = activeItem();
       if (!item) {
+        replace(headerMeta, []);
         replace(tabsEl, []);
         replace(bodyEl, [el("p", { class: "sl-field-note" }, t(locale, "batchUnavailable"))]);
         replace(footerEl, []);
@@ -1347,271 +1405,94 @@ function App() {
       }
       const phase = phaseOf(item);
       const editable = isEditableItem(item);
-      const isQueued = phase === "queued" || phase === "regenerating";
 
-      // Sibling navigation: tabs name ONE post each and switching is pure
-      // navigation — unsaved caption text waits in draftCaptions for its
-      // own item and is never applied to a sibling.
-      replace(tabsEl, items.length > 1 ? [
-        el("div", { class: "sl-item-tabs", role: "group", "aria-label": t(locale, "drawerSavedWork") },
-          items.map((entry, index) => el("button", {
-            type: "button",
-            "aria-selected": String(entry.id === activeId),
-            onclick: () => { activeId = entry.id; redraw(); }
-          }, t(locale, "drawerPostNofM", { n: index + 1, total: items.length }))))
-      ] : []);
-
-      const draftCaption = draftCaptions.get(item.id);
-      const marked = highlightedCaption(item.caption || "");
-
-      // Generated output — PRIMARY. A missing layout or a not-yet-drafted
-      // item gets an explicit pending slot; the source photo never stands
-      // in as output. An accepted AI-generated image is a real alternative
-      // visual: the owner picks which ships (`acceptedVisualMode` on the
-      // revision), and the choice persists through the same saveRevisions
-      // path as the caption.
-      const poster = posterCanvas(item);
-      const generated = item.generatedImage ?? null;
-      const currentVisual = visualChoices.get(item.id) ?? displayedVisual(item);
-      const mediaSlot = el("div", { class: "sl-pc-media-slot", style: `aspect-ratio: ${item.posterLayout?.template === "1080x1080" ? "1 / 1" : "4 / 5"}; max-width: 320px;` });
-      if (currentVisual === "ai_refinement" && generated?.ready) {
-        const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
-        const forId = generated.id;
-        loadGeneratedImageAsBlobUrl(rpc, forId)
-          .then(async ({ url, mime }) => {
-            generatedUrls.set(forId, url);
-            img.src = url;
-            /*
-             * JPEG conversion at the one place a canvas exists: Instagram's
-             * publish container rejects PNG, and the agent-side attachment
-             * pipeline delivers whatever format the image tool produced. When
-             * a bound destination is JPEG-only and the stored bytes are PNG,
-             * convert through the canvas and re-deliver — the stored asset is
-             * then the file that can actually ship, not just the file that
-             * arrived. A conversion failure leaves the delivered PNG on
-             * screen; submit's format refusal is the backstop, not this.
-             */
-            const jpegOnly = (item.destinationBindings ?? []).some((binding) =>
-              (summary?.destinations ?? []).some((d) => (d.destinationBinding ?? d.binding) === binding && d.provider === "instagram"));
-            if (!jpegOnly || mime !== "image/png") return;
-            try {
-              const jpegBlob = await new Promise((resolveConvert, rejectConvert) => {
-                const probe = new Image();
-                probe.onload = () => {
-                  const canvas = document.createElement("canvas");
-                  canvas.width = probe.naturalWidth;
-                  canvas.height = probe.naturalHeight;
-                  const ctx = canvas.getContext("2d");
-                  if (!ctx) { rejectConvert(new Error("no 2d context")); return; }
-                  ctx.drawImage(probe, 0, 0);
-                  canvas.toBlob((result) => (result ? resolveConvert(result) : rejectConvert(new Error("canvas.toBlob returned no blob"))), "image/jpeg", 0.92);
-                };
-                probe.onerror = () => rejectConvert(new Error("generated image did not decode"));
-                probe.src = url;
-              });
-              const buffer = await jpegBlob.arrayBuffer();
-              const redelivered = await rpc.deliverGeneratedImage({ id: forId, bytes: new Uint8Array(buffer), mimeType: "image/jpeg" });
-              if (redelivered?.ok) generated.mimeType = "image/jpeg";
-            } catch (error) {
-              console.error("generated image JPEG conversion failed:", error);
-            }
-          })
-          .catch(() => {
-            img.replaceWith(el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedImageFailed")));
-          });
-        replace(mediaSlot, [img]);
-      } else if (currentVisual === "ai_refinement" && generated) {
-        replace(mediaSlot, [el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerGeneratedPending"))]);
-      } else if (currentVisual === "keep_original") {
-        replace(mediaSlot, [el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerVisualSource"))]);
-      } else {
-        replace(mediaSlot, [poster || el("span", { class: "sl-pc-media-empty" }, t(locale, isQueued ? "posterPendingGeneration" : "posterPending"))]);
-      }
-      const visualPicker = generated || item.posterStored
-        ? el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "drawerVisualChoice") }, [
-            generated
-              ? el("label", { class: "sl-dest-row" }, [
-                  el("input", {
-                    type: "radio",
-                    name: `visual-${item.id}`,
-                    checked: currentVisual === "ai_refinement",
-                    disabled: !generated.ready || !editable || saving,
-                    onchange: () => {
-                      visualChoices.set(item.id, "ai_refinement");
-                      redraw();
-                    }
-                  }),
-                  t(locale, "drawerVisualGenerated"),
-                  generated.ready ? null : el("span", { class: "sl-dest-tag" }, t(locale, "drawerGeneratedPendingTag"))
-                ])
-              : null,
-            // A text poster is history, not a new output: offered only when
-            // this post already stored one, so a legacy revision stays reviewable.
-            item.posterStored
-              ? el("label", { class: "sl-dest-row" }, [
-                  el("input", {
-                    type: "radio",
-                    name: `visual-${item.id}`,
-                    checked: currentVisual === "text_poster",
-                    disabled: !editable || saving,
-                    onchange: () => {
-                      visualChoices.set(item.id, "text_poster");
-                      redraw();
-                    }
-                  }),
-                  t(locale, "drawerVisualPoster")
-                ])
-              : null,
-            el("label", { class: "sl-dest-row" }, [
-              el("input", {
-                type: "radio",
-                name: `visual-${item.id}`,
-                checked: currentVisual === "keep_original",
-                disabled: !editable || saving,
-                onchange: () => {
-                  visualChoices.set(item.id, "keep_original");
-                  redraw();
-                }
-              }),
-              t(locale, "drawerVisualSourceOption")
-            ])
-          ])
-        : null;
-      const outputSection = el("section", { class: "sl-drawer-section" }, [
-        el("h3", null, t(locale, "drawerGeneratedOutput")),
-        mediaSlot,
-        visualPicker,
-        generated?.ready && generated.altText
-          ? el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: generated.altText }))
-          : null,
-        isQueued
-          ? el("p", { class: "sl-field-note", role: "status" }, (() => {
-              // Caption-ready vs image-ready are different states: a saved
-              // caption with a pending image asks must not read as "still
-              // queued for everything".
-              const mark = generationMark(item.generation);
-              if (mark && mark.needs.image && !mark.needs.caption) return t(locale, "drawerWaitingImageNote");
-              if (mark && !mark.needs.image && mark.needs.caption) return t(locale, "drawerWaitingCaptionNote");
-              return t(locale, phase === "regenerating" ? "drawerRegeneratingNote" : "drawerWaitingNote");
-            })())
-          : null,
-        editable
-          ? el("div", null, [
-              marked ? el("p", { class: "sl-drawer-caption-preview" }, [marked]) : null,
-              (() => {
-                const note = el("p", { class: "sl-field-note", role: "status" });
-                itemNotes.set(item.id, note);
-                const textarea = el("textarea", {
-                  class: "sl-drawer-caption",
-                  rows: "4",
-                  placeholder: t(locale, "drawerCaptionPlaceholder"),
-                  oninput: () => {
-                    draftCaptions.set(item.id, textarea.value);
-                    textarea.classList.toggle("sl-dirty", textarea.value !== (item.caption || ""));
-                    redrawFooter();
-                  }
-                });
-                textarea.value = draftCaption ?? item.caption ?? "";
-                textarea.classList.toggle("sl-dirty", textarea.value !== (item.caption || ""));
-                return el("div", { class: "sl-field sl-drawer-composer" }, [textarea, note]);
-              })()
-            ])
-          : el("p", { class: "sl-drawer-caption-preview" }, [marked || item.caption || t(locale, "inboxNoSource")]),
-        el("p", { class: "sl-field-note" }, [
+      replace(headerMeta, [
+        el("span", { class: "sl-drawer-state" }, [
+          items.length > 1 ? t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }) + " · " : "",
+          t(locale, PHASE_STATE_KEYS[phase] ?? "stateUnknown"),
+          " · ",
           (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"),
-          item.approval && (item.revision ?? 0) > (item.approval.approvedRevision ?? 0)
-            ? " " + t(locale, "approvalExpiredTitle")
-            : ""
+          item.approval && (item.revision ?? 0) > (item.approval.approvedRevision ?? 0) ? " · " + t(locale, "approvalExpiredTitle") : ""
         ].join(""))
       ]);
 
-      // Deliveries — filings at/behind the current revision with the
-      // canonical outcome each last read back. Superseded/failed rows stay
-      // visible as labelled history; an old held revision is visibly
-      // previous, not the post's state.
-      const deliveries = Array.isArray(item.deliveries) ? item.deliveries : [];
-      const history = (item.publications ?? []).filter((pub) => pub.state === "superseded" || pub.state === "failed");
-      const deliverySection = deliveries.length || history.length
-        ? el("section", { class: "sl-drawer-section" }, [
-            el("h3", null, t(locale, "drawerDelivery")),
-            ...deliveries.map(deliveryRow),
-            history.length
-              ? el("p", { class: "sl-field-note" }, [
-                  t(locale, "drawerPreviousFilings"),
-                  " ",
-                  history.map((pub) => `${destinationLabel(pub.destinationBinding)} · ${t(locale, "drawerRevision", { n: pub.revision })}`).join(" · ")
-                ])
-              : null
-          ])
-        : null;
-
-      // Source reference — SECONDARY and labelled. The stage keeps the
-      // carousel strip; the caption and permalink come after it so nothing
-      // reads as generated output.
-      const sourceItem = item.sourceItem;
-      const sourceSection = sourceItem
-        ? el("section", { class: "sl-drawer-section" }, [
-            el("h3", null, t(locale, "drawerSourceReference")),
-            (() => {
-              const mediaStage = mediaStageFor(sourceItem);
-              stages.push(mediaStage);
-              return el("div", { class: "sl-preview-stage-wrap" }, [mediaStage.node, mediaStage.strip]);
-            })(),
-            el("p", { class: "sl-field-note" }, t(locale, "drawerSourceCaption")),
-            el("p", { class: "sl-drawer-caption-preview" }, sourceItem.text || t(locale, "inboxNoSource")),
-            sourceItem.permalink
-              ? el("a", { href: sourceItem.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
-              : null
-          ])
-        : null;
-
-      // Per-item regenerate — the scoped requestGeneration path. The ask
-      // names THIS post; a batch-wide request would silently regenerate
-      // its siblings.
-      const regenerateRow = editable && phase === "draft"
-        ? el("div", { class: "sl-drawer-regen-row" }, [
-            el("button", {
-              type: "button", class: "sl-secondary sl-drawer-regen",
-              onclick: async () => {
-                // Same exit guard as Close/Review — a re-draft that drops a
-                // dirty caption without asking is the audit's defect 2.
-                if (!(await requestExit())) return;
-                try {
-                  const result = await rpc.requestGeneration(batch.id, [item.id]);
-                  if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
-                } catch (error) {
-                  announce(error instanceof Error ? error.message : String(error), "");
-                  return;
-                }
-                closing = true;
-                draftCaptions.clear();
-                batchDialog.close();
-                announce(t(locale, "drawerRegenerateNote"), "");
-                try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
-                renderCurrentView();
-              }
-            }, t(locale, "drawerRegeneratePost"))
-          ])
-        : null;
-
-      // Export stays batch-scoped (the archive is one batch) even though
-      // the drawer's subject is one post.
-      const exportRow = el("div", { class: "sl-export-row" }, [
-        el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
-        el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
+      // Sibling navigation names ONE post each; switching never applies a
+      // buffer to a sibling.
+      replace(tabsEl, [
+        items.length > 1
+          ? el("div", { class: "sl-item-tabs", role: "group", "aria-label": t(locale, "drawerSavedWork") },
+              items.map((entry, index) => el("button", {
+                type: "button",
+                "aria-pressed": String(entry.id === activeId),
+                "aria-selected": String(entry.id === activeId),
+                onclick: () => { activeId = entry.id; redraw(); }
+              }, t(locale, "drawerPostNofM", { n: index + 1, total: items.length }))))
+          : null,
+        renderDrawerTablist(locale, { active: activeTab, onSelect: selectTab })
       ]);
 
+      const buffer = bufferOf(item.id);
+      let panel;
+      if (activeTab === "reference") {
+        let stage = null;
+        if (item.sourceItem) {
+          stage = mediaStageFor(item.sourceItem);
+          stages.push(stage);
+        }
+        panel = renderReferencePanel(locale, item, { stage });
+      } else if (activeTab === "instructions") {
+        panel = renderInstructionsPanel(locale, item, {
+          editable,
+          buffers: buffer,
+          policy,
+          onInput: (part, value) => {
+            patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: value } });
+            redrawFooter();
+          },
+          onReset: (part) => {
+            patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: "" } });
+            redraw();
+          }
+        });
+      } else if (activeTab === "history") {
+        panel = renderHistoryPanel(locale, item, {
+          destinationLabel,
+          stateLabel: (outcome) => publicationStateSummary(locale, outcome)
+        });
+      } else {
+        panel = renderOutputPanel(locale, item, {
+          editable,
+          saving,
+          buffers: buffer,
+          highlighted: highlightedCaption(buffer.caption ?? item.caption ?? ""),
+          loadImage: loadImage(item),
+          noteRef: (note) => itemNotes.set(item.id, note),
+          onCaptionInput: (value) => {
+            patchBuffer(item.id, { caption: value });
+            redrawFooter();
+          },
+          onStageImage: (mediaId) => {
+            if (mediaId) patchBuffer(item.id, { imageId: mediaId });
+            else {
+              const { imageId: _imageId, ...rest } = bufferOf(item.id);
+              buffers.set(item.id, rest);
+            }
+            redraw();
+          },
+          onRequestPart: (part) => requestPart(item, part)
+        });
+      }
+
+      // Export stays batch-scoped (the archive is one batch).
+      const exportRow = activeTab === "history"
+        ? el("div", { class: "sl-export-row" }, [
+            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
+            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
+          ])
+        : null;
+
       replace(bodyEl, [
-        el("p", { class: "sl-field-note" }, [
-          t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }),
-          " · ",
-          t(locale, PHASE_STATE_KEYS[phase] ?? "stateUnknown")
-        ]),
-        outputSection,
-        deliverySection,
-        sourceSection,
-        regenerateRow,
-        exportRow
+        el("div", { id: drawerPanelId(activeTab), role: "tabpanel", "aria-labelledby": drawerTabId(activeTab), class: "sl-drawer-panel" }, [panel, exportRow])
       ]);
       redrawFooter();
     };
@@ -1619,21 +1500,30 @@ function App() {
     redraw();
 
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [
-      el("header", { class: "sl-preview-head" }, [el("strong", null, t(locale, "drawerSavedWork")), el("div", { class: "sl-preview-head-actions" }, [
-        el("button", {
-          type: "button", class: "sl-icon-action",
-          title: t(locale, "drawerClose"), "aria-label": t(locale, "drawerClose"),
-          onclick: () => requestClose()
-        }, icon("close"))
-      ])]),
+      el("header", { class: "sl-preview-head" }, [
+        el("div", { class: "sl-preview-who" }, [
+          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork")),
+          headerMeta
+        ]),
+        el("div", { class: "sl-preview-head-actions" }, [
+          el("button", {
+            type: "button", class: "sl-icon-action",
+            title: t(locale, "drawerClose"), "aria-label": t(locale, "drawerClose"),
+            onclick: () => requestClose()
+          }, icon("close"))
+        ])
+      ]),
       tabsEl,
       bodyEl,
       footerEl
     ])]);
+    batchDialog.setAttribute("aria-labelledby", "sl-drawer-title");
     // The shared dialog's close/cancel listeners delegate here — one
     // registration, one session, see buildPreviewDialog above.
     drawerSession = { requestClose, stages, previous };
     if (!batchDialog.open) batchDialog.showModal();
+    // Focus moves into the drawer, onto the active section's tab.
+    document.getElementById?.(drawerTabId(activeTab))?.focus?.();
   }
 
   function closePreview() {
@@ -1875,21 +1765,13 @@ function App() {
       return batchCache.get(batchId);
     };
     const labelOf = (entry, item) => item?.sourceItem?.sourceLabel || entry.itemId || entry.batchItemId;
-    const eligible = [];
-    const blocked = [];
+    const batches = new Map();
     for (const entry of entries) {
-      const containing = await fetchBatch(entry.batchId);
-      const item = containing?.items?.find((candidate) => candidate.id === entry.batchItemId);
-      if (!item || item.active === false) {
-        blocked.push(t(locale, "reviewBlockedUnavailable", { name: labelOf(entry, item) }));
-      } else if (!isEditableItem(item)) {
-        blocked.push(t(locale, "reviewBlockedFiled", { name: labelOf(entry, item) }));
-      } else if ((item.revision ?? 0) === 0) {
-        blocked.push(t(locale, "reviewBlockedNoDraft", { name: labelOf(entry, item) }));
-      } else {
-        eligible.push({ batchId: entry.batchId, item });
-      }
+      if (!batches.has(entry.batchId)) batches.set(entry.batchId, await fetchBatch(entry.batchId));
     }
+    const classified = classifyReviewSelection(entries, batches);
+    const eligible = classified.eligible;
+    const blocked = classified.blocked.map(({ entry, item, reason }) => t(locale, reason, { name: labelOf(entry, item) }));
     if (!eligible.length) {
       // Nothing proceeds — and the selection stays exactly as the owner
       // left it, so a retry after fixing the blocked posts is one click.
