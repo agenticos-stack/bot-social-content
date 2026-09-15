@@ -450,7 +450,7 @@ function batchSummaries(mark: string) {
 
 function installGadget(
   platform: Record<string, unknown> | null,
-  calls: { status: number },
+  calls: { status: number; requests?: unknown[] },
   markExtra: Record<string, unknown> = {}
 ) {
   const entry = {
@@ -502,7 +502,8 @@ function installGadget(
       calls.status += 1;
       return { ok: true, batchId: "batch_1", at: "2026-09-15T08:15:06.000Z", workRequestStatus: [entry] };
     },
-    async requestGeneration() {
+    async requestGeneration(...args: unknown[]) {
+      calls.requests = [...(calls.requests ?? []), args];
       return { ok: true, request: "gen_outcome_2" };
     },
     async subscribe() {
@@ -549,9 +550,12 @@ describe("a request whose turn ended with work outstanding", () => {
       expect(header).not.toContain("Awaiting approval");
       expect(header).not.toContain("等待批核");
       expect(header).toMatch(lang === "en" ? /Approved/ : /已批核/);
+      // The footer agrees before any status read: the approval ran, and the
+      // turn has not reported back — never a wait for approval.
       const text = String(document.body.textContent);
-      expect(text).not.toContain("Awaiting approval");
-      expect(text).not.toContain("等待批核");
+      expect(text).toMatch(lang === "en" ? /hasn't reported back/ : /尚未回報/);
+      expect(text).not.toContain("Waiting for your approval");
+      expect(text).not.toContain("等待你在對話中批核");
     }
   });
 
@@ -575,12 +579,12 @@ describe("a request whose turn ended with work outstanding", () => {
     }
   });
 
-  it("names the outcome code as the stopped reason", async () => {
+  it("names the stopped reason in readable words, never the raw outcome code", async () => {
+    // Should-fix 15: raw codes like `turn_crashed` must not reach zh-HK or en
+    // sentences. The code (the turn's own report) maps to readable text.
     const { document } = installMinimalDom();
     document.documentElement.lang = "en";
     const calls = { status: 0 };
-    // The status read reports both — the code (the turn's own report) is the
-    // reason the drawer names.
     installGadget(
       { actionId: "act_1", state: "ran", decision: "approved", outcomeStatus: "failed", outcomeCode: "turn_crashed" },
       calls
@@ -589,7 +593,73 @@ describe("a request whose turn ended with work outstanding", () => {
     await click(buttonText(document.body, "Check status"));
 
     expect(calls.status).toBeGreaterThan(0);
-    expect(String(document.body.textContent)).toContain("turn_crashed");
+    const text = String(document.body.textContent);
+    expect(text).toContain("turn crashed");
+    expect(text).not.toContain("turn_crashed");
+  });
+
+  it("offers a status check for a credit refusal, as its own copy promises", async () => {
+    // Should-fix 15: `drawerCreditCheckUnavailable` says "Check status, then
+    // retry", so the button must be rendered even with no canonical state.
+    for (const lang of ["en", "zh-HK"] as const) {
+      const { document } = installMinimalDom();
+      document.documentElement.lang = lang;
+      const calls = { status: 0 };
+      installGadget(null, calls, { dispatch: { filed: false, reason: "credit_check_unavailable" } });
+      await openDrawer(document);
+      expect(
+        buttonText(document.body, lang === "en" ? "Check status" : "檢查狀態"),
+        `${lang}: status check offered for a credit refusal`
+      ).toBeTruthy();
+    }
+  });
+
+  it("retries a declined or failed request with replace, a stopped one without", async () => {
+    // Should-fix 10: nothing stamps declined/failed onto the mark, so the
+    // server would refuse a replace-less re-ask as generation_pending. A
+    // stopped request carries its outcome and re-asks cleanly.
+    const { document } = installMinimalDom();
+    document.documentElement.lang = "en";
+    const declinedCalls = { status: 0, requests: [] as unknown[] };
+    installGadget({ actionId: "act_1", state: "refused" }, declinedCalls);
+    await openDrawer(document);
+    await click(buttonText(document.body, "Check status"));
+    await click(buttonText(document.body, "Retry"));
+    const declinedOptions = declinedCalls.requests[0]?.[2] as { replace?: boolean };
+    expect(declinedOptions?.replace).toBe(true);
+  });
+
+  it("retries a stopped request without replacing live work", async () => {
+    const { document } = installMinimalDom();
+    document.documentElement.lang = "en";
+    const stoppedCalls = { status: 0, requests: [] as unknown[] };
+    installGadget(
+      { actionId: "act_1", state: "ran", decision: "approved", outcomeStatus: "stopped", outcomeCode: "credits_exhausted" },
+      stoppedCalls
+    );
+    await openDrawer(document);
+    await click(buttonText(document.body, "Check status"));
+    await click(buttonText(document.body, "Retry"));
+    const stoppedOptions = stoppedCalls.requests[0]?.[2] as { replace?: boolean };
+    expect(stoppedOptions?.replace).not.toBe(true);
+  });
+
+  it("keeps the other outstanding part when re-requesting one part after a final outcome", async () => {
+    // Should-fix 15: after a final outcome, re-asking one part must not
+    // silently drop the other outstanding part (union of needs).
+    const { document } = installMinimalDom();
+    document.documentElement.lang = "en";
+    const calls = { status: 0, requests: [] as unknown[] };
+    installGadget(
+      { actionId: "act_1", state: "ran", decision: "approved", outcomeStatus: "stopped", outcomeCode: "credits_exhausted" },
+      calls
+    );
+    await openDrawer(document);
+    await click(buttonText(document.body, "Check status"));
+    await click(buttonText(document.body, "Regenerate image"));
+    const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };
+    expect(sent?.needs).toMatchObject({ image: true, caption: true });
+    expect(sent?.replace).not.toBe(true);
   });
 
   it("reads a pushed turn outcome back without a manual press, exactly once", async () => {
@@ -604,10 +674,11 @@ describe("a request whose turn ended with work outstanding", () => {
       { dispatch: { filed: true, actionId: "act_1", source: "host", outcome: { status: "stopped", code: "turn_crashed" } } }
     );
     await openDrawer(document);
-    // One automatic read for the stale awaiting-approval, one re-read for the
-    // pushed outcome — and then silence. No manual press, no poll.
+    // One automatic read for the pushed outcome — and then silence. The mark
+    // already carries the turn's end, so there is no stale awaiting-approval
+    // to correct first: exactly one read, never a poll, never a manual press.
     await flushAsyncWork();
-    expect(calls.status).toBe(2);
+    expect(calls.status).toBe(1);
   });
 
   it("never reads an outcome-less approval as finished", async () => {
