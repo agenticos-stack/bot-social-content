@@ -1748,24 +1748,23 @@ function App() {
         const reason = state.review.reason || state.save.reason;
         /*
          * The truthful pending state, from the mark's dispatch outcome. A mark
-         * alone is a request: with no acknowledgement it is "not started", and
-         * "could not start" is actionable. Never "generating".
+         * alone is a request: with no acknowledgement its start is not
+         * confirmed, and "could not start" is actionable. Never "generating".
          */
         const mark = generationMark(item.generation);
         const stage = generationStage(item.generation);
-        const stageNote =
-          stage === "start_failed"
-            ? t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") })
-            : stage === "awaiting_approval"
-              ? [
-                  t(locale, "drawerAwaitingApproval"),
-                  mark?.dispatch?.conversationTitle
-                    ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
-                    : ""
-                ].join("")
-              : stage === "start_unconfirmed"
-                ? t(locale, "drawerStartUnconfirmed")
-                : null;
+        let stageNote = null;
+        if (stage === "start_failed") {
+          stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
+        } else if (stage === "awaiting_approval") {
+          // Where the approval actually lives, when the filing told us.
+          const where = mark?.dispatch?.conversationTitle
+            ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
+            : "";
+          stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
+        } else if (stage === "start_unconfirmed") {
+          stageNote = t(locale, "drawerStartUnconfirmed");
+        }
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
