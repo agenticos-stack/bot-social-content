@@ -40,8 +40,12 @@ export function createRpc(gadget) {
       options === undefined ? gadget.requestGeneration(batchId, itemIds) : gadget.requestGeneration(batchId, itemIds, options),
     // What the platform did with a request the canvas just made — stamped onto
     // the durable mark so the card can say "awaiting approval" or "could not
-    // start" rather than an indefinite "waiting for generation".
+    // start" rather than an indefinite "waiting for generation". The request id
+    // names which ask this outcome belongs to.
     recordGenerationDispatch: (input) => gadget.recordGenerationDispatch(input),
+    // Read-only re-read of the durable projection for uncertain or stale
+    // progress. Creates nothing, notifies nobody, charges nothing.
+    checkGenerationStatus: (input) => gadget.checkGenerationStatus(input),
     // Per-post image/caption instructions; null resets a part to the saved default.
     saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),

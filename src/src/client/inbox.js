@@ -244,7 +244,10 @@ export function drawerAction(item) {
       const stage = generationStage(item?.generation);
       if (stage === "start_failed") return { kind: "retry", label: "Retry generation" };
       if (stage === "awaiting_approval") return { kind: "waiting", label: "Awaiting approval" };
-      return { kind: "waiting", label: "Not started" };
+      // An absent acknowledgement is "start not confirmed", never "not
+      // started": the request is durable and may well have been filed, and the
+      // card must not claim more than it knows.
+      return { kind: "waiting", label: "Start not confirmed" };
     }
     case "regenerating":
     case "draft":

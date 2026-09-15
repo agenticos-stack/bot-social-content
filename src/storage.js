@@ -1220,9 +1220,18 @@ export class Storage {
       this.clearItemGeneration(batchItemId);
       return;
     }
+    /*
+     * SPREAD THE PARSED MARK, THEN OVERRIDE ONLY `needs`. A partial completion
+     * must not erase what the mark already recorded: rebuilding the object
+     * field by field is how a correlated caption save used to drop the
+     * `dispatch` acknowledgement while the image was still pending (audit
+     * 2026-09-15, finding P2). Everything the mark carried — `dispatch`,
+     * `scope`, `at`, `instructions` — survives, and only the outstanding parts
+     * shrink.
+     */
     this.sql.exec(
       "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
-      JSON.stringify({ id: mark.id, base: mark.base, scope: mark.scope, needs: remaining, at: mark.at, instructions: mark.instructions }),
+      JSON.stringify({ ...mark, needs: remaining }),
       nowIso(),
       batchItemId
     );
@@ -1242,29 +1251,45 @@ export class Storage {
   /**
    * Stamp what the platform did with an outstanding request.
    *
-   * `dispatch` is `{ filed, actionId, reason, at }` — see `generationMark` in
-   * model.js. Only rows that still carry a mark are touched: a request already
-   * satisfied or cleared has nothing left to acknowledge. Returns how many
-   * marks were stamped.
+   * THE REQUEST ID IS REQUIRED. The caller names the generation request this
+   * outcome acknowledges, and only rows whose mark still carries that same id
+   * are touched. Matching on the batch and item alone let a delayed refusal
+   * for request A overwrite the acknowledged dispatch of its replacement B
+   * (audit 2026-09-15, finding P1) — an item can be named by more than one
+   * request over its life, so the request is what identifies the write.
+   *
+   * SCOPE IS EXACT. `itemIds` omitted means every item carrying this request;
+   * an explicit array — including an empty one — is honoured to the item and
+   * never widened to the batch. A malformed scope is the caller's to refuse;
+   * this store never reads it as "all".
+   *
+   * A `source: "host"` outcome outranks a browser's best-effort copy. The host
+   * writes the durable acknowledgement; the client's later stamp may confirm
+   * it but may not revise it to something different for the same request.
+   *
+   * `dispatch` is `{ filed, actionId, reason, source, at }` — see
+   * `generationMark` in model.js. Returns how many marks were stamped.
    */
-  recordGenerationDispatch(batchId, itemIds = null, dispatch) {
-    const scoped = Array.isArray(itemIds) && itemIds.length ? new Set(itemIds) : null;
+  recordGenerationDispatch(batchId, { request = null, itemIds, dispatch } = {}) {
+    if (typeof request !== "string" || !request) return 0;
+    const scoped = Array.isArray(itemIds) ? new Set(itemIds) : null;
     let updated = 0;
     for (const item of this.listBatchItems(batchId)) {
       if (scoped && !scoped.has(item.id)) continue;
       const mark = parseGenerationMark(item.generation);
-      if (!mark) continue;
+      if (!mark || mark.id !== request) continue;
+      const existing = mark.dispatch;
+      if (
+        existing &&
+        existing.source === "host" &&
+        dispatch?.source !== "host" &&
+        (existing.filed !== dispatch?.filed || (existing.actionId ?? null) !== (dispatch?.actionId ?? null))
+      ) {
+        continue;
+      }
       this.sql.exec(
         "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
-        JSON.stringify({
-          id: mark.id,
-          base: mark.base,
-          scope: mark.scope,
-          needs: mark.needs,
-          at: mark.at,
-          instructions: mark.instructions,
-          dispatch
-        }),
+        JSON.stringify({ ...mark, dispatch }),
         nowIso(),
         item.id
       );

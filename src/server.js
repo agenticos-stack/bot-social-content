@@ -88,6 +88,7 @@ import {
   applyProtectedOverridesToLedger,
   draftOrigin,
   generationMark,
+  generationStage,
   effectiveInstructions,
   itemPresentation,
 
@@ -987,18 +988,44 @@ export class Gadget extends DurableObject {
    * finished draft is returned through. The platform files an approval from it;
    * until an owner answers, nothing drafts. Returned on the method result, not
    * sent anywhere — there is nothing here for the gadget to call (SEC-003).
+   *
+   * IT ALSO CARRIES THE REQUEST'S OWN IDENTITY AND SCOPE, which is what lets a
+   * single approval be correlated to exactly the work it covers. `requestId` is
+   * the durable generation request that stamped these items; `parts` is what was
+   * asked for; `instructionsRef` is a stable fingerprint of the instruction
+   * snapshot so execution can tell the approved snapshot from a newer one
+   * (audit 2026-09-15, finding P1). All three come from the items' own marks,
+   * so the request cannot disagree with the durable state it describes.
    */
-  draftingWorkRequest(batchId, batchItems) {
+  draftingWorkRequest(batchId, batchItems, { request = null, needs = null } = {}) {
     const itemIds = [];
     const labels = new Set();
+    let requestId = typeof request === "string" && request ? request : null;
+    let parts = needs ? { caption: needs.caption === true, image: needs.image === true } : null;
+    let instructionsRef = null;
     for (const batchItem of batchItems ?? []) {
       const source = batchItem?.sourceItem ?? (batchItem?.itemId ? this.storage.getItem(batchItem.itemId) : null);
       if (source?.id) itemIds.push(source.id);
       if (source?.sourceLabel) labels.add(source.sourceLabel);
+      const mark = generationMark(batchItem?.generation);
+      if (!mark) continue;
+      if (mark.id && !requestId) requestId = mark.id;
+      if (!parts) parts = { caption: mark.scope.caption, image: mark.scope.image };
+      if (instructionsRef === null) instructionsRef = instructionFingerprint(mark.instructions);
     }
     const unique = [...new Set(itemIds)];
-    if (!batchId || !unique.length) return undefined;
-    return { batchId, sourceLabel: [...labels].join(", "), itemIds: unique, intake: "saveRevision" };
+    // ALL OR NOTHING. A request with no durable identity is one no approval
+    // could be correlated to, so it is not a request.
+    if (!batchId || !unique.length || !requestId) return undefined;
+    return {
+      requestId,
+      batchId,
+      sourceLabel: [...labels].join(", "),
+      itemIds: unique,
+      intake: "saveRevision",
+      parts: parts ?? { caption: true, image: true },
+      ...(instructionsRef ? { instructionsRef } : {})
+    };
   }
 
   /** One source, cursor-paginated, at most `MAX_ITEMS_PER_SOURCE` items, isolated so one source's failure never stops another's. */
@@ -1497,6 +1524,16 @@ export class Gadget extends DurableObject {
     }
 
     const batchId = generateId("batch");
+    /*
+     * ONE REQUEST IDENTITY FOR THE WHOLE BATCH.
+     *
+     * Every item opened together is the same ask, so they share one `gen` id
+     * rather than each minting its own. That is what lets the single approval
+     * the platform files name the exact work it covers: the work request
+     * carries this id, the host files it, and the dispatch acknowledgement is
+     * matched back against it (audit 2026-09-15, findings P1/P2).
+     */
+    const request = generateId("gen");
     // Every opened batch is a drafting request — the owner's Draft action
     // here, a scan's workRequest below — so the mark is durable state the
     // Content tab reads after any reload, not a flag in client memory.
@@ -1506,7 +1543,7 @@ export class Gadget extends DurableObject {
     for (const itemId of ids) {
       const item = this.storage.getItem(itemId);
       if (!item) continue;
-      const batchItem = this.createOneBatchItem(batchId, item, destinations);
+      const batchItem = this.createOneBatchItem(batchId, item, destinations, request);
       items.push(this.projectBatchItem(batchItem));
     }
 
@@ -1538,7 +1575,7 @@ export class Gadget extends DurableObject {
     return conflicts;
   }
 
-  createOneBatchItem(batchId, item, destinationBindings) {
+  createOneBatchItem(batchId, item, destinationBindings, request = null) {
     // Only reachable with the owner's `createNewVersion` opt-in (createBatch
     // refuses otherwise), so a conflicting row here is one the owner asked to
     // replace. Retired rather than edited: the old revisions and approval
@@ -1566,8 +1603,11 @@ export class Gadget extends DurableObject {
       // marks without touching its siblings. The mark carries the request
       // identity and base revision so a later result can be correlated (or
       // refused) against THIS ask.
+      //
+      // `request` is shared by every item opened in the same call, so one
+      // platform approval names the whole batch it covers.
       generation: JSON.stringify({
-        id: generateId("gen"),
+        id: request ?? generateId("gen"),
         base: 0,
         // Requested (immutable) vs remaining (mutable) — see setGeneration.
         scope: { caption: true, image: true },
@@ -1887,7 +1927,7 @@ export class Gadget extends DurableObject {
           return { image: effective.image.text, caption: effective.caption.text };
         }
       });
-      const workRequest = this.draftingWorkRequest(batch.id, draftable);
+      const workRequest = this.draftingWorkRequest(batch.id, draftable, { request, needs });
       return {
         ok: true,
         request,
@@ -1903,16 +1943,39 @@ export class Gadget extends DurableObject {
    * The client telling us what the platform did with a request it just made.
    *
    * The durable mark is written BEFORE the platform files anything, so this is
-   * the only place an acknowledged outcome lands. It never registers generation
-   * and never touches revisions — it stamps `dispatch` onto the outstanding
-   * mark so the card can say "awaiting approval" or "could not start" instead
-   * of an indefinite "waiting for generation". Refuses by value (PAT-007).
+   * where an acknowledged outcome lands. It never registers generation and
+   * never touches revisions — it stamps `dispatch` onto the outstanding mark so
+   * the card can say "awaiting approval" or "could not start" instead of an
+   * indefinite "waiting for generation". Refuses by value (PAT-007).
+   *
+   * THE REQUEST ID IS REQUIRED, and is what the write is matched against. Batch
+   * and item alone name a post over its whole life, so a delayed refusal for
+   * request A could overwrite the acknowledgement of its replacement B; naming
+   * the request means only the marks that still carry it are touched (audit
+   * 2026-09-15, finding P1).
+   *
+   * SCOPE IS EXACT, AND OMITTED IS NOT EMPTY. `batchItemIds` left out means
+   * every item carrying this request; an explicit array — including `[]` — is
+   * passed straight through and never widened. An empty list updates nothing.
+   *
+   * `source` says who recorded it. `"host"` is the room stamping the durable
+   * acknowledgement after it files; the browser's best-effort copy is
+   * `"client"`. The store lets a client confirm a host outcome but not revise
+   * it, so an arbitrary browser value is never the authority.
    */
   recordGenerationDispatch(input) {
     return this.enqueueMutation(() => {
       const batchId = typeof input?.batchId === "string" ? input.batchId : "";
       const batch = batchId ? this.storage.getBatch(batchId) : null;
       if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const request = typeof input?.generationRequest === "string" ? input.generationRequest.trim() : "";
+      if (!request) {
+        return {
+          ok: false,
+          code: "dispatch_request_required",
+          message: "A dispatch outcome names the generation request it acknowledges."
+        };
+      }
       const raw = input?.dispatch && typeof input.dispatch === "object" ? input.dispatch : null;
       if (!raw || typeof raw.filed !== "boolean") {
         return {
@@ -1921,18 +1984,57 @@ export class Gadget extends DurableObject {
           message: "A dispatch outcome says whether the request was filed."
         };
       }
+      // `undefined` when omitted, an array (possibly empty) when supplied — the
+      // distinction is the caller's and it survives to the store.
       const batchItemIds = Array.isArray(input?.batchItemIds)
         ? input.batchItemIds.filter((id) => typeof id === "string" && id).slice(0, 50)
-        : null;
+        : undefined;
       const dispatch = {
         filed: raw.filed === true,
         actionId: typeof raw.actionId === "string" ? raw.actionId.slice(0, 120) : null,
         reason: typeof raw.reason === "string" ? raw.reason.slice(0, 500) : null,
+        source: input?.source === "host" ? "host" : "client",
+        conversationId: typeof raw.conversationId === "string" ? raw.conversationId.slice(0, 120) : null,
+        conversationTitle: typeof raw.conversationTitle === "string" ? raw.conversationTitle.slice(0, 120) : null,
         at: new Date().toISOString()
       };
-      const updated = this.storage.recordGenerationDispatch(batchId, batchItemIds, dispatch);
-      return { ok: true, dispatch, updated };
+      const updated = this.storage.recordGenerationDispatch(batchId, { request, itemIds: batchItemIds, dispatch });
+      return { ok: true, request, dispatch, updated };
     });
+  }
+
+  /**
+   * Re-read the durable generation projection for a batch, without doing
+   * anything else.
+   *
+   * THIS IS THE CHECK-STATUS ACTION. It is read-only by construction: no
+   * generation is requested, no revision is written, no notice is sent and
+   * nothing is charged. It answers with each item's own durable mark — the
+   * request identity, what was asked for, what remains, and the filing outcome
+   * the host recorded — so an owner looking at uncertain or stale progress is
+   * shown what is known rather than a guess. `batchItemId` narrows the read to
+   * one post; omitted, it covers the batch.
+   */
+  checkGenerationStatus(input) {
+    const batchId = typeof input?.batchId === "string" ? input.batchId : "";
+    const batch = batchId ? this.storage.getBatch(batchId) : null;
+    if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+    const scoped = typeof input?.batchItemId === "string" && input.batchItemId ? input.batchItemId : null;
+    const items = this.storage
+      .listBatchItems(batchId)
+      .filter((item) => !scoped || item.id === scoped)
+      .map((item) => {
+        const mark = generationMark(item.generation);
+        return {
+          batchItemId: item.id,
+          requestId: mark?.id ?? null,
+          scope: mark?.scope ?? null,
+          needs: mark?.needs ?? null,
+          dispatch: mark?.dispatch ?? null,
+          stage: generationStage(mark)
+        };
+      });
+    return { ok: true, batchId, at: new Date().toISOString(), items };
   }
 
   /**
@@ -3721,6 +3823,29 @@ function instructionOverridesOf(batchItem) {
   const stored = batchItem?.instructionOverrides ?? {};
   const text = (value) => (typeof value === "string" && value.trim() ? value : null);
   return { image: text(stored.image), caption: text(stored.caption) };
+}
+
+/**
+ * A stable fingerprint of an instruction snapshot.
+ *
+ * The work request cannot carry the whole snapshot — each half may be 4000
+ * characters — so it carries this instead. Both sides can recompute it from
+ * the durable mark (`generation.instructions`), so an approval that named
+ * instructions can tell them from a newer snapshot without the request having
+ * to store a second copy that could drift. FNV-1a, because it is a fingerprint
+ * for equality, not a security primitive.
+ */
+function instructionFingerprint(instructions) {
+  const image = typeof instructions?.image === "string" ? instructions.image : "";
+  const caption = typeof instructions?.caption === "string" ? instructions.caption : "";
+  if (!image && !caption) return null;
+  let hash = 0x811c9dc5;
+  for (const char of `${image}\u0000${caption}`) {
+    hash ^= char.codePointAt(0);
+    // Multiply by the FNV prime (16777619) with 32-bit wraparound.
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `fnv1a:${hash.toString(16).padStart(8, "0")}`;
 }
 
 /** The client-facing shape of one generated_media row. */

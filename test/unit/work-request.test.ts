@@ -290,21 +290,25 @@ describe("a canvas request the platform can file", () => {
     const { gadget } = gadgetWith(undefined);
     const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
     const batchItemId = opened.items[0].id;
+    const request = opened.workRequest.requestId;
     const stored = () => gadget.storage.getBatchItem(batchItemId).generation;
 
     const accepted = await gadget.recordGenerationDispatch({
       batchId: opened.id,
+      generationRequest: request,
       batchItemIds: [batchItemId],
-      dispatch: { filed: true, actionId: "act_123" }
+      dispatch: { filed: true, actionId: "act_123", conversationTitle: "Pop-up launch" }
     });
     expect(accepted).toMatchObject({ ok: true, updated: 1 });
     expect(generationStage(stored())).toBe("awaiting_approval");
     // The request identity and the part scope survive the stamp.
     expect(generationMark(stored()).dispatch.actionId).toBe("act_123");
+    expect(generationMark(stored()).dispatch.conversationTitle).toBe("Pop-up launch");
     expect(generationMark(stored()).needs).toEqual({ caption: true, image: true });
 
     const refused = await gadget.recordGenerationDispatch({
       batchId: opened.id,
+      generationRequest: request,
       batchItemIds: [batchItemId],
       dispatch: { filed: false, reason: "the conversation is archived" }
     });
@@ -313,15 +317,33 @@ describe("a canvas request the platform can file", () => {
     expect(generationMark(stored()).dispatch.reason).toContain("archived");
   });
 
-  it("refuses an outcome that does not say whether the request was filed", async () => {
-    // The outcome decides whether the card says "not started" or "could not
-    // start"; a shape that answers neither is refused rather than guessed at.
+  it("refuses an outcome that does not name the request it acknowledges", async () => {
+    // The request is what the write is matched against. Without it a delayed
+    // outcome for one request could be stamped onto whatever mark happens to be
+    // on the post, which is how a refusal for A overwrote B (audit P1).
     const { gadget } = gadgetWith(undefined);
     const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
     const batchItemId = opened.items[0].id;
 
     const result = await gadget.recordGenerationDispatch({
       batchId: opened.id,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: true, actionId: "act_123" }
+    });
+    expect(result).toMatchObject({ ok: false, code: "dispatch_request_required" });
+    expect(generationStage(gadget.storage.getBatchItem(batchItemId).generation)).toBe("start_unconfirmed");
+  });
+
+  it("refuses an outcome that does not say whether the request was filed", async () => {
+    // The outcome decides whether the card says "start not confirmed" or "could
+    // not start"; a shape that answers neither is refused rather than guessed at.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const result = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: opened.workRequest.requestId,
       batchItemIds: [batchItemId],
       dispatch: {}
     });

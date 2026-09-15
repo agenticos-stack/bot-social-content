@@ -1013,6 +1013,7 @@ describe("bundled client.js smoke test", () => {
     const item = makeItem({ id: "a", seen: false, selected: true });
     let createdArgs: unknown = null;
     let recordedDispatch: unknown = null;
+    let recordedRequest: unknown = null;
     (globalThis as any).gadget = {
       async summary() {
         return {
@@ -1035,12 +1036,15 @@ describe("bundled client.js smoke test", () => {
           id: "batch_test1",
           items: [{ id: "bi_1", sourceItem: item, state: "drafting", revision: 0, destinationBindings: [], publications: [] }],
           // What the host hands back: the gadget's request, annotated with the
-          // governed filing outcome (`attended-work-request.ts`).
+          // governed filing outcome (`attended-work-request.ts`). The request id
+          // travels with it so the client's stamp can be matched to the ask.
           workRequest: {
+            requestId: "gen_1",
             batchId: "batch_test1",
             sourceLabel: "Instagram · main",
             itemIds: ["a"],
             intake: "saveRevision",
+            parts: { caption: true, image: true },
             filed: true,
             actionId: "act_1"
           }
@@ -1048,6 +1052,7 @@ describe("bundled client.js smoke test", () => {
       },
       async recordGenerationDispatch(input: unknown) {
         recordedDispatch = (input as { dispatch: unknown }).dispatch;
+        recordedRequest = (input as { generationRequest: unknown }).generationRequest;
         return { ok: true };
       },
       async listBatchSummaries() {
@@ -1096,7 +1101,10 @@ describe("bundled client.js smoke test", () => {
 
     // The client stamped the host's filing outcome onto the durable mark, and
     // the card reads that outcome rather than claiming generation is underway.
+    // The stamp names the request it acknowledges, so it can only land on that
+    // request's mark.
     expect(recordedDispatch).toMatchObject({ filed: true, actionId: "act_1" });
+    expect(recordedRequest).toBe("gen_1");
 
     // Content tab shows the selected post as a card immediately — the
     // Sources shape (article.sl-post). With the filing accepted, the chip

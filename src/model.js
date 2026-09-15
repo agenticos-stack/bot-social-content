@@ -1258,17 +1258,32 @@ export function generationMark(mark) {
       // under (`{ image, caption }`) — present only on marks that recorded them.
       at: typeof mark.at === "string" ? mark.at : undefined,
       instructions: generationInstructions(mark.instructions),
-      // What the PLATFORM did with the request, stamped by the client from the
-      // annotated method result. Absent means no acknowledgement was ever
-      // recorded — not that generation started. `filed: true` means the
-      // governed execution path accepted it (an approval is still required);
-      // `filed: false` means it did not, and `reason` says why.
+      // What the PLATFORM did with the request, stamped by the host from the
+      // annotated method result and confirmed (never overridden) by the client.
+      // Absent means no acknowledgement was ever recorded — not that generation
+      // started. `filed: true` means the governed execution path accepted it
+      // (an approval is still required); `filed: false` means it did not, and
+      // `reason` says why.
+      //
+      // `source` records WHO wrote it. The host's own acknowledgement (the
+      // room stamps the outcome after it files) is `"host"` and outranks the
+      // browser's best-effort second RPC, which is `"client"`. Absent on marks
+      // written before the split, which read as the browser's.
+      //
+      // `conversationId` / `conversationTitle` say where the approval actually
+      // lives, so the drawer can point the owner at it rather than at whatever
+      // conversation they happen to be in.
       dispatch:
         mark.dispatch && typeof mark.dispatch === "object"
           ? {
               filed: mark.dispatch.filed === true,
               actionId: typeof mark.dispatch.actionId === "string" ? mark.dispatch.actionId : null,
               reason: typeof mark.dispatch.reason === "string" ? mark.dispatch.reason : null,
+              source: mark.dispatch.source === "host" ? "host" : "client",
+              conversationId:
+                typeof mark.dispatch.conversationId === "string" ? mark.dispatch.conversationId : null,
+              conversationTitle:
+                typeof mark.dispatch.conversationTitle === "string" ? mark.dispatch.conversationTitle : null,
               at: typeof mark.dispatch.at === "string" ? mark.dispatch.at : undefined
             }
           : undefined
@@ -1290,14 +1305,15 @@ export function generationMark(mark) {
  * What a pending generation mark can truthfully claim.
  *
  * A mark alone is a REQUEST, not evidence that anything started. The only
- * acknowledgement this gadget can carry is the `dispatch` the client stamped
- * from the platform's annotated result:
+ * acknowledgement this gadget can carry is the `dispatch` — written by the host
+ * when it files the request, and confirmed (never overridden) by the browser:
  *
  * - `start_unconfirmed` — saved, and nothing has told us it was accepted. This
  *   is the honest reading of a legacy mark and of a click whose dispatch
- *   outcome never came back. Never rendered as "generating".
- * - `awaiting_approval` — the governed execution path took it; an owner
- *   approval is still required before any drafting turn starts.
+ *   outcome never came back. Never rendered as "generating", and never as
+ *   "no agent picked it up": we do not know either way.
+ * - `awaiting_approval` — the governed execution path took it; an approval is
+ *   still required before any drafting turn starts.
  * - `start_failed` — the path refused it. `mark.dispatch.reason` says why.
  *
  * Returns `null` when nothing is being generated at all.

@@ -717,19 +717,33 @@ function App() {
    * Record what the platform did with a request the canvas just made.
    *
    * The host annotates the method result with `workRequest.filed` from the
-   * governed filing (`attended-work-request.ts`). Without stamping it, the card
-   * cannot tell an accepted request from one that never started and would show
-   * "waiting for generation" for both. Best-effort: a stamp that fails leaves
-   * the mark without an acknowledgement, which reads conservatively.
+   * governed filing (`attended-work-request.ts`) AND stamps the gadget's durable
+   * mark itself, so this browser call is a confirmation rather than the only
+   * record. Without the request identity the stamp cannot be matched to the ask
+   * it belongs to, so a result that names no request is left alone; the host's
+   * own stamp is the durable acknowledgement either way.
    */
-  async function recordDispatch(batchId, batchItemIds, result) {
+  async function recordDispatch(batchId, result) {
     const workRequest = result && typeof result === "object" ? result.workRequest : null;
     if (!workRequest || typeof workRequest.filed !== "boolean") return;
+    const generationRequest =
+      typeof result?.request === "string" && result.request
+        ? result.request
+        : typeof workRequest.requestId === "string" && workRequest.requestId
+          ? workRequest.requestId
+          : null;
+    if (!generationRequest) return;
     try {
       await rpc.recordGenerationDispatch({
         batchId,
-        batchItemIds,
-        dispatch: { filed: workRequest.filed, actionId: workRequest.actionId, reason: workRequest.reason }
+        generationRequest,
+        dispatch: {
+          filed: workRequest.filed,
+          actionId: workRequest.actionId,
+          reason: workRequest.reason,
+          conversationId: workRequest.conversationId,
+          conversationTitle: workRequest.conversationTitle
+        }
       });
     } catch (error) {
       console.error(error);
@@ -1668,7 +1682,7 @@ function App() {
         return;
       }
       if (!live) return;
-      await recordDispatch(batch.id, [item.id], result);
+      await recordDispatch(batch.id, result);
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1698,7 +1712,7 @@ function App() {
       }
       if (!live) return;
       if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
-      await recordDispatch(batch.id, [item.id], result);
+      await recordDispatch(batch.id, result);
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1743,7 +1757,12 @@ function App() {
           stage === "start_failed"
             ? t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") })
             : stage === "awaiting_approval"
-              ? t(locale, "drawerAwaitingApproval")
+              ? [
+                  t(locale, "drawerAwaitingApproval"),
+                  mark?.dispatch?.conversationTitle
+                    ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
+                    : ""
+                ].join("")
               : stage === "start_unconfirmed"
                 ? t(locale, "drawerStartUnconfirmed")
                 : null;
@@ -1760,6 +1779,34 @@ function App() {
               // not clear; its focus and caret survive the re-render.
               onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
+            // Check status: a read-only re-read of the durable projection, for
+            // the two stages where what is known is uncertain (no
+            // acknowledgement yet) or stale (an approval that may since have
+            // been answered). It starts nothing, notifies nobody and charges
+            // nothing, and it reuses the request identity already on the mark.
+            stage === "start_unconfirmed" || stage === "awaiting_approval"
+              ? el("button", {
+                  type: "button", class: "sl-secondary",
+                  disabled: saving,
+                  onclick: async () => {
+                    if (saving || !live) return;
+                    saving = true;
+                    redrawFooter();
+                    try {
+                      const status = await rpc.checkGenerationStatus({ batchId: batch.id, batchItemId: item.id });
+                      if (!live) return;
+                      if (status && status.ok === false) announce(t(locale, "drawerGenerationStatusFailed"), "");
+                      else announce(t(locale, "drawerGenerationStatusChecked"), "");
+                      if (await refetchItems()) redraw();
+                    } catch (error) {
+                      announce(error instanceof Error ? error.message : t(locale, "drawerGenerationStatusFailed"), "");
+                    } finally {
+                      saving = false;
+                      redrawFooter();
+                    }
+                  }
+                }, t(locale, "drawerCheckGenerationStatus"))
+              : null,
             // Retry is offered only when nothing is running: the start failed,
             // so a fresh request replaces the stranded mark and keeps whatever
             // part already succeeded (the mark's remaining `needs`).
@@ -2246,7 +2293,7 @@ function App() {
        * are saved. Editing still reaches the wizard through a card → Continue
        * editing.
        */
-      await recordDispatch(batch.id, (Array.isArray(batch.items) ? batch.items : []).map((entry) => entry.id), batch);
+      await recordDispatch(batch.id, batch);
       if (draftable.length && draftable.length < selected.length) {
         collectionState = setNotice(collectionState, {
           message: t(locale, "skippedDrafts", { n: selected.length - draftable.length })
