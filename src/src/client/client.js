@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationMark, generationStage, itemPresentation, platformStage } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -2075,12 +2075,43 @@ function App() {
       }
       const phase = phaseOf(item);
       const editable = isEditableItem(item);
-      // A request the platform confirmed was never submitted is not "queued":
-      // the header agrees with the card chip ("Start not confirmed") and the
-      // footer instead of implying an agent queue.
-      const headerStateKey = canonicalStatus.get(item.id)?.resolution === "not_found"
-        ? "cardStageNotStarted"
-        : (PHASE_STATE_KEYS[phase] ?? "stateUnknown");
+      // The header reads the same stage as the card chip and the footer: the
+      // canonical platform stage when a status read reported one, else the
+      // mark's own receipt, recorded outcome and outstanding needs. A queued
+      // phase alone never implies an agent queue — an approved receipt reads
+      // approved, a recorded end reads ended. A request the platform confirmed
+      // was never submitted is not "queued" either.
+      const resolvedHeader = canonicalStatus.get(item.id) ?? null;
+      const headerStateKey = (() => {
+        if (resolvedHeader?.resolution === "not_found") return "cardStageNotStarted";
+        if (phase !== "queued" && phase !== "regenerating") return PHASE_STATE_KEYS[phase] ?? "stateUnknown";
+        if (resolvedHeader?.stage) {
+          return (
+            {
+              declined: "cardStageDeclined",
+              accepted: "cardStageApproved",
+              executing: "cardStageRunning",
+              stopped: "cardStageStopped",
+              approved_not_started: "cardStageApproved",
+              awaiting_approval: "cardStageAwaitingApproval",
+              execution_failed: "cardStageFailed"
+            }[resolvedHeader.stage] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+          );
+        }
+        return (
+          {
+            start_unconfirmed: "cardStageNotStarted",
+            start_failed: "cardStageStartFailed",
+            insufficient_credits: "cardStageInsufficientCredits",
+            credit_check_unavailable: "cardStageCreditUnavailable",
+            awaiting_approval: "cardStageAwaitingApproval",
+            approved_not_started: "cardStageApproved",
+            stopped: "cardStageStopped",
+            declined: "cardStageDeclined",
+            execution_failed: "cardStageFailed"
+          }[generationDisplayStage(item.generation)] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+        );
+      })();
 
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [

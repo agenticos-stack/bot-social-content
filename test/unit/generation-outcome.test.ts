@@ -528,6 +528,33 @@ async function click(button: { dispatchEvent: (event: unknown) => unknown } | un
 }
 
 describe("a request whose turn ended with work outstanding", () => {
+  const headerState = (root: unknown) =>
+    findAll(root, (element) => element.classList?.contains("sl-drawer-state"))
+      .map((element) => String(element.textContent ?? ""))
+      .join(" ");
+
+  it("reads an approved receipt in the header and footer, never awaiting approval", async () => {
+    // Blocker 3: an auto-approved owner request agrees on all four surfaces
+    // before any status read. The mark carries the approval on its receipt.
+    for (const lang of ["en", "zh-HK"] as const) {
+      const { document } = installMinimalDom();
+      document.documentElement.lang = lang;
+      const calls = { status: 0 };
+      installGadget(null, calls, {
+        dispatch: { filed: true, actionId: "act_1", source: "host", approved: true }
+      });
+      await openDrawer(document);
+
+      const header = headerState(document.body);
+      expect(header).not.toContain("Awaiting approval");
+      expect(header).not.toContain("等待批核");
+      expect(header).toMatch(lang === "en" ? /Approved/ : /已批核/);
+      const text = String(document.body.textContent);
+      expect(text).not.toContain("Awaiting approval");
+      expect(text).not.toContain("等待批核");
+    }
+  });
+
   it("says stopped with the reason and offers a retry, in English and zh-HK", async () => {
     for (const lang of ["en", "zh-HK"] as const) {
       const { document } = installMinimalDom();
