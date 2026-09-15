@@ -1040,12 +1040,10 @@ export class Gadget extends DurableObject {
     // A combined reference over the per-item references, so it changes when ANY
     // item's snapshot changes and, for one item, is that item's own reference.
     const refs = items.map((entry) => entry.instructionsRef).filter(Boolean);
-    const instructionsRef =
-      refs.length !== items.length
-        ? null
-        : refs.length === 1
-          ? refs[0]
-          : instructionFingerprint({ image: refs.join("\u0000"), caption: "" });
+    let instructionsRef = null;
+    if (refs.length === items.length) {
+      instructionsRef = refs.length === 1 ? refs[0] : instructionFingerprint({ image: refs.join("\u0000"), caption: "" });
+    }
     return {
       requestId,
       batchId,
