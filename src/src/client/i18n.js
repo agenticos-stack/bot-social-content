@@ -150,6 +150,14 @@ export const STRINGS = Object.freeze({
     cardTitleStartFailed: "Could not start generating {subject}",
     cardRequestedAt: "requested {time}",
     drawerStartUnconfirmed: "The request is saved, but its start is not confirmed. Check status or retry.",
+    // A confirmed missing filing is its own state: saved, not submitted, and
+    // recoverable under the request identity it already has.
+    drawerRequestNotSubmitted: "This request was saved but never submitted. Continue generation to send it for approval.",
+    drawerResumeGeneration: "Continue generation",
+    drawerResumeSent: "Sent for approval.",
+    // Unknown stays unknown: a read that failed is not permission to create work.
+    drawerStatusUnavailable: "Could not confirm this request's status.",
+    drawerStatusCheckedAt: "Last checked {time}.",
     drawerStartFailed: "Generation could not start: {reason}",
     drawerAwaitingApproval: "Waiting for your approval in the conversation before drafting starts.",
     drawerApprovalDeclined: "This request was declined or replaced — it is no longer waiting for approval.",
@@ -603,6 +611,11 @@ export const STRINGS = Object.freeze({
     cardTitleStartFailed: "未能開始生成{subject}",
     cardRequestedAt: "{time}前請求",
     drawerStartUnconfirmed: "請求已儲存，但未確認已開始。請檢查狀態或重試。",
+    drawerRequestNotSubmitted: "此請求已儲存但從未送交。按「繼續生成」以送出並等待批核。",
+    drawerResumeGeneration: "繼續生成",
+    drawerResumeSent: "已送交批核。",
+    drawerStatusUnavailable: "未能確認此請求的狀態。",
+    drawerStatusCheckedAt: "上次檢查：{time}。",
     drawerStartFailed: "未能開始生成：{reason}",
     drawerAwaitingApproval: "等待你在對話中批核後，才會開始撰寫。",
     drawerApprovalDeclined: "此請求已被拒絕或取代 — 不再等待批核。",

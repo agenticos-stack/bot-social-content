@@ -2104,6 +2104,73 @@ export class Gadget extends DurableObject {
   }
 
   /**
+   * Deliver a request that was saved but never submitted.
+   *
+   * THE RECOVERY PATH FOR A PRE-HANDOFF REQUEST (F1). A request armed before
+   * the attended handoff existed still has its identity, scope and instruction
+   * snapshot on the durable mark, but no action was ever filed for it — the
+   * owner can see it and do nothing with it. This re-derives the handoff from
+   * that SAME mark and returns it, so the platform's existing governed filing
+   * runs and the deterministic action id makes concurrent clicks and a lost
+   * response converge on one approval.
+   *
+   * IT IS NOT A NEW REQUEST. No mark is rewritten, no request id is minted and
+   * nothing is stamped here: the identity, the parts still outstanding and the
+   * instruction snapshot are exactly what the durable state already says. If
+   * the mark has moved on — a newer request, or everything already delivered —
+   * this refuses by value, so a stale resume can never overwrite newer work.
+   *
+   * ONLY WHAT REMAINS IS FILED. `draftingWorkRequest` describes the request's
+   * immutable scope; a resume narrows it to the mark's outstanding `needs`, so
+   * a caption already saved is never re-requested and an image already
+   * delivered is never re-drafted under the same identity. The narrowed parts
+   * do not change the filing identity — the action id is derived from the
+   * request id, not the parts — so convergence is unaffected.
+   *
+   * Read-only with respect to generation, notification and spend. Filing is the
+   * platform's, on the result, exactly as `requestGeneration`'s is.
+   */
+  resumeGeneration(input) {
+    const batchId = typeof input?.batchId === "string" ? input.batchId : "";
+    const batchItemId = typeof input?.batchItemId === "string" ? input.batchItemId : "";
+    const request = typeof input?.generationRequest === "string" ? input.generationRequest.trim() : "";
+    const batch = batchId ? this.storage.getBatch(batchId) : null;
+    if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+    const batchItem = batchItemId ? this.storage.getBatchItem(batchItemId) : null;
+    if (!batchItem || batchItem.batchId !== batchId) {
+      return { ok: false, code: "batch_item_unknown", message: "This post is no longer part of the batch." };
+    }
+    if (!request) {
+      return { ok: false, code: "generation_request_required", message: "A resume names the request it is continuing." };
+    }
+    const mark = generationMark(batchItem.generation);
+    if (!mark?.id || mark.id !== request) {
+      return {
+        ok: false,
+        code: "generation_request_stale",
+        message: "This request has been replaced. Reload the post to see the current one."
+      };
+    }
+    if (!mark.needs.image && !mark.needs.caption) {
+      return { ok: false, code: "nothing_to_resume", message: "This request has nothing left to generate." };
+    }
+    const workRequest = this.draftingWorkRequest(batchId, [this.projectBatchItem(batchItem)], { request: mark.id });
+    if (!workRequest) {
+      return { ok: false, code: "nothing_to_resume", message: "This request has nothing left to generate." };
+    }
+    const outstanding = { caption: mark.needs.caption === true, image: mark.needs.image === true };
+    return {
+      ok: true,
+      request: mark.id,
+      workRequest: {
+        ...workRequest,
+        parts: { ...outstanding },
+        items: (workRequest.items ?? []).map((entry) => ({ ...entry, parts: { ...outstanding } }))
+      }
+    };
+  }
+
+  /**
    * The owner's own image/caption instructions for ONE post. Each key:
    * omitted keeps the stored override, a string replaces it, null or blank
    * resets to the saved default. Nothing is generated or rewritten here — a

@@ -290,7 +290,13 @@ export function renderOutputPanel(locale, item, ctx) {
   };
 
   // The accepted image — what review files. Never the reference photo.
-  const acceptedBlock = el("div", { class: "sl-output-accepted" }, [
+  // With no accepted image and no candidate there is nothing to frame: a
+  // compact note keeps the next action visible instead of an enormous empty
+  // region under an "accepted image" heading. The framed preview is unchanged
+  // whenever an image actually exists.
+  const acceptedBlock = !accepted && !candidate
+    ? el("p", { class: "sl-field-note sl-output-empty", role: "status" }, t(locale, "drawerImageNone"))
+    : el("div", { class: "sl-output-accepted" }, [
     el("div", { class: "sl-output-label" }, [
       el("strong", null, t(locale, "drawerImageAccepted")),
       staged ? el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag")) : null
@@ -335,8 +341,14 @@ export function renderOutputPanel(locale, item, ctx) {
       ])
     : null;
 
+  // A part the platform confirmed was never submitted is not "waiting for the
+  // agent": the footer says saved-but-not-submitted, and these lines agree
+  // with it rather than implying a queue this request cannot establish.
+  const unsubmitted = ctx.unsubmitted === true;
   const imageStatusLine =
-    imgState === "requested" ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerImageRequested")) : null;
+    imgState === "requested"
+      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, unsubmitted ? "drawerRequestNotSubmitted" : "drawerImageRequested"))
+      : null;
 
   // One request at a time per post: while a part is outstanding, the OTHER
   // part's button stays pressable but says what is pending, and pressing it
@@ -347,11 +359,13 @@ export function renderOutputPanel(locale, item, ctx) {
     // A pending request (including the one every new post starts with) is
     // never replaced silently: the button stays pressable and asks first.
     const other = outstanding.find((entry) => entry !== part) ?? null;
-    const note = requested
-      ? t(locale, "drawerPartAlreadyRequested")
-      : other
-        ? t(locale, other === "image" ? "drawerPartOtherPendingImage" : "drawerPartOtherPendingCaption")
-        : t(locale, keepsKey);
+    const note = requested && unsubmitted
+      ? t(locale, "drawerRequestNotSubmitted")
+      : requested
+        ? t(locale, "drawerPartAlreadyRequested")
+        : other
+          ? t(locale, other === "image" ? "drawerPartOtherPendingImage" : "drawerPartOtherPendingCaption")
+          : t(locale, keepsKey);
     return el("div", { class: "sl-part-action" }, [
       el("button", {
         type: "button",
@@ -438,7 +452,7 @@ export function renderOutputPanel(locale, item, ctx) {
   const captionSection = el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-output-caption-title" }, [
     el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
     capState === "requested"
-      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, (item.revision ?? 0) > 0 ? "drawerCaptionRequestedKeep" : "drawerCaptionRequested"))
+      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, unsubmitted ? "drawerRequestNotSubmitted" : ((item.revision ?? 0) > 0 ? "drawerCaptionRequestedKeep" : "drawerCaptionRequested")))
       : null,
     ...captionBody,
     partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested")
