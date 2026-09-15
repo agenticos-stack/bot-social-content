@@ -111,7 +111,7 @@ describe("the work request names the work", () => {
     expect(new Set(marks.map((mark: { id: string }) => mark.id))).toEqual(new Set([workRequest.requestId]));
   });
 
-  it("scopes a scoped regeneration to a fresh identity and the parts asked for", async () => {
+  it("moves a replaced request onto a fresh identity, keeping every item it covered", async () => {
     const gadget = setup();
     const opened = await gadget.createBatch({ itemIds: ["source_1", "source_2"], destinationBindings: [] });
     const [first, second] = opened.items.map((entry: { id: string }) => entry.id);
@@ -124,10 +124,19 @@ describe("the work request names the work", () => {
     expect(result.ok).toBe(true);
     expect(result.workRequest.requestId).toBe(result.request);
     expect(result.workRequest.requestId).not.toBe(original);
-    expect(result.workRequest.parts).toEqual({ image: true, caption: false });
-    expect(result.workRequest.itemIds).toEqual(["source_2"]);
-    // The sibling keeps its own identity — a scoped re-draft does not touch it.
-    expect(markOf(gadget, first).id).toBe(original);
+    // The picked post was re-scoped...
+    expect(result.requested).toEqual([second]);
+    expect(result.workRequest.items.find((entry: { batchItemId: string }) => entry.batchItemId === second).parts).toEqual({
+      caption: false,
+      image: true
+    });
+    // ...and the sibling came with it, keeping its own both-parts scope and
+    // moving off the request that is about to be retired.
+    expect(result.workRequest.itemIds).toEqual(["source_1", "source_2"]);
+    expect(result.workRequest.parts).toEqual({ caption: true, image: true });
+    expect(markOf(gadget, first).id).toBe(result.request);
+    expect(markOf(gadget, first).scope).toEqual({ caption: true, image: true });
+    expect(markOf(gadget, second).scope).toEqual({ caption: false, image: true });
   });
 });
 
@@ -289,8 +298,8 @@ describe("check status is a read", () => {
     const status = await gadget.checkGenerationStatus({ batchId: opened.id, batchItemId });
 
     expect(status.ok).toBe(true);
-    expect(status.items).toHaveLength(1);
-    expect(status.items[0]).toMatchObject({
+    expect(status.workRequestStatus).toHaveLength(1);
+    expect(status.workRequestStatus[0]).toMatchObject({
       batchItemId,
       requestId: request,
       stage: "awaiting_approval",
@@ -305,7 +314,7 @@ describe("check status is a read", () => {
     const gadget = setup();
     const opened = await gadget.createBatch({ itemIds: ["source_1"], destinationBindings: [] });
     const status = await gadget.checkGenerationStatus({ batchId: opened.id, batchItemId: opened.items[0].id });
-    expect(status.items[0].stage).toBe("start_unconfirmed");
-    expect(status.items[0].dispatch).toBeNull();
+    expect(status.workRequestStatus[0].stage).toBe("start_unconfirmed");
+    expect(status.workRequestStatus[0].dispatch).toBeNull();
   });
 });

@@ -1326,6 +1326,31 @@ export function generationStage(mark) {
 }
 
 /**
+ * What the PLATFORM's canonical action state means for a generation request.
+ *
+ * The mark's own `dispatch` records that a request was FILED. It cannot say
+ * whether the approval was then answered, declined, superseded or run — that
+ * lives in the platform's action log, and `checkGenerationStatus` is where the
+ * room reads it back by request identity. This maps that state to the one word
+ * the canvas shows.
+ *
+ * `requestGadgetWork` completing is its own effect: the approved turn was
+ * started. It is evidence the REQUEST was answered, never that the image was
+ * generated — the parts still outstanding are the mark's `needs`. Returns null
+ * when the platform said nothing, so the caller falls back to the filing state
+ * rather than inventing progress.
+ */
+export function platformStage(platform) {
+  const state = typeof platform?.state === "string" ? platform.state : null;
+  if (state === "refused") return "declined";
+  if (state === "failed") return "execution_failed";
+  if (state === "applying") return "executing";
+  if (state === "ran") return "executed";
+  if (state === "asked") return platform?.decision === "approved" ? "accepted" : "awaiting_approval";
+  return null;
+}
+
+/**
  * Deliveries = live publications plus their freshest canonical outcome.
  * `targets` rows carry optional provenance stamps (`publicationId`,
  * `publicationRevision`, `publicationVersion`) written by the server. EVERY

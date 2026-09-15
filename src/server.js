@@ -989,42 +989,73 @@ export class Gadget extends DurableObject {
    * until an owner answers, nothing drafts. Returned on the method result, not
    * sent anywhere — there is nothing here for the gadget to call (SEC-003).
    *
-   * IT ALSO CARRIES THE REQUEST'S OWN IDENTITY AND SCOPE, which is what lets a
-   * single approval be correlated to exactly the work it covers. `requestId` is
-   * the durable generation request that stamped these items; `parts` is what was
-   * asked for; `instructionsRef` is a stable fingerprint of the instruction
-   * snapshot so execution can tell the approved snapshot from a newer one
-   * (audit 2026-09-15, finding P1). All three come from the items' own marks,
-   * so the request cannot disagree with the durable state it describes.
+   * BUILT FROM THE MARKS THIS REQUEST JUST WROTE, never from the pre-write
+   * items. Reading the old array is how a regenerated request reported the
+   * previous instruction snapshot and the previous part scope while its durable
+   * mark already held the new ones (audit 2026-09-15 correction, F2).
+   * `batchItems` must be the committed rows; a mark for another request is
+   * ignored rather than described.
+   *
+   * PER ITEM, because one fingerprint cannot stand for several different
+   * instruction snapshots. Each entry names its own source id, requested parts,
+   * instruction reference and base revision; `parts` and `instructionsRef` at
+   * the top are the union / combined reference for a caller that wants one line.
+   *
+   * REPLACEMENT IS IDENTITY, NOT A FLAG. When this request supersedes earlier
+   * ones, `replaces` names them so the platform retires exactly those approvals
+   * instead of guessing from a boolean (F1).
    */
-  draftingWorkRequest(batchId, batchItems, { request = null, needs = null } = {}) {
-    const itemIds = [];
+  draftingWorkRequest(batchId, batchItems, { request = null, replaced = [] } = {}) {
     const labels = new Set();
+    const items = [];
     let requestId = typeof request === "string" && request ? request : null;
-    let parts = needs ? { caption: needs.caption === true, image: needs.image === true } : null;
-    let instructionsRef = null;
     for (const batchItem of batchItems ?? []) {
-      const source = batchItem?.sourceItem ?? (batchItem?.itemId ? this.storage.getItem(batchItem.itemId) : null);
-      if (source?.id) itemIds.push(source.id);
-      if (source?.sourceLabel) labels.add(source.sourceLabel);
       const mark = generationMark(batchItem?.generation);
-      if (!mark) continue;
-      if (mark.id && !requestId) requestId = mark.id;
-      if (!parts) parts = { caption: mark.scope.caption, image: mark.scope.image };
-      if (instructionsRef === null) instructionsRef = instructionFingerprint(mark.instructions);
+      if (!mark?.id) continue;
+      if (!requestId) requestId = mark.id;
+      // Only what this request stamped. A sibling on an older id is not part
+      // of the request being described.
+      if (mark.id !== requestId) continue;
+      const source = batchItem?.sourceItem ?? (batchItem?.itemId ? this.storage.getItem(batchItem.itemId) : null);
+      if (!source?.id) continue;
+      if (source.sourceLabel) labels.add(source.sourceLabel);
+      items.push({
+        itemId: source.id,
+        batchItemId: batchItem.id,
+        parts: { caption: mark.scope.caption === true, image: mark.scope.image === true },
+        ...(instructionFingerprint(mark.instructions) ? { instructionsRef: instructionFingerprint(mark.instructions) } : {}),
+        base: mark.base ?? 0
+      });
     }
-    const unique = [...new Set(itemIds)];
-    // ALL OR NOTHING. A request with no durable identity is one no approval
-    // could be correlated to, so it is not a request.
-    if (!batchId || !unique.length || !requestId) return undefined;
+    // ALL OR NOTHING. A request with no durable identity, or with no item
+    // carrying it, is one no approval could be correlated to.
+    if (!batchId || !requestId || !items.length) return undefined;
+    const replaces = [...new Set((replaced ?? []).map((entry) => entry?.requestId).filter(Boolean))];
+    // The union of what the items asked for, so a mixed request reads as the
+    // work it covers rather than as the first item's scope.
+    const parts = {
+      caption: items.some((entry) => entry.parts.caption),
+      image: items.some((entry) => entry.parts.image)
+    };
+    // A combined reference over the per-item references, so it changes when ANY
+    // item's snapshot changes and, for one item, is that item's own reference.
+    const refs = items.map((entry) => entry.instructionsRef).filter(Boolean);
+    const instructionsRef =
+      refs.length !== items.length
+        ? null
+        : refs.length === 1
+          ? refs[0]
+          : instructionFingerprint({ image: refs.join("\u0000"), caption: "" });
     return {
       requestId,
       batchId,
       sourceLabel: [...labels].join(", "),
-      itemIds: unique,
+      itemIds: items.map((entry) => entry.itemId),
       intake: "saveRevision",
-      parts: parts ?? { caption: true, image: true },
-      ...(instructionsRef ? { instructionsRef } : {})
+      parts,
+      ...(instructionsRef ? { instructionsRef } : {}),
+      items,
+      ...(replaces.length ? { replace: true, replaces } : {})
     };
   }
 
@@ -1920,6 +1951,22 @@ export class Gadget extends DurableObject {
       // `satisfyItemGeneration`.
       const request = generateId("gen");
       const config = this.storage.getConfig();
+      const selected = new Set(draftable.map((item) => item.id));
+      /*
+       * THE WHOLE REPLACED REQUEST MOVES, NOT JUST THE SELECTED POST.
+       *
+       * When an owner replaces one post of a request that covered several, the
+       * platform approval covers the request — so the siblings come with it,
+       * keeping their own scope, remaining needs and instruction snapshot.
+       * Leaving them on the superseded id would strand work the owner never
+       * cancelled, because the approval that carried them is retired (F1).
+       */
+      const replacedIds = new Set(pendingItems.map((entry) => entry.requestId).filter(Boolean));
+      const siblings = items.filter((item) => {
+        if (!item.active || selected.has(item.id)) return false;
+        const mark = generationMark(item.generation);
+        return Boolean(mark?.id && replacedIds.has(mark.id) && (mark.needs.image || mark.needs.caption));
+      });
       this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request, {
         needs,
         instructionsFor: (item) => {
@@ -1927,7 +1974,19 @@ export class Gadget extends DurableObject {
           return { image: effective.image.text, caption: effective.caption.text };
         }
       });
-      const workRequest = this.draftingWorkRequest(batch.id, draftable, { request, needs });
+      for (const sibling of siblings) this.storage.rearmGeneration(sibling.id, request);
+      /*
+       * FROM THE COMMITTED MARKS. The work request describes the scope and
+       * instruction snapshot THIS request actually wrote, including the
+       * siblings it took over — not the pre-write array (F2).
+       */
+      const committed = this.storage
+        .listBatchItems(batch.id)
+        .filter((item) => generationMark(item.generation)?.id === request);
+      const workRequest = this.draftingWorkRequest(batch.id, committed.map((item) => this.projectBatchItem(item)), {
+        request,
+        replaced: pendingItems
+      });
       return {
         ok: true,
         request,
@@ -1940,28 +1999,29 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * The client telling us what the platform did with a request it just made.
+   * The PLATFORM's acknowledgement of a request it filed.
    *
    * The durable mark is written BEFORE the platform files anything, so this is
-   * where an acknowledged outcome lands. It never registers generation and
-   * never touches revisions — it stamps `dispatch` onto the outstanding mark so
-   * the card can say "awaiting approval" or "could not start" instead of an
-   * indefinite "waiting for generation". Refuses by value (PAT-007).
+   * where the outcome of filing lands — the card can then say "awaiting
+   * approval" or "could not start" instead of an indefinite "waiting for
+   * generation". It never registers generation and never touches revisions.
    *
-   * THE REQUEST ID IS REQUIRED, and is what the write is matched against. Batch
-   * and item alone name a post over its whole life, so a delayed refusal for
-   * request A could overwrite the acknowledgement of its replacement B; naming
-   * the request means only the marks that still carry it are touched (audit
-   * 2026-09-15, finding P1).
+   * THIS IS NOT A BROWSER METHOD. The room calls it on the raw facet after it
+   * files, and the browser-facing facet refuses it, so a page cannot author or
+   * revise a platform receipt. Its input's `source` is deliberately NOT read:
+   * provenance is not something a caller can assert (audit correction, F4).
+   *
+   * THE FIRST RECEIPT FOR A REQUEST STANDS. A later write — matching or
+   * contradictory, from anywhere — is a no-op, because a receipt that can be
+   * revised is not a record. Refuses by value (PAT-007).
+   *
+   * THE REQUEST ID IS REQUIRED and is what the write is matched against. Batch
+   * and item alone name a post over its whole life, so a delayed outcome for
+   * request A could otherwise land on its replacement B.
    *
    * SCOPE IS EXACT, AND OMITTED IS NOT EMPTY. `batchItemIds` left out means
    * every item carrying this request; an explicit array — including `[]` — is
    * passed straight through and never widened. An empty list updates nothing.
-   *
-   * `source` says who recorded it. `"host"` is the room stamping the durable
-   * acknowledgement after it files; the browser's best-effort copy is
-   * `"client"`. The store lets a client confirm a host outcome but not revise
-   * it, so an arbitrary browser value is never the authority.
    */
   recordGenerationDispatch(input) {
     return this.enqueueMutation(() => {
@@ -1993,7 +2053,9 @@ export class Gadget extends DurableObject {
         filed: raw.filed === true,
         actionId: typeof raw.actionId === "string" ? raw.actionId.slice(0, 120) : null,
         reason: typeof raw.reason === "string" ? raw.reason.slice(0, 500) : null,
-        source: input?.source === "host" ? "host" : "client",
+        // Never from input: the room is the only caller that reaches here, and
+        // a browser cannot label its own write authoritative.
+        source: "host",
         conversationId: typeof raw.conversationId === "string" ? raw.conversationId.slice(0, 120) : null,
         conversationTitle: typeof raw.conversationTitle === "string" ? raw.conversationTitle.slice(0, 120) : null,
         at: new Date().toISOString()
@@ -2014,13 +2076,19 @@ export class Gadget extends DurableObject {
    * the host recorded — so an owner looking at uncertain or stale progress is
    * shown what is known rather than a guess. `batchItemId` narrows the read to
    * one post; omitted, it covers the batch.
+   *
+   * THE ANSWER IS `workRequestStatus`, one entry per item, because the platform
+   * reads it: the room observes this result and attaches the canonical action
+   * state it holds for each `requestId`. What the gadget knows on its own is
+   * only its filing record, which cannot say whether an approval was answered,
+   * declined or executed (F5).
    */
   checkGenerationStatus(input) {
     const batchId = typeof input?.batchId === "string" ? input.batchId : "";
     const batch = batchId ? this.storage.getBatch(batchId) : null;
     if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
     const scoped = typeof input?.batchItemId === "string" && input.batchItemId ? input.batchItemId : null;
-    const items = this.storage
+    const workRequestStatus = this.storage
       .listBatchItems(batchId)
       .filter((item) => !scoped || item.id === scoped)
       .map((item) => {
@@ -2034,7 +2102,7 @@ export class Gadget extends DurableObject {
           stage: generationStage(mark)
         };
       });
-    return { ok: true, batchId, at: new Date().toISOString(), items };
+    return { ok: true, batchId, at: new Date().toISOString(), workRequestStatus };
   }
 
   /**

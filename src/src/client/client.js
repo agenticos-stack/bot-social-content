@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationMark, generationStage, itemPresentation } from "../../model.js";
+import { detectProtectedLiterals, generationMark, generationStage, itemPresentation, platformStage } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -713,42 +713,15 @@ function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
 
-  /**
-   * Record what the platform did with a request the canvas just made.
+  /*
+   * The canvas does NOT record the filing outcome.
    *
-   * The host annotates the method result with `workRequest.filed` from the
-   * governed filing (`attended-work-request.ts`) AND stamps the gadget's durable
-   * mark itself, so this browser call is a confirmation rather than the only
-   * record. Without the request identity the stamp cannot be matched to the ask
-   * it belongs to, so a result that names no request is left alone; the host's
-   * own stamp is the durable acknowledgement either way.
+   * The room stamps the platform's own acknowledgement on the durable mark
+   * before the method result reaches the browser, so there is nothing for a
+   * page to add — and a browser-authored receipt would be a claim it cannot
+   * support. A page may ask for a status check; it may not assert that the
+   * platform filed, refused or executed anything (audit correction, F4).
    */
-  async function recordDispatch(batchId, result) {
-    const workRequest = result && typeof result === "object" ? result.workRequest : null;
-    if (!workRequest || typeof workRequest.filed !== "boolean") return;
-    const generationRequest =
-      typeof result?.request === "string" && result.request
-        ? result.request
-        : typeof workRequest.requestId === "string" && workRequest.requestId
-          ? workRequest.requestId
-          : null;
-    if (!generationRequest) return;
-    try {
-      await rpc.recordGenerationDispatch({
-        batchId,
-        generationRequest,
-        dispatch: {
-          filed: workRequest.filed,
-          actionId: workRequest.actionId,
-          reason: workRequest.reason,
-          conversationId: workRequest.conversationId,
-          conversationTitle: workRequest.conversationTitle
-        }
-      });
-    } catch (error) {
-      console.error(error);
-    }
-  }
 
   /*
    * A grid cover: cached bytes, as a `blob:` the canvas is allowed to show.
@@ -1261,6 +1234,14 @@ function App() {
     const stages = new Map(); // batchItemId -> { key, stage }
     // A generated caption that arrived over the owner's unsaved caption.
     const captionConflicts = new Map(); // batchItemId -> { caption, revision }
+    // What the PLATFORM says happened to a request, read through Check status.
+    // The mark's own dispatch is a filing record; only the platform can say an
+    // approval was answered, declined or executed, so this is what the footer
+    // shows once it is known. batchItemId -> { status, actionId, at }.
+    const canonicalStatus = new Map();
+    // Which posts already have a status read in flight, so an automatic check
+    // runs once per render rather than on every redraw.
+    const statusChecked = new Set();
     let activeTab = "output";
     let closing = false;
     let saving = false;
@@ -1682,7 +1663,6 @@ function App() {
         return;
       }
       if (!live) return;
-      await recordDispatch(batch.id, result);
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1712,7 +1692,6 @@ function App() {
       }
       if (!live) return;
       if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
-      await recordDispatch(batch.id, result);
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1740,6 +1719,36 @@ function App() {
         .catch(() => onFail());
     };
 
+    /*
+     * Ask the platform what happened to this post's request, and remember it.
+     *
+     * Read-only: the room answers with the canonical action state and does no
+     * work of its own. Never throws to the caller — a status read that fails
+     * leaves the filing state showing, which is still true.
+     */
+    const checkCanonicalStatus = async (item) => {
+      statusChecked.add(item.id);
+      try {
+        const status = await rpc.checkGenerationStatus({ batchId: batch.id, batchItemId: item.id });
+        if (!live) return false;
+        if (status && status.ok === false) return false;
+        const entry = Array.isArray(status?.workRequestStatus)
+          ? status.workRequestStatus.find((candidate) => candidate.batchItemId === item.id)
+          : null;
+        const platform = entry?.platform ?? null;
+        canonicalStatus.set(item.id, {
+          stage: platformStage(platform),
+          state: platform?.state ?? null,
+          actionId: platform?.actionId ?? null,
+          at: new Date().toISOString()
+        });
+        return true;
+      } catch (error) {
+        console.error(error);
+        return false;
+      }
+    };
+
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
@@ -1747,14 +1756,25 @@ function App() {
         const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
         const reason = state.review.reason || state.save.reason;
         /*
-         * The truthful pending state, from the mark's dispatch outcome. A mark
-         * alone is a request: with no acknowledgement its start is not
-         * confirmed, and "could not start" is actionable. Never "generating".
+         * The truthful pending state. The mark's dispatch says whether the
+         * request was FILED; the platform's canonical state, read back by
+         * request identity, says whether the approval was since answered,
+         * declined or run. Canonical wins when we have it, so a declined or
+         * superseded request stops reading as awaiting approval.
          */
         const mark = generationMark(item.generation);
         const stage = generationStage(item.generation);
+        const canonical = canonicalStatus.get(item.id)?.stage ?? null;
         let stageNote = null;
-        if (stage === "start_failed") {
+        if (canonical === "declined") {
+          stageNote = t(locale, "drawerApprovalDeclined");
+        } else if (canonical === "accepted") {
+          stageNote = t(locale, "drawerApprovalAccepted");
+        } else if (canonical === "executing") {
+          stageNote = t(locale, "drawerApprovalExecuting");
+        } else if (canonical === "executed") {
+          stageNote = t(locale, "drawerApprovalExecuted");
+        } else if (stage === "start_failed" || canonical === "execution_failed") {
           stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
         } else if (stage === "awaiting_approval") {
           // Where the approval actually lives, when the filing told us.
@@ -1765,6 +1785,23 @@ function App() {
         } else if (stage === "start_unconfirmed") {
           stageNote = t(locale, "drawerStartUnconfirmed");
         }
+        /*
+         * One automatic status read for a request that looks pending. The
+         * filing record cannot say an approval was answered, so this is how a
+         * stale "awaiting approval" corrects itself after a reload without the
+         * owner having to press anything. Once per post per drawer session.
+         */
+        if (
+          live &&
+          !closing &&
+          !canonicalStatus.has(item.id) &&
+          !statusChecked.has(item.id) &&
+          (stage === "awaiting_approval" || stage === "start_unconfirmed")
+        ) {
+          statusChecked.add(item.id);
+          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawFooter(); });
+        }
+        const requestPending = stage === "start_unconfirmed" || stage === "awaiting_approval";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
@@ -1778,12 +1815,10 @@ function App() {
               // not clear; its focus and caret survive the re-render.
               onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
-            // Check status: a read-only re-read of the durable projection, for
-            // the two stages where what is known is uncertain (no
-            // acknowledgement yet) or stale (an approval that may since have
-            // been answered). It starts nothing, notifies nobody and charges
-            // nothing, and it reuses the request identity already on the mark.
-            stage === "start_unconfirmed" || stage === "awaiting_approval"
+            // Check status: a read-only re-read of the platform's canonical
+            // state for this request. It launches nothing, notifies nobody and
+            // charges nothing, and it reuses the request identity on the mark.
+            requestPending || canonical
               ? el("button", {
                   type: "button", class: "sl-secondary",
                   disabled: saving,
@@ -1792,13 +1827,10 @@ function App() {
                     saving = true;
                     redrawFooter();
                     try {
-                      const status = await rpc.checkGenerationStatus({ batchId: batch.id, batchItemId: item.id });
+                      const ok = await checkCanonicalStatus(item);
                       if (!live) return;
-                      if (status && status.ok === false) announce(t(locale, "drawerGenerationStatusFailed"), "");
-                      else announce(t(locale, "drawerGenerationStatusChecked"), "");
+                      announce(t(locale, ok ? "drawerGenerationStatusChecked" : "drawerGenerationStatusFailed"), "");
                       if (await refetchItems()) redraw();
-                    } catch (error) {
-                      announce(error instanceof Error ? error.message : t(locale, "drawerGenerationStatusFailed"), "");
                     } finally {
                       saving = false;
                       redrawFooter();
@@ -2292,7 +2324,6 @@ function App() {
        * are saved. Editing still reaches the wizard through a card → Continue
        * editing.
        */
-      await recordDispatch(batch.id, batch);
       if (draftable.length && draftable.length < selected.length) {
         collectionState = setNotice(collectionState, {
           message: t(locale, "skippedDrafts", { n: selected.length - draftable.length })

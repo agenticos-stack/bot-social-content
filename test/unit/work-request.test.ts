@@ -265,7 +265,13 @@ describe("a canvas request the platform can file", () => {
     expect(opened.workRequest.batchId).toBe(opened.id);
   });
 
-  it("requestGeneration returns a request scoped to the posts asked for", async () => {
+  it("a replacement covers the whole request it supersedes, not just the post picked", async () => {
+    /**
+     * ONE ASK, WHOLE. `createBatch` armed both marks under one request. When the
+     * owner replaces one of them, the approval covers the request — so the
+     * sibling moves onto the new id with it, keeping its own scope and needs,
+     * rather than being stranded on an approval that is about to be retired.
+     */
     const { gadget } = gadgetWith(undefined);
     const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"] });
     const ids = opened.items.map((entry) => entry.id);
@@ -274,7 +280,14 @@ describe("a canvas request the platform can file", () => {
     const result = await gadget.requestGeneration(opened.id, [ids[1]], { replace: true });
     expect(result.ok).toBe(true);
     expect(result.workRequest.batchId).toBe(opened.id);
-    expect(result.workRequest.itemIds).toEqual(["instagram:IG_MAIN:p2"]);
+    // Only the picked post was re-requested...
+    expect(result.requested).toEqual([ids[1]]);
+    expect(result.replaced).toEqual([{ batchItemId: ids[1], requestId: opened.workRequest.requestId }]);
+    // ...but the replacement names the work it supersedes and covers both.
+    expect(result.workRequest.replace).toBe(true);
+    expect(result.workRequest.replaces).toEqual([opened.workRequest.requestId]);
+    expect(result.workRequest.itemIds).toEqual(["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"]);
+    expect(gadget.storage.getBatchItem(ids[0]).generation).toContain(result.request);
   });
 
   it("treats a mark with no acknowledgement as not started, never generating", async () => {
@@ -286,7 +299,12 @@ describe("a canvas request the platform can file", () => {
     expect(generationStage(mark)).toBe("start_unconfirmed");
   });
 
-  it("stamps an accepted filing as awaiting approval, and a refusal as actionable", async () => {
+  it("records one acknowledgement per request, and a later one cannot revise it", async () => {
+    /**
+     * THE RECEIPT IS WRITTEN ONCE. It is the platform's own account of what it
+     * did; a second write — matching or contradictory — is a no-op, because a
+     * receipt that can be revised is not a record (audit correction, F4).
+     */
     const { gadget } = gadgetWith(undefined);
     const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
     const batchItemId = opened.items[0].id;
@@ -306,15 +324,16 @@ describe("a canvas request the platform can file", () => {
     expect(generationMark(stored()).dispatch.conversationTitle).toBe("Pop-up launch");
     expect(generationMark(stored()).needs).toEqual({ caption: true, image: true });
 
-    const refused = await gadget.recordGenerationDispatch({
+    const later = await gadget.recordGenerationDispatch({
       batchId: opened.id,
       generationRequest: request,
       batchItemIds: [batchItemId],
-      dispatch: { filed: false, reason: "the conversation is archived" }
+      dispatch: { filed: false, reason: "a later, contradictory value" }
     });
-    expect(refused.ok).toBe(true);
-    expect(generationStage(stored())).toBe("start_failed");
-    expect(generationMark(stored()).dispatch.reason).toContain("archived");
+    expect(later.updated).toBe(0);
+    expect(generationStage(stored())).toBe("awaiting_approval");
+    expect(generationMark(stored()).dispatch.actionId).toBe("act_123");
+    expect(generationMark(stored()).dispatch.reason).toBeNull();
   });
 
   it("refuses an outcome that does not name the request it acknowledges", async () => {

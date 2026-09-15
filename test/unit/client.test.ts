@@ -1012,8 +1012,6 @@ describe("bundled client.js smoke test", () => {
 
     const item = makeItem({ id: "a", seen: false, selected: true });
     let createdArgs: unknown = null;
-    let recordedDispatch: unknown = null;
-    let recordedRequest: unknown = null;
     (globalThis as any).gadget = {
       async summary() {
         return {
@@ -1050,17 +1048,11 @@ describe("bundled client.js smoke test", () => {
           }
         };
       },
-      async recordGenerationDispatch(input: unknown) {
-        recordedDispatch = (input as { dispatch: unknown }).dispatch;
-        recordedRequest = (input as { generationRequest: unknown }).generationRequest;
-        return { ok: true };
-      },
       async listBatchSummaries() {
         // Empty until the batch exists — otherwise the view opens on Content
-        // before the click this test is about. The batch row carries the
-        // durable `generation: "requested"` mark the server sets, and the
-        // per-item projection the Content grid reads its cards from. The
-        // item's own mark carries the dispatch the client just recorded.
+        // before the click this test is about. The item's mark carries the
+        // dispatch the ROOM recorded, because the canvas no longer records it
+        // itself (audit correction, F4).
         if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
         const generation = JSON.stringify({
           id: "gen_1",
@@ -1068,7 +1060,7 @@ describe("bundled client.js smoke test", () => {
           scope: { caption: true, image: true },
           needs: { caption: true, image: true },
           at: "2026-09-10T00:00:00.000Z",
-          ...(recordedDispatch ? { dispatch: recordedDispatch } : {})
+          dispatch: { filed: true, actionId: "act_1", reason: null, source: "host" }
         });
         return {
           batches: [{
@@ -1099,12 +1091,10 @@ describe("bundled client.js smoke test", () => {
     expect(createdArgs).toBeTruthy();
     expect((createdArgs as { destinationBindings: string[] }).destinationBindings).toEqual([]);
 
-    // The client stamped the host's filing outcome onto the durable mark, and
-    // the card reads that outcome rather than claiming generation is underway.
-    // The stamp names the request it acknowledges, so it can only land on that
-    // request's mark.
-    expect(recordedDispatch).toMatchObject({ filed: true, actionId: "act_1" });
-    expect(recordedRequest).toBe("gen_1");
+    // The canvas did NOT record the filing outcome: that receipt is the room's
+    // own account, written before the result reached the page. There is no
+    // browser method to claim it.
+    expect((globalThis as any).gadget.recordGenerationDispatch).toBeUndefined();
 
     // Content tab shows the selected post as a card immediately — the
     // Sources shape (article.sl-post). With the filing accepted, the chip
