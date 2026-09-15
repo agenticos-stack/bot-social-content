@@ -1242,6 +1242,11 @@ function App() {
     // Which posts already have a status read in flight, so an automatic check
     // runs once per render rather than on every redraw.
     const statusChecked = new Set();
+    // A status check and a resume have their OWN busy state. Using the save
+    // state for them disabled every unrelated control for the duration and left
+    // the body rendered busy when only the footer was redrawn (F2).
+    let statusChecking = false;
+    let resuming = false;
     let activeTab = "output";
     let closing = false;
     let saving = false;
@@ -1723,29 +1728,78 @@ function App() {
      * Ask the platform what happened to this post's request, and remember it.
      *
      * Read-only: the room answers with the canonical action state and does no
-     * work of its own. Never throws to the caller — a status read that fails
-     * leaves the filing state showing, which is still true.
+     * work of its own. It also records the RESOLUTION — `found`, `not_found`,
+     * `unavailable`, or `unknown` when the host did not say — because "there is
+     * no action" is a fact the owner can act on and "this host cannot tell you"
+     * is not (F1). Never throws to the caller: a failed read is recorded as
+     * unavailable, which is still true.
      */
     const checkCanonicalStatus = async (item) => {
       statusChecked.add(item.id);
+      const record = (entry) =>
+        canonicalStatus.set(item.id, {
+          stage: platformStage(entry?.platform ?? null),
+          state: entry?.platform?.state ?? null,
+          actionId: entry?.platform?.actionId ?? null,
+          resolution:
+            entry?.resolution === "found" || entry?.resolution === "not_found" || entry?.resolution === "unavailable"
+              ? entry.resolution
+              : "unknown",
+          reason: typeof entry?.reason === "string" ? entry.reason : null,
+          at: new Date().toISOString()
+        });
       try {
         const status = await rpc.checkGenerationStatus({ batchId: batch.id, batchItemId: item.id });
         if (!live) return false;
-        if (status && status.ok === false) return false;
+        if (status && status.ok === false) {
+          record({ resolution: "unavailable", reason: typeof status.reason === "string" ? status.reason : null });
+          return false;
+        }
         const entry = Array.isArray(status?.workRequestStatus)
           ? status.workRequestStatus.find((candidate) => candidate.batchItemId === item.id)
           : null;
-        const platform = entry?.platform ?? null;
-        canonicalStatus.set(item.id, {
-          stage: platformStage(platform),
-          state: platform?.state ?? null,
-          actionId: platform?.actionId ?? null,
-          at: new Date().toISOString()
-        });
+        record(entry ?? null);
         return true;
       } catch (error) {
         console.error(error);
+        if (live) record({ resolution: "unavailable", reason: null });
         return false;
+      }
+    };
+
+    /*
+     * Deliver a request that was saved but never submitted.
+     *
+     * The gadget re-derives the handoff from the EXISTING mark — same request
+     * id, same scope, same instructions — and the host files it through the
+     * governed route, so pressing twice (or a lost response) converges on one
+     * approval. Nothing is recorded here: what the platform did comes back on
+     * the next read, exactly as a fresh request's does.
+     */
+    const resumeRequest = async (item) => {
+      if (resuming || !live) return;
+      const generationRequest = generationMark(item.generation)?.id ?? null;
+      if (!generationRequest) return;
+      resuming = true;
+      redrawPreserving();
+      try {
+        const result = await rpc.resumeGeneration({ batchId: batch.id, batchItemId: item.id, generationRequest });
+        if (!live) return;
+        if (result && result.ok === false) {
+          announce(refusalMessage(result), "");
+          return;
+        }
+        // The cached resolution is now stale: the platform has an action to
+        // report, and asking again is how we learn it.
+        canonicalStatus.delete(item.id);
+        statusChecked.delete(item.id);
+        await refetchItems();
+        announce(t(locale, "drawerResumeSent"), "");
+      } catch (error) {
+        announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
+      } finally {
+        resuming = false;
+        if (live) redrawPreserving();
       }
     };
 
@@ -1764,7 +1818,12 @@ function App() {
          */
         const mark = generationMark(item.generation);
         const stage = generationStage(item.generation);
-        const canonical = canonicalStatus.get(item.id)?.stage ?? null;
+        const resolved = canonicalStatus.get(item.id) ?? null;
+        const canonical = resolved?.stage ?? null;
+        const resolution = resolved?.resolution ?? null;
+        const where = mark?.dispatch?.conversationTitle
+          ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
+          : "";
         let stageNote = null;
         if (canonical === "declined") {
           stageNote = t(locale, "drawerApprovalDeclined");
@@ -1774,17 +1833,30 @@ function App() {
           stageNote = t(locale, "drawerApprovalExecuting");
         } else if (canonical === "executed") {
           stageNote = t(locale, "drawerApprovalExecuted");
+        } else if (canonical === "awaiting_approval") {
+          stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
         } else if (stage === "start_failed" || canonical === "execution_failed") {
           stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
+        } else if (resolution === "not_found") {
+          // The platform looked and there is no action. That is a request that
+          // was saved but never submitted, and it is the only state that offers
+          // a resume.
+          stageNote = t(locale, "drawerRequestNotSubmitted");
+        } else if (resolution === "unavailable") {
+          // We could not find out. Unknown is not permission to create work, so
+          // the only offer is to look again.
+          stageNote = `${t(locale, "drawerStatusUnavailable")} ${t(locale, "drawerStatusCheckedAt", {
+            time: new Date(resolved.at).toLocaleTimeString()
+          })}`;
         } else if (stage === "awaiting_approval") {
-          // Where the approval actually lives, when the filing told us.
-          const where = mark?.dispatch?.conversationTitle
-            ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
-            : "";
           stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
         } else if (stage === "start_unconfirmed") {
+          // No platform answer at all: an older host, or a check that has not
+          // run yet. Say what is known and nothing more.
           stageNote = t(locale, "drawerStartUnconfirmed");
         }
+        const canResume =
+          resolution === "not_found" && Boolean(mark?.needs.image || mark?.needs.caption) && isEditableItem(item);
         /*
          * One automatic status read for a request that looks pending. The
          * filing record cannot say an approval was answered, so this is how a
@@ -1799,7 +1871,7 @@ function App() {
           (stage === "awaiting_approval" || stage === "start_unconfirmed")
         ) {
           statusChecked.add(item.id);
-          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawFooter(); });
+          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
         }
         const requestPending = stage === "start_unconfirmed" || stage === "awaiting_approval";
         replace(footerEl, [
@@ -1815,25 +1887,40 @@ function App() {
               // not clear; its focus and caret survive the re-render.
               onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
+            // Continue generation: the one owner action for a request the
+            // platform has confirmed was never submitted. It re-delivers the
+            // EXISTING request, so it is offered only when that is what the
+            // platform said, and only while a part is still outstanding.
+            canResume
+              ? el("button", {
+                  type: "button", class: "sl-primary",
+                  disabled: resuming || statusChecking,
+                  onclick: () => resumeRequest(item)
+                }, t(locale, "drawerResumeGeneration"))
+              : null,
             // Check status: a read-only re-read of the platform's canonical
             // state for this request. It launches nothing, notifies nobody and
             // charges nothing, and it reuses the request identity on the mark.
-            requestPending || canonical
+            requestPending || canonical || resolution
               ? el("button", {
                   type: "button", class: "sl-secondary",
-                  disabled: saving,
+                  disabled: statusChecking,
                   onclick: async () => {
-                    if (saving || !live) return;
-                    saving = true;
+                    if (statusChecking || !live) return;
+                    statusChecking = true;
                     redrawFooter();
                     try {
                       const ok = await checkCanonicalStatus(item);
                       if (!live) return;
                       announce(t(locale, ok ? "drawerGenerationStatusChecked" : "drawerGenerationStatusFailed"), "");
-                      if (await refetchItems()) redraw();
+                      await refetchItems();
                     } finally {
-                      saving = false;
-                      redrawFooter();
+                      statusChecking = false;
+                      // Every affected control, not just the footer: the body
+                      // was rendered with the busy snapshot and only a full
+                      // redraw clears it. Preserving keeps edits, focus,
+                      // selection, section and scroll (F2).
+                      if (live) redrawPreserving();
                     }
                   }
                 }, t(locale, "drawerCheckGenerationStatus"))
@@ -1900,11 +1987,17 @@ function App() {
       }
       const phase = phaseOf(item);
       const editable = isEditableItem(item);
+      // A request the platform confirmed was never submitted is not "queued":
+      // the header agrees with the card chip ("Start not confirmed") and the
+      // footer instead of implying an agent queue.
+      const headerStateKey = canonicalStatus.get(item.id)?.resolution === "not_found"
+        ? "cardStageNotStarted"
+        : (PHASE_STATE_KEYS[phase] ?? "stateUnknown");
 
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [
           items.length > 1 ? t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }) + " · " : "",
-          t(locale, PHASE_STATE_KEYS[phase] ?? "stateUnknown"),
+          t(locale, headerStateKey),
           " · ",
           (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"),
           item.approval && (item.revision ?? 0) > (item.approval.approvedRevision ?? 0) ? " · " + t(locale, "approvalExpiredTitle") : ""
@@ -1966,6 +2059,9 @@ function App() {
         panel = renderOutputPanel(locale, item, {
           editable,
           saving,
+          // Confirmed missing filing: per-part copy agrees with the footer
+          // instead of implying an agent queue.
+          unsubmitted: canonicalStatus.get(item.id)?.resolution === "not_found",
           buffers: buffer,
           highlighted: highlightedCaption(buffer.caption ?? item.caption ?? ""),
           loadImage: loadImage(item),

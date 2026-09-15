@@ -43,6 +43,11 @@ export function createRpc(gadget) {
     // actually happened to a request rather than what it last recorded.
     // Creates nothing, notifies nobody, charges nothing.
     checkGenerationStatus: (input) => gadget.checkGenerationStatus(input),
+    // Deliver a request that was saved but never submitted. It keeps the
+    // existing request identity, scope and instruction snapshot; the host files
+    // it through the same governed path, so a second press converges on the one
+    // approval instead of creating another.
+    resumeGeneration: (input) => gadget.resumeGeneration(input),
     // Per-post image/caption instructions; null resets a part to the saved default.
     saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),
