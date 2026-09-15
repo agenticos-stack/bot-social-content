@@ -2062,6 +2062,11 @@ export class Gadget extends DurableObject {
         : undefined;
       const dispatch = {
         filed: raw.filed === true,
+        // Stamped by the room when the row is already approved at filing (an
+        // owner's click, approved through the answer path before the receipt
+        // is written) — never from the browser, like every field here. Absent
+        // on member filings, which genuinely wait for an approval.
+        approved: raw.approved === true,
         actionId: typeof raw.actionId === "string" ? raw.actionId.slice(0, 120) : null,
         reason: typeof raw.reason === "string" ? raw.reason.slice(0, 500) : null,
         // Never from input: the room is the only caller that reaches here, and
@@ -2090,7 +2095,7 @@ export class Gadget extends DurableObject {
    * calls it on the raw facet and the browser-facing facet refuses it, so a
    * page cannot author a platform outcome. The request id match and the
    * existing receipt are both required: an outcome for unknown or unfiled
-   * work is refused by value, and the first outcome stands.
+   * work is refused by value, and the latest outcome for the request stands.
    */
   recordGenerationOutcome(input) {
     return this.enqueueMutation(() => {

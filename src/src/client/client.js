@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationMark, generationStage, itemPresentation, platformStage } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -1563,6 +1563,27 @@ function App() {
     const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
 
     /*
+     * A turn outcome code in readable words — never the raw code. The drawer
+     * names why a turn ended; `credits_exhausted` inside a zh-HK sentence is
+     * a defect, not information. Unknown codes fall back to a generic reason
+     * rather than leaking the wire value.
+     */
+    const outcomeReasonText = (code) => {
+      switch (code) {
+        case "credits_exhausted":
+          return t(locale, "drawerReasonOutOfCredits");
+        case "turn_cancelled":
+          return t(locale, "drawerReasonTurnCancelled");
+        case "turn_crashed":
+          return t(locale, "drawerReasonTurnCrashed");
+        case "succeeded":
+          return t(locale, "drawerReasonTurnEnded");
+        default:
+          return t(locale, "drawerReasonUnknown");
+      }
+    };
+
+    /*
      * A request the platform has finished with — stopped, declined or failed
      * to execute — is not pending, even though its needs are still
      * outstanding. Re-asking it replaces nothing, so no replace confirm is
@@ -1600,14 +1621,28 @@ function App() {
     const requestPart = async (item, part) => {
       if (saving) return;
       const parts = [part];
-      const needs = { [part]: true };
-      let supersede = false;
       // Any outstanding part — the other one, the same one, or the request a
       // new post starts with — is replaced only on an explicit confirm. A
       // request the platform already finished with asks for no confirm: there
       // is nothing live left to replace.
       const outstanding = pendingParts(item);
-      if (outstanding.length && !canonicalFinal(item)) {
+      // A request the platform already finished with asks for no confirm:
+      // for a dead one (declined or failed, which nothing stamps onto the
+      // mark) the re-ask replaces, since there is nothing live left to
+      // retire; a stopped one re-asks cleanly on its recorded outcome. After
+      // a final outcome the other outstanding part stays owed — re-asking one
+      // part must not silently drop it.
+      const itemFinal = canonicalFinal(item);
+      const deadFinal =
+        itemFinal &&
+        (canonicalStatus.get(item.id)?.stage === "declined" ||
+          canonicalStatus.get(item.id)?.stage === "execution_failed");
+      let supersede = Boolean(deadFinal);
+      const needs = { [part]: true };
+      if (itemFinal) {
+        for (const other of outstanding) needs[other] = true;
+      }
+      if (outstanding.length && !itemFinal) {
         if (!(await confirmReplacePending(outstanding))) return;
         supersede = true;
       }
@@ -1721,18 +1756,23 @@ function App() {
     /**
      * Retry after a final platform outcome: the same outstanding needs are
      * re-asked WITHOUT `replace`, because the finished request is not
-     * pending and there is nothing to retire. If the server still sees live
-     * work (no outcome reached it yet), its refusal is announced honestly.
+     * pending and there is nothing to retire — except a declined or failed
+     * request, which nothing stamps onto the mark, so the server would
+     * refuse it as still pending: those re-ask WITH `replace`. If the server
+     * still sees live work (no outcome reached it yet), its refusal is
+     * announced honestly.
      */
     const retryFinal = async (item) => {
       if (saving || !live) return;
       const mark = generationMark(item.generation);
       const needs = mark && (mark.needs.image || mark.needs.caption) ? mark.needs : { image: true, caption: true };
+      const finalStage = canonicalStatus.get(item.id)?.stage;
+      const replaceDead = finalStage === "declined" || finalStage === "execution_failed";
       saving = true;
       redrawFooter();
       let result;
       try {
-        result = await rpc.requestGeneration(batch.id, [item.id], { needs });
+        result = await rpc.requestGeneration(batch.id, [item.id], replaceDead ? { needs, replace: true } : { needs });
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       } finally {
@@ -1871,38 +1911,62 @@ function App() {
          * superseded request stops reading as awaiting approval.
          */
         const mark = generationMark(item.generation);
-        const stage = generationStage(item.generation);
+        const display = generationDisplayStage(item.generation);
         const resolved = canonicalStatus.get(item.id) ?? null;
         const canonical = resolved?.stage ?? null;
         const resolution = resolved?.resolution ?? null;
+        const markOutcomeCode =
+          typeof mark?.dispatch?.outcome?.code === "string" && mark.dispatch.outcome.code
+            ? mark.dispatch.outcome.code
+            : null;
         const where = mark?.dispatch?.conversationTitle
           ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
           : "";
         let stageNote = null;
         if (canonical === "declined") {
           stageNote = t(locale, "drawerApprovalDeclined");
-        } else if (canonical === "accepted") {
-          stageNote = t(locale, "drawerApprovalAccepted");
         } else if (canonical === "executing") {
           stageNote = t(locale, "drawerApprovalExecuting");
+        } else if (canonical === "execution_failed") {
+          stageNote = t(locale, "drawerStartFailed", {
+            reason: resolved.outcome ? outcomeReasonText(resolved.outcome) : mark?.dispatch?.reason || t(locale, "genericError")
+          });
         } else if (canonical === "stopped") {
           // The approved turn ended with work still outstanding. The outcome
-          // code says why; the parts below say what remains. Never finished.
+          // code says why, in readable words — never the raw code; the parts
+          // below say what remains. Never finished.
           stageNote = t(locale, "drawerGenerationStopped", {
-            reason: resolved.outcome || t(locale, "genericError")
+            reason: outcomeReasonText(resolved.outcome ?? markOutcomeCode)
           });
+        } else if (display === "stopped") {
+          // The mark already carries the turn's end (stamped when it ended)
+          // while the platform read still lags without it — the fresher fact
+          // wins over an approved-not-started or awaiting canonical.
+          stageNote = t(locale, "drawerGenerationStopped", { reason: outcomeReasonText(markOutcomeCode) });
+        } else if (display === "declined") {
+          stageNote = t(locale, "drawerApprovalDeclined");
+        } else if (display === "execution_failed") {
+          stageNote = t(locale, "drawerStartFailed", { reason: outcomeReasonText(markOutcomeCode) });
+        } else if (canonical === "accepted") {
+          stageNote = t(locale, "drawerApprovalAccepted");
         } else if (canonical === "approved_not_started") {
           // The approval executed, but no completion was ever reported. Not
           // finished, not running — just unreported.
           stageNote = t(locale, "drawerApprovalNotStarted");
         } else if (canonical === "awaiting_approval") {
           stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
-        } else if (stage === "insufficient_credits" || stage === "credit_check_unavailable") {
+        } else if (display === "approved_not_started") {
+          // No status read yet, but the receipt says the approval already ran
+          // at filing — never a wait for approval.
+          stageNote = t(locale, "drawerApprovalNotStarted");
+        } else if (display === "insufficient_credits" || display === "credit_check_unavailable") {
           // The filing itself was refused on credits. Nothing is pending, so
           // topping up and retrying is a fresh ask, not a replacement.
-          stageNote = t(locale, stage === "insufficient_credits" ? "drawerInsufficientCredits" : "drawerCreditCheckUnavailable");
-        } else if (stage === "start_failed" || canonical === "execution_failed") {
-          stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
+          stageNote = t(locale, display === "insufficient_credits" ? "drawerInsufficientCredits" : "drawerCreditCheckUnavailable");
+        } else if (display === "start_failed") {
+          stageNote = t(locale, "drawerStartFailed", {
+            reason: mark?.dispatch?.reason || t(locale, "genericError")
+          });
         } else if (resolution === "not_found") {
           // The platform looked and there is no action. That is a request that
           // was saved but never submitted, and it is the only state that offers
@@ -1914,9 +1978,9 @@ function App() {
           stageNote = `${t(locale, "drawerStatusUnavailable")} ${t(locale, "drawerStatusCheckedAt", {
             time: new Date(resolved.at).toLocaleTimeString()
           })}`;
-        } else if (stage === "awaiting_approval") {
+        } else if (display === "awaiting_approval") {
           stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
-        } else if (stage === "start_unconfirmed") {
+        } else if (display === "start_unconfirmed") {
           // No platform answer at all: an older host, or a check that has not
           // run yet. Say what is known and nothing more.
           stageNote = t(locale, "drawerStartUnconfirmed");
@@ -1934,7 +1998,7 @@ function App() {
           !closing &&
           !canonicalStatus.has(item.id) &&
           !statusChecked.has(item.id) &&
-          (stage === "awaiting_approval" || stage === "start_unconfirmed")
+          (display === "awaiting_approval" || display === "start_unconfirmed" || display === "approved_not_started")
         ) {
           statusChecked.add(item.id);
           void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
@@ -1952,7 +2016,12 @@ function App() {
           outcomeRechecked.add(outcomeKey);
           void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
         }
-        const requestPending = stage === "start_unconfirmed" || stage === "awaiting_approval";
+        const requestPending =
+          display === "start_unconfirmed" ||
+          display === "awaiting_approval" ||
+          display === "approved_not_started" ||
+          display === "insufficient_credits" ||
+          display === "credit_check_unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
@@ -2010,7 +2079,7 @@ function App() {
             // `needs`). A final platform outcome re-asks the outstanding
             // needs without replacing: nothing is pending, so there is
             // nothing to retire.
-            stage === "start_failed" || stage === "insufficient_credits" || stage === "credit_check_unavailable"
+            display === "start_failed" || display === "insufficient_credits" || display === "credit_check_unavailable"
               ? el("button", {
                   type: "button", class: "sl-secondary",
                   disabled: saving,
@@ -2075,12 +2144,43 @@ function App() {
       }
       const phase = phaseOf(item);
       const editable = isEditableItem(item);
-      // A request the platform confirmed was never submitted is not "queued":
-      // the header agrees with the card chip ("Start not confirmed") and the
-      // footer instead of implying an agent queue.
-      const headerStateKey = canonicalStatus.get(item.id)?.resolution === "not_found"
-        ? "cardStageNotStarted"
-        : (PHASE_STATE_KEYS[phase] ?? "stateUnknown");
+      // The header reads the same stage as the card chip and the footer: the
+      // canonical platform stage when a status read reported one, else the
+      // mark's own receipt, recorded outcome and outstanding needs. A queued
+      // phase alone never implies an agent queue — an approved receipt reads
+      // approved, a recorded end reads ended. A request the platform confirmed
+      // was never submitted is not "queued" either.
+      const resolvedHeader = canonicalStatus.get(item.id) ?? null;
+      const headerStateKey = (() => {
+        if (resolvedHeader?.resolution === "not_found") return "cardStageNotStarted";
+        if (phase !== "queued" && phase !== "regenerating") return PHASE_STATE_KEYS[phase] ?? "stateUnknown";
+        if (resolvedHeader?.stage) {
+          return (
+            {
+              declined: "cardStageDeclined",
+              accepted: "cardStageApproved",
+              executing: "cardStageRunning",
+              stopped: "cardStageStopped",
+              approved_not_started: "cardStageApproved",
+              awaiting_approval: "cardStageAwaitingApproval",
+              execution_failed: "cardStageFailed"
+            }[resolvedHeader.stage] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+          );
+        }
+        return (
+          {
+            start_unconfirmed: "cardStageNotStarted",
+            start_failed: "cardStageStartFailed",
+            insufficient_credits: "cardStageInsufficientCredits",
+            credit_check_unavailable: "cardStageCreditUnavailable",
+            awaiting_approval: "cardStageAwaitingApproval",
+            approved_not_started: "cardStageApproved",
+            stopped: "cardStageStopped",
+            declined: "cardStageDeclined",
+            execution_failed: "cardStageFailed"
+          }[generationDisplayStage(item.generation)] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+        );
+      })();
 
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [
