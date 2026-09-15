@@ -1284,7 +1284,19 @@ export function generationMark(mark) {
                 typeof mark.dispatch.conversationId === "string" ? mark.dispatch.conversationId : null,
               conversationTitle:
                 typeof mark.dispatch.conversationTitle === "string" ? mark.dispatch.conversationTitle : null,
-              at: typeof mark.dispatch.at === "string" ? mark.dispatch.at : undefined
+              at: typeof mark.dispatch.at === "string" ? mark.dispatch.at : undefined,
+              // The turn's terminal outcome, recorded by the platform when the
+              // seeded turn ended. Absent means no end was ever reported — not
+              // that the turn is still running.
+              outcome:
+                mark.dispatch.outcome && typeof mark.dispatch.outcome === "object"
+                  ? {
+                      status:
+                        typeof mark.dispatch.outcome.status === "string" ? mark.dispatch.outcome.status : null,
+                      code: typeof mark.dispatch.outcome.code === "string" ? mark.dispatch.outcome.code : null,
+                      at: typeof mark.dispatch.outcome.at === "string" ? mark.dispatch.outcome.at : undefined
+                    }
+                  : undefined
             }
           : undefined
     };
@@ -1315,6 +1327,9 @@ export function generationMark(mark) {
  * - `awaiting_approval` — the governed execution path took it; an approval is
  *   still required before any drafting turn starts.
  * - `start_failed` — the path refused it. `mark.dispatch.reason` says why.
+ *   Two refusal reasons are their own stages, so the owner sees which wait
+ *   they are actually in: `insufficient_credits` (topped-up, then retry) and
+ *   `credit_check_unavailable` (the balance could not be read at all).
  *
  * Returns `null` when nothing is being generated at all.
  */
@@ -1322,7 +1337,59 @@ export function generationStage(mark) {
   const parsed = generationMark(mark);
   if (!parsed) return null;
   if (!parsed.dispatch) return "start_unconfirmed";
-  return parsed.dispatch.filed ? "awaiting_approval" : "start_failed";
+  if (!parsed.dispatch.filed) {
+    if (parsed.dispatch.reason === "insufficient_credits") return "insufficient_credits";
+    if (parsed.dispatch.reason === "credit_check_unavailable") return "credit_check_unavailable";
+    return "start_failed";
+  }
+  return "awaiting_approval";
+}
+
+/**
+ * The intake methods one request's parts are delivered through.
+ *
+ * A caption is saved with `saveRevisions` (batch) or `saveRevision` (one
+ * item); an image is registered with `saveGeneratedImage`. The work request
+ * names exactly the subset its parts need, so the platform — and the agent
+ * reading `agent.md` — never has to guess which write answers the ask.
+ */
+export function deliveryIntake(parts) {
+  const intake = [];
+  if (parts?.caption === true) intake.push("saveRevisions", "saveRevision");
+  if (parts?.image === true) intake.push("saveGeneratedImage");
+  return intake;
+}
+
+/**
+ * Read an intake declaration, whatever shape an older request filed.
+ *
+ * Requests used to declare a single string (`"saveRevision"`); current ones
+ * declare the list `deliveryIntake` builds. Anything else reads as no
+ * declared intake — never a guessed one.
+ */
+export function normalizeIntake(value) {
+  if (typeof value === "string") return value ? [value] : [];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) => typeof entry === "string" && entry);
+}
+
+/** Turn-outcome statuses the platform records on a request's dispatch. */
+export const FINAL_GENERATION_OUTCOMES = Object.freeze(["stopped", "refused", "execution_failed"]);
+
+/**
+ * Whether the mark's dispatch already carries a final platform outcome.
+ *
+ * A filing refusal (`filed: false`) is final — nothing is pending, so a
+ * re-request is a fresh ask, not a replacement. So is a recorded turn outcome:
+ * the approved turn ended (stopped, refused, failed) with work still
+ * outstanding. Anything else — filed with no outcome — is still live, and a
+ * second ask still needs `replace`.
+ */
+export function dispatchCarriesFinalOutcome(dispatch) {
+  if (!dispatch || typeof dispatch !== "object") return false;
+  if (dispatch.filed === false) return true;
+  const status = dispatch.outcome?.status;
+  return typeof status === "string" && FINAL_GENERATION_OUTCOMES.includes(status);
 }
 
 /**
@@ -1339,13 +1406,32 @@ export function generationStage(mark) {
  * generated — the parts still outstanding are the mark's `needs`. Returns null
  * when the platform said nothing, so the caller falls back to the filing state
  * rather than inventing progress.
+ *
+ * A `ran` row with a recorded turn outcome is `stopped`: the turn ended and
+ * the outcome code says why, while the mark's `needs` say what is still
+ * outstanding. A `ran` row with no turn report is `approved_not_started` —
+ * the approval executed, but no completion was ever reported. Neither reads
+ * as finished work.
+ *
+ * The approval's own execution already writes an outcome (`action_applied`,
+ * and `action_reconciled` when the log reconciles it later) — that receipt
+ * says the REQUEST was answered, never that a turn reported back, so it
+ * still reads as approved-but-not-started. Any other code is a turn's own
+ * report, and the request reads as stopped with that code as its reason.
  */
 export function platformStage(platform) {
   const state = typeof platform?.state === "string" ? platform.state : null;
   if (state === "refused") return "declined";
   if (state === "failed") return "execution_failed";
   if (state === "applying") return "executing";
-  if (state === "ran") return "executed";
+  if (state === "ran") {
+    const code =
+      typeof platform?.outcomeCode === "string" && platform.outcomeCode
+        ? platform.outcomeCode
+        : (typeof platform?.outcomeStatus === "string" && platform.outcomeStatus ? platform.outcomeStatus : null);
+    if (!code || code === "action_applied" || code === "action_reconciled") return "approved_not_started";
+    return "stopped";
+  }
   if (state === "asked") return platform?.decision === "approved" ? "accepted" : "awaiting_approval";
   return null;
 }

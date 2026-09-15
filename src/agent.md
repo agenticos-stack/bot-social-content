@@ -70,7 +70,7 @@ history.
 ## When a scan asked for the drafting, not a person
 
 A scan's `runScan` result can carry a `workRequest` — `{ batchId, sourceLabel,
-itemIds, intake: "saveRevision" }` — but **the platform currently discards
+itemIds, intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"] }` — but **the platform currently discards
 it**: the schedule invoker keeps only ok/error from the hook's response, so no
 brief has ever arrived through that path (tracked as
 agenticos-stack/agenticos#1861). What actually reaches you is the owner
@@ -116,7 +116,7 @@ both. Do only the parts that are `true`:
 If you ever ARE handed a structured brief, it looks like this:
 
 ```
-{ drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: "saveRevision", next: "..." }
+{ drafted: 0, remaining: 2, gadgetId, batchId, sourceLabel, itemIds, intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"], next: "..." }
 ```
 
 **`drafted: 0` is the fact to act on.** The note around that brief says the

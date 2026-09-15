@@ -89,6 +89,9 @@ import {
   draftOrigin,
   generationMark,
   generationStage,
+  deliveryIntake,
+  dispatchCarriesFinalOutcome,
+  FINAL_GENERATION_OUTCOMES,
   effectiveInstructions,
   itemPresentation,
 
@@ -970,10 +973,10 @@ export class Gadget extends DurableObject {
          * `getBatch(batchId)`, so nothing here needs to carry them.
          */
         itemIds: opened.items.map((item) => item.sourceItem?.id).filter(Boolean),
-        // The one method a finished draft is returned through. `agent.md`
+        // The methods a finished draft is returned through. `agent.md`
         // carries the contract; this names it so the brief does not have to
-        // repeat it.
-        intake: "saveRevision"
+        // repeat it. A scan opens new items, which always need both parts.
+        intake: deliveryIntake({ caption: true, image: true })
       };
     } catch {
       return null;
@@ -1049,7 +1052,9 @@ export class Gadget extends DurableObject {
       batchId,
       sourceLabel: [...labels].join(", "),
       itemIds: items.map((entry) => entry.itemId),
-      intake: "saveRevision",
+      // The methods these parts are delivered through, so the platform never
+      // has to guess which write answers the ask.
+      intake: deliveryIntake(parts),
       parts,
       ...(instructionsRef ? { instructionsRef } : {}),
       items,
@@ -1931,16 +1936,24 @@ export class Gadget extends DurableObject {
       const pendingItems = draftable
         .map((item) => ({ item, mark: generationMark(item.generation) }))
         .filter(({ mark }) => mark && (mark.needs.image || mark.needs.caption))
-        .map(({ item, mark }) => ({ batchItemId: item.id, requestId: mark.id, scope: mark.scope, needs: mark.needs }));
-      if (pendingItems.length && !replace) {
-        const [first] = pendingItems;
+        .map(({ item, mark }) => ({ item, batchItemId: item.id, requestId: mark.id, scope: mark.scope, needs: mark.needs, dispatch: mark.dispatch }));
+      /*
+       * A final outcome is not pending. When the mark's dispatch already
+       * carries one — a filing refusal, or a recorded turn end — the request
+       * it names is over, and re-asking the outstanding needs is a fresh ask
+       * under a new identity, not a replacement of live work. Only a still-
+       * live conflict (filed, no outcome) refuses without `replace`.
+       */
+      const liveItems = pendingItems.filter(({ dispatch }) => !dispatchCarriesFinalOutcome(dispatch));
+      if (liveItems.length && !replace) {
+        const [first] = liveItems;
         return {
           ok: false,
           code: "generation_pending",
           message:
             "A generation request for this post is still in progress. Wait for it, or replace it — replacing turns its results into history.",
           pending: { requestId: first.requestId, scope: first.scope, needs: first.needs },
-          pendingItems
+          pendingItems: liveItems.map(({ batchItemId, requestId, scope, needs }) => ({ batchItemId, requestId, scope, needs }))
         };
       }
       // One request id for this ask; each item stamps it plus the revision
@@ -2060,6 +2073,64 @@ export class Gadget extends DurableObject {
       };
       const updated = this.storage.recordGenerationDispatch(batchId, { request, itemIds: batchItemIds, dispatch });
       return { ok: true, request, dispatch, updated };
+    });
+  }
+
+  /**
+   * The PLATFORM's terminal outcome for a request it filed and ran.
+   *
+   * A turn seeded by the request's approval ended — delivered or not — and
+   * the platform says how: one of `FINAL_GENERATION_OUTCOMES` (`stopped`,
+   * `refused`, `execution_failed`) plus a bounded reason code. The outcome is
+   * stored on the filing receipt, so a later status read can report the
+   * request as ended instead of pending forever, and a re-request of the
+   * outstanding needs is a fresh ask rather than a replacement.
+   *
+   * THIS IS NOT A BROWSER METHOD. Like `recordGenerationDispatch`, the room
+   * calls it on the raw facet and the browser-facing facet refuses it, so a
+   * page cannot author a platform outcome. The request id match and the
+   * existing receipt are both required: an outcome for unknown or unfiled
+   * work is refused by value, and the first outcome stands.
+   */
+  recordGenerationOutcome(input) {
+    return this.enqueueMutation(() => {
+      const batchId = typeof input?.batchId === "string" ? input.batchId : "";
+      const batch = batchId ? this.storage.getBatch(batchId) : null;
+      if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const request = typeof input?.generationRequest === "string" ? input.generationRequest.trim() : "";
+      if (!request) {
+        return {
+          ok: false,
+          code: "outcome_request_required",
+          message: "An outcome names the generation request it ended."
+        };
+      }
+      const raw = input?.outcome && typeof input.outcome === "object" ? input.outcome : null;
+      const status = typeof raw?.status === "string" ? raw.status : "";
+      if (!FINAL_GENERATION_OUTCOMES.includes(status)) {
+        return {
+          ok: false,
+          code: "outcome_invalid",
+          message: `An outcome is one of: ${FINAL_GENERATION_OUTCOMES.join(", ")}.`
+        };
+      }
+      const batchItemIds = Array.isArray(input?.batchItemIds)
+        ? input.batchItemIds.filter((id) => typeof id === "string" && id).slice(0, 50)
+        : undefined;
+      const outcome = {
+        status,
+        code: typeof raw.code === "string" && raw.code ? raw.code.slice(0, 120) : null,
+        at: new Date().toISOString()
+      };
+      const updated = this.storage.recordGenerationOutcome(batchId, { request, itemIds: batchItemIds, outcome });
+      if (!updated) {
+        return {
+          ok: false,
+          code: "generation_request_stale",
+          message: "This request is no longer the post's current filed work."
+        };
+      }
+      return { ok: true, request, outcome, updated };
     });
   }
 
