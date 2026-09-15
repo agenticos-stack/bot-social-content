@@ -273,6 +273,61 @@ describe("recording a turn's terminal outcome on the mark", () => {
     })) as { ok: boolean; code?: string };
     expect(missing).toMatchObject({ ok: false, code: "batch_not_found" });
   });
+
+  it("lets a later outcome for the same request replace the earlier one, like the API", async () => {
+    // The API keeps the latest turn report per seed row; the mark must agree
+    // with it, or card and drawer read different endings. A stale request id
+    // is still refused.
+    const gadget = outcomeGadget();
+    const { opened, batchItemId } = await openBatch(gadget);
+    await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: opened.workRequest.requestId,
+      dispatch: { filed: true, actionId: "act_1" }
+    });
+    await gadget.recordGenerationOutcome({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      generationRequest: opened.workRequest.requestId,
+      outcome: { status: "stopped", code: "credits_exhausted" }
+    });
+    const replaced = (await gadget.recordGenerationOutcome({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      generationRequest: opened.workRequest.requestId,
+      outcome: { status: "execution_failed", code: "turn_crashed" }
+    })) as { ok: boolean; updated: number };
+    expect(replaced).toMatchObject({ ok: true, updated: 1 });
+    const after = generationMark(gadget.storage.getBatchItem(batchItemId).generation);
+    expect(after?.dispatch?.outcome).toMatchObject({ status: "execution_failed", code: "turn_crashed" });
+  });
+
+  it("carries the filing-time approval on the receipt, so the card never waits for one that ran", async () => {
+    // The room stamps `approved` when the row is already approved at filing
+    // (an owner's click). Absent on older receipts, which keep the old reading.
+    const gadget = outcomeGadget();
+    const { opened, batchItemId } = await openBatch(gadget);
+    await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: opened.workRequest.requestId,
+      dispatch: { filed: true, actionId: "act_1", approved: true }
+    });
+    const approved = generationMark(gadget.storage.getBatchItem(batchItemId).generation);
+    expect(approved?.dispatch?.approved).toBe(true);
+
+    const fresh = (await gadget.createBatch({ itemIds: ["source_2"], destinationBindings: [] })) as {
+      id: string;
+      items: { id: string }[];
+      workRequest: { requestId: string };
+    };
+    await gadget.recordGenerationDispatch({
+      batchId: fresh.id,
+      generationRequest: fresh.workRequest.requestId,
+      dispatch: { filed: true, actionId: "act_2" }
+    });
+    const plain = generationMark(gadget.storage.getBatchItem(fresh.items[0].id).generation);
+    expect(plain?.dispatch?.approved).toBe(false);
+  });
 });
 
 describe("re-requesting after a final outcome", () => {

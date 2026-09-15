@@ -1261,9 +1261,10 @@ export function generationMark(mark) {
       // What the PLATFORM did with the request, stamped by the host from the
       // annotated method result and confirmed (never overridden) by the client.
       // Absent means no acknowledgement was ever recorded — not that generation
-      // started. `filed: true` means the governed execution path accepted it
-      // (an approval is still required); `filed: false` means it did not, and
-      // `reason` says why.
+      // started. `filed: true` means the governed execution path accepted it;
+      // `approved: true` means the approval already ran at filing (an owner's
+      // click), so the request never waits for one. `filed: false` means the
+      // path did not take it, and `reason` says why.
       //
       // `source` records WHO wrote it. The host's own acknowledgement (the
       // room stamps the outcome after it files) is `"host"` and outranks the
@@ -1277,6 +1278,7 @@ export function generationMark(mark) {
         mark.dispatch && typeof mark.dispatch === "object"
           ? {
               filed: mark.dispatch.filed === true,
+              approved: mark.dispatch.approved === true,
               actionId: typeof mark.dispatch.actionId === "string" ? mark.dispatch.actionId : null,
               reason: typeof mark.dispatch.reason === "string" ? mark.dispatch.reason : null,
               source: mark.dispatch.source === "host" ? "host" : "client",
@@ -1343,6 +1345,37 @@ export function generationStage(mark) {
     return "start_failed";
   }
   return "awaiting_approval";
+}
+
+/**
+ * The one stage the card chip, card title, drawer header and drawer footer
+ * all read — the mark's own facts only, because the card cannot reach the
+ * platform action log.
+ *
+ * The dispatch receipt says whether the request was filed; the recorded
+ * outcome says how the approved turn ended; the mark's outstanding `needs`
+ * say whether anything is still owed. A filed receipt the room stamped
+ * `approved` (an owner's click, approved at filing) never reads as awaiting
+ * approval — even before any status read. A recorded final outcome wins over
+ * the receipt. Null when nothing is pending: no mark, or a lingered mark
+ * with no outstanding needs (a satisfied mark clears entirely; this is the
+ * defensive read).
+ */
+export function generationDisplayStage(mark) {
+  const parsed = generationMark(mark);
+  if (!parsed) return null;
+  if (parsed.needs && !parsed.needs.caption && !parsed.needs.image) return null;
+  if (!parsed.dispatch) return "start_unconfirmed";
+  if (!parsed.dispatch.filed) {
+    if (parsed.dispatch.reason === "insufficient_credits") return "insufficient_credits";
+    if (parsed.dispatch.reason === "credit_check_unavailable") return "credit_check_unavailable";
+    return "start_failed";
+  }
+  const outcome = typeof parsed.dispatch.outcome?.status === "string" ? parsed.dispatch.outcome.status : null;
+  if (outcome === "stopped") return "stopped";
+  if (outcome === "refused") return "declined";
+  if (outcome === "execution_failed") return "execution_failed";
+  return parsed.dispatch.approved === true ? "approved_not_started" : "awaiting_approval";
 }
 
 /**

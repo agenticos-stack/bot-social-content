@@ -1335,10 +1335,12 @@ export class Storage {
    *
    * The outcome is a second, later fact about the SAME request — it never
    * creates a dispatch (an outcome for a request that was never filed is
-   * refused by the caller) and, like the receipt, the first write stands: a
-   * later outcome for the same request is a no-op. `outcome` is
-   * `{ status, code, at }` — see `FINAL_GENERATION_OUTCOMES` in model.js.
-   * Returns how many marks were stamped.
+   * refused by the caller) and, like the API's own seed row, the LATEST
+   * report stands: a later outcome for the same request replaces the
+   * earlier one, so the mark agrees with the platform about how the turn
+   * ended. `outcome` is `{ status, code, at }` — see
+   * `FINAL_GENERATION_OUTCOMES` in model.js. Returns how many marks were
+   * stamped.
    */
   recordGenerationOutcome(batchId, { request = null, itemIds, outcome } = {}) {
     if (typeof request !== "string" || !request) return 0;
@@ -1351,8 +1353,6 @@ export class Storage {
       if (!mark || mark.id !== request) continue;
       // No filing receipt, no outcome: the platform never took this request.
       if (!mark.dispatch) continue;
-      // Already ended: the first outcome stands.
-      if (mark.dispatch.outcome) continue;
       this.sql.exec(
         "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
         JSON.stringify({ ...mark, dispatch: { ...mark.dispatch, outcome } }),
