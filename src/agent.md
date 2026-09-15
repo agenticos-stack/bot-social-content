@@ -15,7 +15,9 @@ summary; a refusal is not successful activation. The old `setConfig` method is
 retained for legacy clients and can arm monitoring; do not use it as save-only.
 Source-check cadence is never publication timing. New content starts as a draft;
 the owner reviews each exact content, visual and timing revision before publishing.
-No AI image refinement capability is exposed by this UI; do not invent completion.
+AI image generation exists only through the governed platform image tools and the
+`saveGeneratedImage` handoff below — never claim a generated image exists until
+the item's `generatedImage.ready` says its bytes actually arrived.
 
 ## Preparing selected source posts
 
@@ -37,10 +39,33 @@ disclaimers, claims. You are handed the values; do not infer what is
 protected from prose.
 
 What you may NOT do is draft unattended. `createBatch` marks a batch
-`generation: "requested"` — draft only batches carrying that mark, only
-the items the owner selected into them, and only when the owner (or a
-brief naming the batch) actually asked. New scanned content arriving on
-its own is not a drafting ask; never draft a batch nobody requested.
+`generation: "requested"` and each of its items a mark object —
+`{ id, base, needs }` — instead. Draft only batches carrying the batch-level
+mark, and within them ONLY the items whose own `generation` is non-null. An
+unmarked item in a requested batch is a post the owner did not ask you to
+re-draft; leave its revision untouched. Draft only when the owner (or a
+brief naming the batch) actually asked. New scanned content arriving on its
+own is not a drafting ask; never draft a batch nobody requested.
+
+When you save work for a marked item, echo its `generation.id` back as
+`generationRequest` on `saveRevision`/`savePoster`/`saveGeneratedImage`. That
+id is how your write is correlated to the ask you answered: a save carrying an
+older id is refused `generation_request_stale`, and a save with no id is the
+owner's own edit — it never completes a request. Re-read the batch
+immediately before saving so the id and `expectedRevision` are current.
+
+A mark has two part maps. `scope` is what was requested and never changes;
+`needs` is what is still outstanding and shrinks as parts arrive. Work only on
+parts in `scope`, and only those still `true` in `needs`. Delivering the image
+first does not take the image out of scope: the correlated caption save that
+accepts that same request's image is still allowed.
+
+Only one request per post is in progress at a time. `requestGeneration` for a
+post whose mark still has outstanding needs comes back
+`{ ok: false, code: "generation_pending", pending: { requestId, scope, needs } }`
+unless it was called with `replace: true`. Never pass `replace` on your own —
+replacing is the owner's decision, and it turns the old request's results into
+history.
 
 ## When a scan asked for the drafting, not a person
 
@@ -55,7 +80,38 @@ is identical — the batch already exists; do not `createBatch`.
 
 The owner's drafting instructions live in config: read `summary().config`'s
 `contentPrompt` (what captions should say and how they should read) and
-`posterPrompt` (what the text poster should look like) and honor them.
+`posterPrompt` — stored under its old name, it is now the owner's IMAGE
+instructions: what the generated picture should show and how it should look.
+Older workspaces may still hold wording that asks for a text poster; do not
+produce one for new content. Ask the owner to update the instruction instead.
+
+Those are the saved DEFAULTS. The owner can override either one for a single
+post: each item carries `instructionOverrides` (`{ image, caption }`, null
+meaning "use the default") and `effectiveInstructions` (`{ image: { text,
+source }, caption: { text, source } }`, `source` being `post` or `default`).
+Draft a post from its `effectiveInstructions`, never from the defaults when
+the post has its own. A request also snapshots the instructions it was made
+under as `generation.instructions`; when that snapshot is present, use it —
+it is what the owner asked for when they pressed the button. Editing
+instructions is not a request: never draft or rewrite a post because its
+instructions changed.
+
+## Asking for one part: `generation.needs`
+
+A mark's `needs` says which parts the owner asked for. "Regenerate image"
+marks `{ image: true, caption: false }`; "Rewrite caption" marks
+`{ image: false, caption: true }`; a first draft or a plain Regenerate marks
+both. Do only the parts that are `true`:
+
+- `needs.image` only — generate the image and register it with
+  `saveGeneratedImage` (it arrives as `generatedCandidate`; the owner accepts
+  it). Do not change the caption. A correlated `saveRevision` that changes the
+  caption is refused `generation_part_not_requested`. A correlated save may
+  accept only an image registered under the same request; an older image is
+  the owner's choice (`generated_media_not_current`).
+- `needs.caption` only — save the new caption with `saveRevision`. Do not
+  register or accept a different image; a correlated save that changes the
+  accepted visual is refused the same way. The accepted image stays.
 
 If you ever ARE handed a structured brief, it looks like this:
 
@@ -124,25 +180,39 @@ saveRevision({ batchItemId, expectedRevision, caption, posterLayout, confirmedCl
 - `confirmedClaims` lists which flagged claims the owner (or you, on their
   clear instruction) has confirmed are accurate. Do not confirm a claim on
   your own authority when the source gave you no basis for it.
-- `posterLayout` is how you refine the image. The poster is deterministic
-  text-on-colour — you write its PARAMS, never pixels:
+- `posterLayout` and `savePoster` belong to revisions made before generated
+  images. Do not write a poster layout for new content, and never offer a
+  text poster as a substitute when an image cannot be generated. Existing
+  poster revisions stay as they were — history, not a mode to choose.
+- Never fall back to the source photograph either. A source post's picture
+  is a reference; public readability is not permission to republish it.
+  When generation fails, save the caption, leave the image need open, and
+  say plainly that the image did not arrive.
+- `saveGeneratedImage` is the attachment handoff for a REAL generated
+  image, used when the owner asked for generated imagery rather than a
+  text poster. The platform image tools (`workspace.generateImage` /
+  `workspace.editImage`) produce a conversation attachment and return its
+  `uploadId`. Register that upload against ONE item:
 
   ```
-  posterLayout: { template: "1080x1350" | "1080x1080", headline, subline,
-                  background: { kind: "solid", value: "#1c1c1e" },
-                  textColor: "#ffffff", align: "left" | "center" | "right" }
+  saveGeneratedImage({ batchItemId, attachmentId: uploadId,
+                       altText, generationRequest: generation.id })
   ```
 
-  The gadget renders it to a preview the owner sees in the batch drawer —
-  a layout you save becomes visible without you ever holding bytes. Do not
-  call `savePoster`: it requires rendered PNG bytes you cannot produce —
-  the owner-side client renders them when the batch heads to publish.
-  Honour `posterPrompt` from config when choosing headline and colours.
-  At submit the gadget uploads those bytes through `social.uploadMedia`
-  and the draft carries the returned URL — the poster IS the published
-  image when bytes exist. When they don't (layout only), the post ships
-  the source media and the result warns `poster_not_shipped`. The owner
-  can also download the PNG from the drawer.
+  You name the attachment — you never carry its bytes. The host fetches
+  them through the authenticated attachment route and delivers them to the
+  gadget afterwards. Always pass the item's CURRENT `generation.id`: an id
+  from an older ask is stored as stale history that answers nothing, and a
+  `saveRevision`/`savePoster` carrying an old id is refused with
+  `generation_request_stale`. `generatedImage` on the item is the image the
+  current revision accepted; a newer upload shows as `generatedCandidate`
+  and reports `ready` when its bytes actually landed. A `ready` generated image only ships when the
+  revision's visual mode is `ai_refinement` (`acceptedVisualMode` on
+  saveRevision, or the owner's own pick in the drawer); no text poster and no source photo is ever
+  swapped in when it is not.
+  Registering an upload for an image you did not generate, or claiming a
+  generated image exists while `ready` is still false, is fabrication —
+  the item tells the owner the truth; so do you.
 
 **There is no `submitForReview`, `publish`, or `send` for you to call.**
 Reviewing and submitting a version to the Social Hub door is the owner's own

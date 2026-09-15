@@ -99,17 +99,39 @@ export const SOCIAL_LOCALIZATION_DEFINITION = {
   // 1 to 20 connector bindings per role (REQ-002/REQ-030), plus the three
   // single-binding doors every method in `doors.js` calls through: `social`
   // (Social Hub door, TASK-103), `schedule` (cadence, REQ-012), `workspace`
-  // (notifications, TASK-104). None declares `optional`: a scan, a submit, or
-  // a notify with the door ungranted is a real gap the gadget's own `doors.js`
-  // already reports rather than pretending the capability exists.
+  // (notifications, TASK-104). All are optional at open (see DRAFT FIRST):
+  // each is checked by the operation that uses it, which reports the gap
+  // rather than pretending the capability exists.
   requirements: [
+    /*
+     * DRAFT FIRST. An owner opens Social Content with nothing connected: a
+     * public account is watched through `metered_fetch`, drafts are written
+     * with no destination, and nothing is published until they choose to.
+     * So the setup gate — which waits only on declared, non-optional rows
+     * (`conversationConnections`' `required`) — must not demand what only
+     * submission needs.
+     *
+     * Optional here is not "never checked". Each capability is enforced at
+     * the operation that uses it, by value:
+     *   - `source` / `metered_fetch`: a scan reads only granted sources;
+     *     `addOpenSource` refuses `fetch_not_granted` without the fetch door.
+     *   - `destination`: `submitForReview` refuses `batch_needs_destinations`.
+     *   - `social`: `submitForReview` refuses `publisher_not_granted`.
+   *   - `schedule`: turning monitoring on refuses `schedule_not_granted`;
+   *     reading schedules without it reads none.
+   *   - `workspace`: a notification without it is skipped and logged
+   *     (`doors.js` `notify`); nothing an owner does waits on it.
+     * The families keep `min`/`max` for when they are used: up to twenty
+     * accounts each, and at least one once the owner picks one.
+     */
     {
       requirementKey: "source",
       kind: "connector_resource",
       role: "source",
       min: 1,
       max: 20,
-      label: "Source accounts"
+      label: "Source accounts",
+      optional: true
     },
     {
       requirementKey: "destination",
@@ -117,35 +139,18 @@ export const SOCIAL_LOCALIZATION_DEFINITION = {
       role: "destination",
       min: 1,
       max: 20,
-      label: "Destination channels"
+      label: "Destination channels",
+      optional: true
     },
-    { requirementKey: "social", kind: "capability", label: "Social Hub publisher" },
-    { requirementKey: "schedule", kind: "capability", label: "Scan cadence" },
-    { requirementKey: "workspace", kind: "capability", label: "Workspace notifications" },
+    { requirementKey: "social", kind: "capability", label: "Social Hub publisher", optional: true },
+    { requirementKey: "schedule", kind: "capability", label: "Scan cadence", optional: true },
+    { requirementKey: "workspace", kind: "capability", label: "Workspace notifications", optional: true },
     /*
-     * Optional by design: a workspace whose sources are all
-     * authorised connector bindings never needs it, so its absence is a
-     * configuration rather than a fault — see `FETCH_DOOR_KEY` in
-     * `src/doors.js`. It was missing from this list entirely, so the platform
-     * was never asked to resolve the one door the open-account scan reads.
+     * Public account fetching: needed only when the owner watches a public
+     * account, and granted from the canvas when they do (`gadget:grant-door`,
+     * confirmed by the host). A workspace whose sources are all connected
+     * accounts never needs it.
      */
     { requirementKey: "metered_fetch", kind: "capability", label: "Public account fetching", optional: true }
-    // NO `fetch` REQUIREMENT, DELIBERATELY.
-    //
-    // The door that reads a PUBLIC account exists (`FETCH_DOOR_KEY` in the
-    // blueprint's `doors.js`) and an owner grants it from the doors panel,
-    // which lists what COULD be granted rather than only what a requirement
-    // names. It is not declared here because in this system a declared
-    // requirement is ALWAYS required: `conversationConnections` computes
-    // `required: requirement !== null` and never reads `optional`, so
-    // declaring it — even with `optional: true`, which the contract validator
-    // accepts — would put "Public account fetching" in 所需項目 and refuse to
-    // open setup until every existing workspace granted a metered door it
-    // does not use.
-    //
-    // "Not required" in this model means "a door no definition requirement
-    // names", which is exactly what this is. `listOpenAccountPosts` treats an
-    // absent `env.fetch` as "this workspace does not watch open accounts",
-    // never as a fault.
   ]
 } as const;

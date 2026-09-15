@@ -51,13 +51,17 @@ Storage lives under ignored `.bot-local/connected/`, keyed by app, organization
 and user. Existing offline drafts are not copied or changed. One account/org
 owns a running host; restart it before switching identities.
 
-Connected: local API authentication, a ticketed capnweb agent session, the
-working source canvas/SQLite, governed draft methods and the existing approval
-surface. The host keeps the API cookie and ticket out of the sandbox and
-validates the source digest before every agent call. The approval round trip has
-been verified locally. Skills/MCP, provider calls, scheduling and publishing
-remain intentionally unavailable until their normal API-governed doors are
-configured. Packaging remains a release step.
+Connected mode starts with empty local storage. Save setup and grant the normal
+API doors before fetching. Drafting a selection or pressing Regenerate hands the
+batch to the connected agent; its approvals appear beside the canvas, and
+completed agent operations refresh draft cards. The host validates the source
+digest before every agent call. Packaging remains a release step.
+
+This path still needs platform parity before it is a complete workflow: the
+development registration omits the source's read-method declarations, so ordinary
+agent reads can ask for approval, and its door listing does not expand concrete
+connector family members. A test with simulated provider effects is not evidence
+of real generation, owner approval, publication, or scheduling.
 
 ### Production platform (gadget-dev token)
 
@@ -106,8 +110,27 @@ pasted pair would connect to a workspace you did not name.
 `POST /v2/gadget-dev/rpc-ticket` with the bearer token and opens `wss://`.
 The browser on `social.localhost` never receives the token, cookie, or
 ticket; auth/sign-in routes are not proxied. The canvas is still local
-SQLite. Publishing doors are not granted on the API side. Restart the host
-to switch tokens or workspaces.
+SQLite. New sessions have no publication authority. The API enforces every door
+call; grant only the connections needed for the development conversation.
+Recheck connections in the canvas after granting: a changed door set restarts
+the local isolate against its existing SQLite without restoring code. Restart
+the host to switch tokens or workspaces.
+
+The connected media path requires the SDK change in
+`agenticos-stack/agenticos-bot-sdk#26` while it is unpublished. Point
+`BOT_SDK_SOURCE` at that checkout. It preserves incoming binary arguments and
+accepts an explicit bounded request size; this host selects 3 MiB for RPC to
+carry a 2 MB poster as base64. Authentication and agent messages keep their
+smaller limits. Verify this boundary with:
+
+```sh
+BOT_SDK_SOURCE=/path/to/sdk-with-pr-26 node --test test/local-connected-runtime.test.mjs
+```
+
+That test uses real workerd SQLite and simulated provider effects. It covers
+empty setup, fetched references, selection, saved captions/posters, and both
+publication intents reaching the Social Hub door. It does not run a model or
+publish anything externally.
 
 After building, run `pnpm preview` and open
 `http://127.0.0.1:17920/`. Add `?locale=zh-HK` for Chinese UI or `?setup=1` for

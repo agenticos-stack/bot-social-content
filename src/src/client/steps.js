@@ -11,6 +11,7 @@
 // together, so there is one screen with the real preview on it, not a
 // summary screen followed by the screen with the controls.
 
+import { needsJpegCopy } from "./image-acceptance.js";
 import { detectProtectedLiterals, validateRevisionDraft } from "../../model.js";
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
@@ -87,7 +88,7 @@ function draftFor(item) {
     confirmedClaims: Array.isArray(item.confirmedClaims) ? item.confirmedClaims.slice() : [],
     publicationIntent: item.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" },
     refinementBrief: item.refinementBrief,
-    acceptedVisualMode: item.refinementBrief?.visualTreatment ?? "keep_original",
+    acceptedVisualMode: item.acceptedVisualMode ?? "keep_original",
     ledger: item.ledger ?? { spans: [], media: [] }
   };
 }
@@ -264,12 +265,27 @@ export function reviewEnabled(state) {
  * asked of the item, plus the one thing that only exists at this step: at
  * least one destination chosen.
  */
-export function submitItemEnabled(state, batchItemId, policy) {
+export function submitItemEnabled(state, batchItemId, policy, destinations = []) {
   const item = state.batch?.items.find((entry) => entry.id === batchItemId);
   if (!item || state.submitting || state.submittingByItem?.[batchItemId]) return false;
   if (state.conflicts && Object.hasOwn(state.conflicts, batchItemId)) return false;
   if (state.savingByItem[batchItemId] || draftIsDirty(state, batchItemId)) return false;
-  if (!publishBindings(state, batchItemId).length) return false;
+  // A generated image that has not landed cannot be what the owner approves.
+  if (generatedVisualBlocked(item, state.drafts[batchItemId])) return false;
+  // A destination the summary no longer offers — or still lists but whose
+  // grant the server has read as gone — is not a choice the picker could
+  // have made: a binding left over from a since-revoked destination counts
+  // for nothing (#1960). The row stays rendered and marked; it just cannot
+  // carry a submit.
+  const known = new Set(
+    destinations
+      .filter((entry) => entry.granted !== false)
+      .map((entry) => entry.destinationBinding ?? entry.binding)
+  );
+  if (!publishBindings(state, batchItemId).some((binding) => known.has(binding))) return false;
+  // A PNG bound for a JPEG-only destination would be refused at filing
+  // (`generated_image_format_stale`); the owner accepts a JPEG copy first.
+  if (needsJpegCopy(item, { bindings: publishBindings(state, batchItemId), destinations, visualMode: acceptedVisualOf(item, state.drafts[batchItemId]) })) return false;
   const issues = computeIssues(item, state.drafts[batchItemId], policy).issues;
   return !hasBlockingIssues(issues);
 }
@@ -467,34 +483,48 @@ function renderOpenSources(locale, state, handlers) {
     }
   });
 
-  const rows = (state.openSources || []).map((source) =>
-    el("div", { class: "sl-open-source" }, [
-      el("span", { class: "sl-open-source-name" }, source.displayName || source.binding),
-      source.lastServedBy
-        ? el(
-            "span",
-            { class: "sl-open-source-meta" },
-            t(locale, "openSourceServedBy", {
-              provider: source.lastServedBy,
-              credits: String(source.lastCostCredits ?? 0)
-            })
+  const fetchGranted = state.fetchGranted !== false;
+  const rows = fetchGranted
+    ? (state.openSources || []).map((source) =>
+        el("div", { class: "sl-open-source" }, [
+          el("span", { class: "sl-open-source-name" }, source.displayName || source.binding),
+          source.lastServedBy
+            ? el(
+                "span",
+                { class: "sl-open-source-meta" },
+                t(locale, "openSourceServedBy", {
+                  provider: source.lastServedBy,
+                  credits: String(source.lastCostCredits ?? 0)
+                })
+              )
+            : null,
+          el(
+            "button",
+            {
+              type: "button",
+              class: "sl-open-source-remove",
+              disabled: state.openBusy,
+              "aria-label": t(locale, "openSourceRemove", { value: source.displayName || source.binding }),
+              onclick: () => handlers.onRemoveOpenSource(source.binding)
+            },
+            "×"
           )
-        : null,
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-open-source-remove",
-          disabled: state.openBusy,
-          "aria-label": t(locale, "openSourceRemove", { value: source.displayName || source.binding }),
-          onclick: () => handlers.onRemoveOpenSource(source.binding)
-        },
-        "×"
+        ])
       )
-    ])
-  );
+    : [];
 
   return el("div", { class: "sl-open-source-field" }, [
+    fetchGranted
+      ? null
+      : el("div", { class: "sl-fetch-permission", role: "status" }, [
+          el("p", { class: "sl-field-note" }, t(locale, "fetchNeedsPermission")),
+          el(
+            "button",
+            { type: "button", class: "sl-secondary", onclick: () => handlers.onGrantFetch?.() },
+            t(locale, "fetchGrant")
+          ),
+          el("p", { class: "sl-field-note" }, t(locale, "fetchGrantNext"))
+        ]),
     rows.length ? el("div", { class: "sl-open-source-list" }, rows) : null,
     input,
     // The refusal the server gave, in the owner's own words, beside the field
@@ -589,7 +619,10 @@ export function renderSetup(root, draft, ctx) {
       sourceSection, rulesSection,
       section("setupPublicationSection", [note("setupPublicationNote")]),
       monitoringSection,
-      error ? el("p", { class: "sl-setup-error", role: "alert" }, error) : null,
+      error ? el("p", { class: "sl-setup-error", role: "alert" }, [
+        error,
+        ctx.errorAction ? el("button", { type: "button", class: "sl-secondary", onclick: () => ctx.errorAction.run() }, ctx.errorAction.label) : null
+      ]) : null,
       ctx.notice ? el("p", { role: "status", class: "sl-setup-notice" }, ctx.notice) : null,
       el("div", { class: "sl-setup-actions" }, [
         editing ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "settingsCancel")) : null,
@@ -649,6 +682,118 @@ function renderTimingPicker(itemId, intent, locale, handlers, disabled) {
  * Returns `null` when the item has no poster layout yet, so the caller can
  * fall back to an identifying line instead of an empty box.
  */
+/** The visual mode a revision files: the owner's draft pick, else what was saved. */
+export function acceptedVisualOf(item, draft) {
+  return draft?.acceptedVisualMode ?? item?.acceptedVisualMode ?? (item?.posterStored ? "text_poster" : "keep_original");
+}
+
+/*
+ * REVIEWABLE IS STRONGER THAN STORED. `generatedImage.ready` says the bytes
+ * are held; it does not say the approver can see them. Each accepted image is
+ * tracked per (post, asset, revision) as loading → ready (decoded) or failed,
+ * and submission waits for `ready`. A load that finishes after the asset or
+ * revision changed updates an entry nobody reads, so it cannot unlock a newer
+ * image.
+ */
+const reviewImages = new Map(); // key -> { status: "loading"|"ready"|"failed", url, message }
+
+function reviewImageKey(item) {
+  const id = item?.generatedImage?.id;
+  return id ? `${item.id}:${id}:${item.revision ?? 0}` : null;
+}
+
+/** Revokes object URLs for review images not in `keep` (all of them by default). */
+export function releaseReviewImages(keep = new Set()) {
+  for (const [key, entry] of reviewImages) {
+    if (keep.has(key)) continue;
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    reviewImages.delete(key);
+  }
+}
+
+/** The review image's state for this post's current accepted asset and revision. */
+export function reviewImageState(item) {
+  const key = reviewImageKey(item);
+  return key ? reviewImages.get(key)?.status ?? "idle" : "idle";
+}
+
+/**
+ * True when the accepted visual is a generated image the approver cannot
+ * review yet: not stored, or stored but not (yet) rendered in this review.
+ */
+export function generatedVisualBlocked(item, draft) {
+  if (acceptedVisualOf(item, draft) !== "ai_refinement") return false;
+  if (item?.generatedImage?.ready !== true) return true;
+  return reviewImageState(item) !== "ready";
+}
+
+function loadReviewImage(item, handlers) {
+  const key = reviewImageKey(item);
+  if (!key || reviewImages.has(key) || typeof handlers?.loadGeneratedImage !== "function") return;
+  const entry = { status: "loading", url: null, message: null };
+  reviewImages.set(key, entry);
+  const settle = (status, url, message) => {
+    // Replaced, retried or released while loading: this answer is stale.
+    if (reviewImages.get(key) !== entry) { if (url) URL.revokeObjectURL(url); return; }
+    entry.status = status;
+    entry.url = url;
+    entry.message = message;
+    handlers.onReviewImageState?.();
+  };
+  handlers.loadGeneratedImage(item.generatedImage.id).then(
+    async ({ url }) => {
+      // Decode before calling it reviewable: bytes that arrive but do not
+      // render are exactly the image nobody can approve.
+      if (typeof Image === "function") {
+        const probe = new Image();
+        probe.src = url;
+        try {
+          if (typeof probe.decode === "function") await probe.decode();
+        } catch {
+          settle("failed", url, null);
+          return;
+        }
+      }
+      settle("ready", url, null);
+    },
+    (error) => settle("failed", null, error instanceof Error ? error.message : null)
+  );
+}
+
+function acceptedVisualNode(locale, item, draft, handlers) {
+  const mode = acceptedVisualOf(item, draft);
+  if (mode === "ai_refinement") {
+    const generated = item.generatedImage;
+    if (generated?.ready !== true || typeof handlers?.loadGeneratedImage !== "function") {
+      return el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "reviewGeneratedNotReady"));
+    }
+    loadReviewImage(item, handlers);
+    const entry = reviewImages.get(reviewImageKey(item));
+    if (entry?.status === "ready") {
+      return el("img", { class: "sl-pc-canvas", src: entry.url, alt: item.altText || generated.altText || t(locale, "drawerGeneratedImageAlt") });
+    }
+    if (entry?.status === "failed") {
+      return el("div", { class: "sl-pc-media-empty", role: "alert" }, [
+        el("span", null, t(locale, "reviewImageFailed")),
+        el("button", {
+          type: "button",
+          class: "sl-secondary",
+          onclick: () => {
+            const key = reviewImageKey(item);
+            const stale = reviewImages.get(key);
+            if (stale?.url) URL.revokeObjectURL(stale.url);
+            reviewImages.delete(key);
+            handlers.onReviewImageState?.();
+          }
+        }, t(locale, "reviewImageRetry"))
+      ]);
+    }
+    return el("span", { class: "sl-pc-media-empty", role: "status", "aria-busy": "true" }, t(locale, "reviewImageLoading"));
+  }
+  if (mode === "keep_original") return el("span", { class: "sl-pc-media-empty" }, t(locale, "drawerVisualSource"));
+  return posterCanvas(locale, item);
+}
+
 function posterCanvas(locale, item) {
   const layout = item.posterLayout;
   if (!layout?.template) return null;
@@ -706,6 +851,7 @@ function publicationOutcome(publication) {
 }
 
 export function renderPublish(root, state, ctx) {
+  releaseReviewImages(new Set((state.batch?.items ?? []).map(reviewImageKey).filter(Boolean)));
   const { locale, handlers, summary, policy } = ctx;
   const batch = state.batch;
   if (!batch) return replace(root, []);
@@ -715,17 +861,18 @@ export function renderPublish(root, state, ctx) {
     destinations.find((entry) => entry.destinationBinding === binding || entry.binding === binding)?.label || binding;
 
   /*
-   * TASK-017/TASK-022: with nowhere configured there is nothing to submit
-   * TO — said on this step, where the choice actually lives, with both ways
-   * out beside it. Drafting was never blocked on this; only the send is.
+   * TASK-017/TASK-022's sentence stays, but it sits ABOVE the cards now: the
+   * drafts paint at zero destinations — the owner reads what they have before
+   * wiring where it goes — and only the send waits (#1960). A banner, not an
+   * empty screen, because the cards under it are not empty.
    */
-  const emptyDestinations = el("div", { class: "sl-empty" }, [
-    el("strong", null, t(locale, "batchNoDestinationTitle")),
-    el("p", null, t(locale, "publishNoDestinationsBody")),
-    el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-primary", onclick: () => handlers.onOpenSettings() }, t(locale, "settingsOpen")),
-      el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections"))
-    ])
+  const noDestinationNotice = el("div", { class: "sl-notice", role: "status" }, [
+    el("p", null, [
+      el("strong", null, t(locale, "batchNoDestinationTitle") + " "),
+      t(locale, "publishNoDestinationsBody")
+    ]),
+    el("button", { type: "button", class: "sl-notice-action", onclick: () => handlers.onOpenSettings() }, t(locale, "settingsOpen")),
+    el("button", { type: "button", class: "sl-notice-action", onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections"))
   ]);
 
   /*
@@ -766,8 +913,11 @@ export function renderPublish(root, state, ctx) {
     };
     const submitting = !!state.submittingByItem[item.id];
     const error = state.publishErrors?.[item.id];
-    const enabled = submitItemEnabled(state, item.id, policy);
-    const poster = posterCanvas(locale, item);
+    const enabled = submitItemEnabled(state, item.id, policy, destinations);
+    // F03: the slot shows the visual this revision will FILE — the accepted
+    // generated image when that is the choice — not whatever poster layout
+    // happens to exist. The drawer and review read the same field.
+    const poster = acceptedVisualNode(locale, item, state.drafts[item.id], handlers);
     // The slot keeps the ratio it ships in whether or not a poster exists
     // yet, so the caption beside it does not jump as the owner moves
     // between posts. 1080x1080 is the only square template; every other
@@ -785,7 +935,10 @@ export function renderPublish(root, state, ctx) {
             // Revision 0 is not a version an owner has -- it means nothing
             // has been saved yet. "Version 0" reads like a debug line; say
             // what it means instead. 1 and up keep "Version {n}".
-            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "inboxNoSavedRevision"))
+            // A bound row with revision 0 has never been filed here. That is a
+            // fact about this destination, not about the post, which may well
+            // have saved revisions.
+            el("span", null, pub.revision > 0 ? t(locale, "drawerRevision", { n: pub.revision }) : t(locale, "publishNotSubmittedHere"))
           ]),
           stateBadge(locale, outcome),
           target?.receiptUrl
@@ -814,13 +967,22 @@ export function renderPublish(root, state, ctx) {
           el("div", { class: "sl-dest", role: "group", "aria-label": t(locale, "publishPickDestinations") }, destinations.map((destination) => {
             const binding = destination.destinationBinding ?? destination.binding;
             const filed = filedPairs.has(binding);
+            // Stored, but the grant is gone: the row stays (history is not
+            // silently rewritten) marked and unable to carry a submit until
+            // the connection is granted again — re-granting re-enables the
+            // owner's original choice, nothing re-points it elsewhere.
+            const revoked = destination.granted === false;
             const checked = filed || choice.bindings.includes(binding);
-            const tag = filed ? t(locale, "publishAlreadyFiled") : providerTag(destination.provider);
-            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}` }, [
+            const tag = filed
+              ? t(locale, "publishAlreadyFiled")
+              : revoked
+                ? t(locale, "publishAccessRevoked")
+                : providerTag(destination.provider);
+            return el("label", { class: `sl-dest-row${checked ? " sl-dest-row-selected" : ""}${revoked ? " sl-dest-row-revoked" : ""}` }, [
               el("input", {
                 type: "checkbox",
                 checked,
-                disabled: filed || submitting,
+                disabled: filed || submitting || revoked,
                 onchange: () => handlers.onToggleBinding(item.id, binding)
               }),
               destination.label || binding,
@@ -832,13 +994,66 @@ export function renderPublish(root, state, ctx) {
 
     const refusal = error
       ? el("div", { class: "sl-wizard-error", role: "alert" }, [
-          el("p", null, error.message),
+          // A missing grant is said in the owner's language with its way out;
+          // every other refusal keeps the server's own sentence.
+          el("p", null, error.code === "publisher_not_granted"
+            ? t(locale, "publisherNotGrantedBody")
+            : error.code === "generated_image_review_required"
+              ? t(locale, "reviewImageReviewRequired")
+              : error.code === "generated_image_format_stale"
+                ? t(locale, "reviewImageFormatStale")
+                : error.message),
+          // The server cannot vouch for which image was accepted: the owner
+          // looks at it and accepts it again, as a new revision.
+          error.code === "generated_image_review_required" && typeof handlers.onReacceptImage === "function"
+            ? el("button", {
+                type: "button",
+                class: "sl-secondary",
+                "data-action": "reaccept-image",
+                disabled: handlers.imageAcceptanceState?.(item.id)?.status === "accepting",
+                onclick: () => handlers.onReacceptImage(item.id)
+              }, t(locale, "reviewReacceptImage"))
+            : null,
           // REQ-017's opt-in is the refusal's own button — the owner takes it
           // deliberately, and nothing else retries with `createNewVersion`.
           error.code === "duplicate_active"
             ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onSubmitItem(item.id, true) }, t(locale, "duplicateBlockedNewVersion"))
+            : null,
+          // Draft first: publishing authority is asked for at the moment it is
+          // needed. The canvas only requests; the host confirms and grants.
+          error.code === "publisher_not_granted"
+            ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onGrantPublishing(item.id) }, t(locale, "publisherGrantAction"))
             : null
         ])
+      : null;
+
+    // A PNG accepted image bound for a JPEG-only destination the owner has
+    // chosen HERE (destinations may be picked after drafting): prepare a
+    // JPEG copy, then accept it as a new revision. Never automatic.
+    const acceptance = handlers.imageAcceptanceState?.(item.id) ?? { status: "idle" };
+    const jpegNeeded = typeof handlers.onPrepareJpeg === "function" && (
+      needsJpegCopy(item, { bindings: choice.bindings ?? [], destinations, visualMode: acceptedVisualOf(item, draft) }) ||
+      error?.code === "generated_image_format_stale");
+    const jpegBlock = jpegNeeded
+      ? el("div", { class: "sl-guidance sl-jpeg-copy", role: "status" }, [
+          el("p", null, t(locale, "reviewJpegNeeded")),
+          acceptance.status === "ready" || acceptance.status === "accepting"
+            ? el("button", {
+                type: "button", class: "sl-primary", "data-action": "accept-jpeg",
+                disabled: acceptance.status === "accepting",
+                onclick: () => handlers.onAcceptJpeg(item.id)
+              }, t(locale, "reviewUseJpeg", { n: (item.revision ?? 0) + 1 }))
+            : el("button", {
+                type: "button", class: "sl-secondary", "data-action": "prepare-jpeg",
+                disabled: acceptance.status === "preparing",
+                onclick: () => handlers.onPrepareJpeg(item.id)
+              }, t(locale, acceptance.status === "preparing" ? "reviewPreparingJpeg" : "reviewPrepareJpeg")),
+          acceptance.status === "ready" ? el("p", { class: "sl-field-note" }, t(locale, "reviewJpegReady")) : null,
+          acceptance.message ? el("p", { class: "sl-field-note", role: "alert" }, acceptance.message) : null
+        ])
+      : null;
+    const altLine = acceptedVisualOf(item, draft) === "ai_refinement" && item.altText
+      ? el("p", { class: "sl-field-note sl-review-alt" }, t(locale, "reviewAltText", { alt: item.altText }))
       : null;
 
     // ONE card: the poster as it will ship, the caption beside it, then
@@ -867,31 +1082,33 @@ export function renderPublish(root, state, ctx) {
         // decided on. A quiet way back, not another primary.
         el("div", { class: "sl-pc-caption" }, [
           el("p", null, draft.caption || item.caption || ""),
+          altLine,
           el("button", { type: "button", class: "sl-cta", onclick: () => handlers.onEditCaption(item.id) }, t(locale, "editCaption"))
         ]),
         pubRows.length ? el("div", { class: "sl-pc-pubs" }, pubRows) : null,
         picker,
         renderTimingPicker(item.id, choice.intent ?? { publishMode: "save_draft" }, locale, handlers, submitting),
         renderApprovalNote(),
+        jpegBlock,
         refusal,
         // A hairline, a reassurance on the left, submit on the right --
-        // the item's own submit is this card's one primary.
-        destinations.length
-          ? el("div", { class: "sl-submit-row" }, [
-              el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
-              el(
-                "button",
-                {
-                  type: "button",
-                  class: "sl-primary",
-                  disabled: !enabled,
-                  title: enabled ? "" : t(locale, "submitBlocked"),
-                  onclick: () => handlers.onSubmitItem(item.id, false)
-                },
-                submitting ? t(locale, "saving") : t(locale, "submitForReview")
-              )
-            ])
-          : null
+        // the item's own submit is this card's one primary. It renders
+        // at zero destinations too, disabled and saying why: the send is
+        // what waits on a destination, never the draft (#1960).
+        el("div", { class: "sl-submit-row" }, [
+          el("span", { class: "sl-submit-hint" }, t(locale, "submitHint")),
+          el(
+            "button",
+            {
+              type: "button",
+              class: "sl-primary",
+              disabled: !enabled,
+              title: enabled ? "" : destinations.length ? t(locale, "submitBlocked") : t(locale, "batchNoDestinationTitle"),
+              onclick: () => handlers.onSubmitItem(item.id, false)
+            },
+            submitting ? t(locale, "saving") : t(locale, "submitForReview")
+          )
+        ])
         ])
       ])
     ]);
@@ -909,9 +1126,9 @@ export function renderPublish(root, state, ctx) {
   replace(root, [
     el("div", { class: "sl-titleline" }, [el("h1", null, t(locale, "publishTitle")), el("p", null, t(locale, "publishDesc"))]),
     renderWizardError(state),
-    destinations.length ? el("div", { class: "sl-review-grid" }, itemCards) : emptyDestinations,
+    destinations.length ? null : noDestinationNotice,
+    el("div", { class: "sl-review-grid" }, itemCards),
     footer
   ]);
 }
-
 

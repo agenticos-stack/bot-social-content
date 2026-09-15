@@ -25,9 +25,26 @@ export function createRpc(gadget) {
     setSelection: (id, selected) => gadget.setSelection(id, selected),
     clearSelection: () => gadget.clearSelection(),
     getMedia: (itemId, mediaId, options) => gadget.getMedia(itemId, mediaId, options),
+    // Accepted AI-generated image bytes — the gadget's own store, chunked
+    // exactly like getMedia so `loadGeneratedImageAsBlobUrl` assembles them.
+    getGeneratedImage: (id, options) => gadget.getGeneratedImage(id, options),
+    // A JPEG copy of an accepted PNG is a NEW derived asset — accepted bytes
+    // are never re-delivered. Accepting it is a separate saveRevision.
+    saveDerivedGeneratedImage: (input) => gadget.saveDerivedGeneratedImage(input),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
-    requestGeneration: (batchId) => gadget.requestGeneration(batchId),
+    // `itemIds` scopes a re-draft to the named posts; omitted means the
+    // legacy batch-wide request (still used by createBatch's first run).
+    // `options.needs` ({ image, caption }) asks for one part and keeps the other.
+    requestGeneration: (batchId, itemIds, options) =>
+      options === undefined ? gadget.requestGeneration(batchId, itemIds) : gadget.requestGeneration(batchId, itemIds, options),
+    // Read-only re-read for uncertain or stale progress. The room answers it
+    // with the platform's canonical action state, so the canvas can show what
+    // actually happened to a request rather than what it last recorded.
+    // Creates nothing, notifies nobody, charges nothing.
+    checkGenerationStatus: (input) => gadget.checkGenerationStatus(input),
+    // Per-post image/caption instructions; null resets a part to the saved default.
+    saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),
@@ -101,7 +118,9 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
     // header note: a throw from a facet method breaks the Durable Object's
     // output gate). Re-thrown here, at the browser boundary, so the
     // existing `.catch()` callers keep working unchanged.
-    if (page.ok === false) throw new Error(page.message || "This media is not available.");
+    // The code travels with the sentence: the stage chooses its recovery
+    // action from `code`, never by reading the message.
+    if (page.ok === false) throw Object.assign(new Error(page.message || "This media is not available."), { code: page.code ?? null });
     if (page.mime) mime = page.mime;
     if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
     if (typeof page.total === "number" && expectedTotal === null) expectedTotal = page.total;
@@ -130,5 +149,34 @@ export async function loadMediaAsBlobUrl(rpc, itemId, mediaId, rendition) {
   const blob = new Blob(parts, { type: mime });
   // `total` travels with the URL because the drawer states the size of the
   // frame an owner is looking at, and this is the only place that knows it.
+  return { url: URL.createObjectURL(blob), mime, total: assembled };
+}
+
+/**
+ * The generated-image counterpart of `loadMediaAsBlobUrl` — same chunked
+ * envelope (`getGeneratedImage` mirrors `getMedia`'s shape), same byte-count
+ * check, same caller-owned `blob:` URL contract.
+ */
+export async function loadGeneratedImageAsBlobUrl(rpc, id) {
+  const parts = [];
+  let mime = "application/octet-stream";
+  let expectedChunks = 1;
+  let expectedTotal = null;
+  let chunk = 0;
+  do {
+    const page = await rpc.getGeneratedImage(id, { chunk });
+    if (!page) break;
+    if (page.ok === false) throw new Error(page.message || "This image is not available.");
+    if (page.mime) mime = page.mime;
+    if (typeof page.chunks === "number" && page.chunks > 0) expectedChunks = page.chunks;
+    if (typeof page.total === "number" && expectedTotal === null) expectedTotal = page.total;
+    parts.push(chunkBytes(page.bytes));
+    chunk += 1;
+  } while (chunk < expectedChunks);
+  const assembled = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  if (expectedTotal !== null && assembled !== expectedTotal) {
+    throw new Error(`This image arrived as ${assembled} of ${expectedTotal} bytes.`);
+  }
+  const blob = new Blob(parts, { type: mime });
   return { url: URL.createObjectURL(blob), mime, total: assembled };
 }

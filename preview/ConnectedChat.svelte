@@ -1,7 +1,7 @@
 <script>
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
 
-  let { agent, onBack } = $props();
+  let { agent, onBack, draftRequests = [], asksRevision = 0, onDraftHandled = () => {}, onChange = () => {} } = $props();
   const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   const workspaceId = $derived(typeof agent?.workspaceId === 'string' ? agent.workspaceId : '');
   // A full conversation id is 41 characters of mostly-constant prefix and
@@ -13,6 +13,12 @@
   let draft = $state('');
   let busy = $state(false);
   let error = $state('');
+  let failedDraft = $state(null);
+  // Set when a reload/renewal replaced the gadget registration: every ask
+  // captured against the old id is dead server-side, so the honest UI is a
+  // retained notice (receipt of what happened) plus a fresh request — never
+  // a silent redirect of the old approval onto replacement code.
+  let replacedFrom = $state(null);
 
   function textOf(value) {
     if (typeof value === 'string') return value;
@@ -40,7 +46,9 @@
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.error?.message || 'The local agent request failed.');
-    return payload?.data;
+    const data = payload?.data;
+    if (data?.agent?.replacedFrom) replacedFrom = data.agent.replacedFrom;
+    return data;
   }
 
   async function refreshAsks() {
@@ -59,6 +67,7 @@
       const result = await request({ operation: 'run', message: text });
       addAssistant(result?.result);
       asks = (await request({ operation: 'pending' }))?.asks ?? [];
+      onChange();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'The local agent request failed.';
     } finally { busy = false; }
@@ -69,11 +78,29 @@
     try {
       await request({ operation: 'answer', actionId, approve });
       asks = (await request({ operation: 'pending' }))?.asks ?? [];
+      onChange();
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not submit that decision.'; }
     finally { busy = false; }
   }
 
-  onMount(() => { void refreshAsks(); });
+  $effect(()=>{asksRevision;untrack(()=>{void refreshAsks();});});
+  $effect(()=>{
+    if(!busy && draftRequests.length){
+      const batchId=draftRequests[0];
+      untrack(()=>{onDraftHandled();void generate(batchId);});
+    }
+  });
+  async function generate(batchId){
+    busy=true;error='';failedDraft=null;
+    messages=[...messages,{role:'user',text:'Generate an image and a caption for each selected reference, using the saved instructions.'}];
+    try{
+      const result=await request({operation:'draft',batchId});
+      addAssistant(result?.result);
+      asks=(await request({operation:'pending'}))?.asks ?? [];
+      onChange();
+    }catch(cause){failedDraft=batchId;error=cause instanceof Error?cause.message:'Generation failed.';}
+    finally{busy=false;}
+  }
 </script>
 
 <section class="chat" aria-label="Local agent conversation">
@@ -98,6 +125,12 @@
     {/each}
     {#if busy}<div class="typing" aria-label="Agent is working"><i></i><i></i><i></i></div>{/if}
   </div>
+  {#if replacedFrom}
+    <aside class="approvals" aria-label="Registration replaced">
+      <div class="approval-title"><span>Gadget reloaded</span></div>
+      <div class="approval"><p>The local source was re-registered — approvals requested before the reload are no longer actionable. Ask the agent again to re-issue them; earlier receipts are retained in the conversation.</p></div>
+    </aside>
+  {/if}
   {#if asks.length}
     <aside class="approvals" aria-label="Pending approvals">
       <div class="approval-title"><span>Approval needed</span><small>{asks.length}</small></div>
@@ -106,7 +139,7 @@
       {/each}
     </aside>
   {/if}
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{error}{#if failedDraft}<button type="button" disabled={busy} onclick={()=>generate(failedDraft)}>Retry generation</button>{/if}</p>{/if}
   <form class="composer" onsubmit={send}>
     <input aria-label="Message" placeholder="Ask about this source…" bind:value={draft} disabled={busy} />
     <button type="submit" aria-label="Send message" disabled={busy || !draft.trim()}>↑</button>

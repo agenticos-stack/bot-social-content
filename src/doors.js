@@ -85,17 +85,40 @@ export const FETCH_DOOR_KEY = "metered_fetch";
  */
 export function doorGrantStatus(env) {
   const status = {};
+  const consent = env && typeof env === "object" && env.__consent && typeof env.__consent === "object" ? env.__consent : null;
   for (const key of FIXED_DOOR_KEYS) {
-    status[key] = Boolean(env && typeof env === "object" && env[key]);
+    status[key] = consent ? consent[key] === true : Boolean(env && typeof env === "object" && env[key]);
   }
   return status;
+}
+
+/**
+ * Whether one connector binding's grant is live right now — `doorGrantStatus`'s
+ * question asked of the env name the owner chose at grant time (e.g. `DEST_ACCOUNT`)
+ * rather than a fixed door key. A stored destination row is history: it proves
+ * the binding was configured once, never that it still is. The consent
+ * projection is the truth when the runtime supplies one — but it is keyed by
+ * REQUIREMENT key (`connector:DEST_ACCOUNT`, or a family member's
+ * `source:DEST_ACCOUNT`), whose env name is the suffix after the first colon,
+ * while a plain door's key is its env name verbatim. Without a projection
+ * (unit-test envs, a runtime that predates it) the minted stub's own presence
+ * is the answer the door gate would enforce.
+ */
+export function bindingGranted(env, binding) {
+  if (!env || typeof env !== "object" || typeof binding !== "string" || !binding) return false;
+  const consent = env.__consent && typeof env.__consent === "object" ? env.__consent : null;
+  if (!consent) return Boolean(env[binding]);
+  for (const key of Object.keys(consent)) {
+    if (consent[key] === true && (key === binding || key.endsWith(`:${binding}`))) return true;
+  }
+  return false;
 }
 
 /**
  * Calls one pinned action on a granted connector door.
  *
  * `binding` is the owner-chosen label slug the door was granted under
- * (`env.IG_ESSENTIAL_FOODS`, TASK-101, PR #1484); `method` is the pinned
+ * (e.g. `env.SOURCE_ACCOUNT`, TASK-101, PR #1484); `method` is the pinned
  * action's own name. As shipped, the only READ actions are
  * `instagram_list_media` and `facebook_list_page_posts` (full underscored
  * slugs, not `list_media`/`list_page_posts`) — see `listInstagramMedia` /
@@ -285,23 +308,66 @@ export async function fetchMedia(env, binding, media, rendition, origin) {
     return { outcome: "unknown", message: "That media has no fetchable URL." };
   }
   if (origin === "open") {
+    /*
+     * FIVE ANSWERS, NOT ONE SENTENCE. "Not granted" used to cover a missing
+     * consent, a consent the runtime never activated, a broken RPC and an
+     * expired CDN link, so an owner who had already said yes was asked again.
+     * Consent is read from the runtime's own projection; a door's absence is
+     * only a denial when that projection says so.
+     */
     const door = env && typeof env === "object" ? env[FETCH_DOOR_KEY] : null;
+    const consent = env && typeof env === "object" && env.__consent && typeof env.__consent === "object" ? env.__consent : null;
+    const consented = consent ? consent[FETCH_DOOR_KEY] === true : null;
+    if (consented === false) {
+      return { outcome: "refused", code: "fetch_permission_required", message: "Reading this frame needs permission to fetch public posts." };
+    }
     if (!door || typeof door.fetch_media !== "function") {
-      return { outcome: "unknown", message: "Public account fetching is not granted for this workspace." };
+      return consented === true
+        ? { outcome: "refused", code: "fetch_activation_failed", message: "Permission is saved, but public fetching has not started in this session." }
+        : { outcome: "unknown", code: "fetch_uncertain", message: "Could not confirm whether public fetching is available here." };
     }
     let result;
     try {
       result = await door.fetch_media({ url, rendition });
     } catch (error) {
       // The door refuses by value, so reaching here means the RPC itself broke.
-      return { outcome: "failed_safe", message: error instanceof Error ? error.message : String(error) };
+      return { outcome: "failed_safe", code: "fetch_transient", message: error instanceof Error ? error.message : String(error) };
     }
     if (!result || result.ok !== true) {
-      return { outcome: "failed_safe", message: (result && result.message) || "The fetch door refused." };
+      return { ...fetchRefusal(result), message: (result && result.message) || "The fetch door refused." };
     }
     return { outcome: "confirmed", data: { mime: result.mime, bytes: result.bytes, byteLength: result.byteLength } };
   }
-  return callConnector(env, binding, "fetch_media", [{ url, rendition }]);
+  const response = await callConnector(env, binding, "fetch_media", [{ url, rendition }]);
+  return response.outcome === "confirmed" ? response : { ...response, ...fetchRefusal(response) };
+}
+
+/**
+ * The owner-facing class of a refused fetch, from the door's structured
+ * answer only. A door that states a `code` for a gone source is believed; an
+ * `unknown` outcome is uncertain, never a denial; anything else refused is
+ * treated as retryable, because retrying one frame is safe and cheap to undo.
+ */
+/*
+ * The platform's media reasons (api `fetchProviderMedia`), carried as `code`
+ * with the outcome beside it. Older runtimes sent the outcome itself as the
+ * code (`failed_safe` / `unknown`); both shapes are read, and neither is ever
+ * inferred from the message.
+ *
+ * `media_url_gone` is a 404/410 on the MEDIA URL. Provider CDN links expire,
+ * so it says the stored link is stale — not that the post was deleted. The
+ * owner is offered a deliberate refresh of the reference, never an automatic
+ * retry loop.
+ */
+const REFERENCE_STALE_CODES = new Set(["media_url_gone"]);
+const UNUSABLE_CODES = new Set(["host_not_allowed", "unsupported_type", "too_large", "invalid_input", "redirect_refused"]);
+const UNCERTAIN_CODES = new Set(["network", "unreadable_body", "unknown"]);
+function fetchRefusal(result) {
+  const code = result && typeof result.code === "string" ? result.code : null;
+  if (code && REFERENCE_STALE_CODES.has(code)) return { outcome: "failed_safe", code: "reference_media_stale", reason: code };
+  if (code && UNUSABLE_CODES.has(code)) return { outcome: "failed_safe", code: "media_unusable", reason: code };
+  if ((code && UNCERTAIN_CODES.has(code)) || result?.outcome === "unknown") return { outcome: "unknown", code: "fetch_uncertain", reason: code };
+  return { outcome: "failed_safe", code: "fetch_transient", reason: code };
 }
 
 /** `env.workspace.notify({ title, body, href })` — TASK-104. Never throws; logs and continues. */

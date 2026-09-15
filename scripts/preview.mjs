@@ -10,10 +10,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
+import { SOCIAL_DOOR_METHODS } from './local-rpc-contract.mjs';
 import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
 import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
+import { createDoorRuntime } from './door-runtime.mjs';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
@@ -57,7 +59,8 @@ async function readSourceFiles() {
   const files={};
   for(const name of manifest.files){
     if(!/^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$/.test(name) || Object.hasOwn(files,name))throw new Error('Invalid source file.');
-    files[name]=name==='client.js'?await buildClient():await readFile(new URL('../src/'+name,import.meta.url),'utf8');
+    // manifest.json ships in the archive (its storageSchemaVersion) but lives at the package root, not src/.
+    files[name]=name==='client.js'?await buildClient():name==='manifest.json'?await readFile(new URL('../manifest.json',import.meta.url),'utf8'):await readFile(new URL('../src/'+name,import.meta.url),'utf8');
   }
   return files;
 }
@@ -134,12 +137,7 @@ if (remote) {
  * was still undefined because this list had not been told about it.
  */
 function doorMethodsByEnvKey() {
-  return {
-    social: ["createDraft", "submitForReview", "readStatus"],
-    schedule: ["create", "list", "cancel"],
-    workspace: ["notify"],
-    metered_fetch: ["socialPostsForAccount", "fetch_media"]
-  };
+  return SOCIAL_DOOR_METHODS;
 }
 
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
@@ -178,6 +176,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     const stateDirectory=resolve(sessionRoot,'runtime');
     const prior=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
     let local;
+    let agent;
     // The agent comes FIRST, and the isolate second, because the door spec
     // shapes `env` at load time and only the platform knows which doors this
     // conversation was actually granted. `callLocal` therefore waits on the
@@ -188,25 +187,103 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
     // promise instead of reaching a runtime that is going away.
     let readyLocal;
     let localReady = new Promise((resolve) => { readyLocal = resolve; });
+    let deliverTimer;
     try {
-      const agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,callLocal:async(method,args)=>{
+      /*
+       * The attachment→gadget transfer is a HOST job, not an agent one: the
+       * agent's saveGeneratedImage names an uploadId, and the host — which
+       * holds the session credential the v2 attachment route authenticates —
+       * fetches the bytes and delivers them. Image bytes therefore never
+       * appear in an agent tool result, and the private attachment URL never
+       * leaves the authenticated path. In remote mode the dev token does not
+       * authenticate v2 REST routes (session cookie / OAuth bearer only), so
+       * the read fails there and the registration stays truthfully pending —
+       * that gap is the shared platform contract, not something this host
+       * can fake.
+       */
+      /*
+       * The canvas cannot hear the gadget's own broadcasts in this host: the
+       * local runtime has no push subscription. The host sees every change
+       * the agent and the delivery sweep make, so it announces them; an open
+       * drawer re-reads through the supported API when it hears one.
+       */
+      const hostEventListeners=new Set();
+      const emitHostEvent=(type)=>{for(const listener of [...hostEventListeners]){try{listener({type});}catch{}}};
+      const deliverGeneratedAttachments=async()=>{
+        await localReady;
+        const callLocal=async(method,args)=>{
+          const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
+          const payload=await result.json();
+          if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
+          return payload.value;
+        };
+        let pending;
+        // Arguments are an ARRAY, like every other local call. An object here
+        // threw inside the session gate, and a bare catch returned silently —
+        // a registered image then stayed pending forever with nothing logged.
+        try { pending=(await callLocal('pendingGeneratedImages',[]))?.pending ?? []; }
+        catch (error) { console.warn(`generated image sweep: pending read failed — ${error instanceof Error?error.message:error}`); return; }
+        for (const registration of pending) {
+          if(typeof registration?.attachmentId!=='string'||!registration.attachmentId) continue;
+          try {
+            const headers={};
+            if(identity.devToken)headers.authorization=`Bearer ${identity.devToken}`;
+            if(identity.cookie)headers.cookie=identity.cookie;
+            // The conversation the agent generated in. In local connected mode
+            // there is no gadget-dev workspace id, and reading with an empty
+            // one requested /v2/workspaces//attachments/… — a 404 that left a
+            // real generated image pending indefinitely.
+            const conversationId=agent?.info?.workspaceId || devWorkspaceId;
+            if(!conversationId){console.warn(`generated image ${registration.id}: no conversation id yet — stays pending`);continue;}
+            const response=await fetch(`${apiOrigin}/v2/workspaces/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(registration.attachmentId)}/content`,{headers,redirect:'error',signal:AbortSignal.timeout(30000)});
+            if(!response.ok){
+              console.warn(`generated image ${registration.id}: attachment read refused (${response.status}) — stays pending`);
+              continue;
+            }
+            const bytes=Buffer.from(await response.arrayBuffer());
+            const mimeType=(response.headers.get('content-type')||'').split(';')[0]||undefined;
+            const delivered=await callLocal('deliverGeneratedImage',[{id:registration.id,bytes:bytes.toString('base64'),mimeType}]);
+            if(delivered?.ok){console.log(`generated image ${registration.id}: delivered ${bytes.byteLength} bytes (${mimeType||'unknown'})`);emitHostEvent('generated_image');}
+            else console.warn(`generated image ${registration.id}: delivery refused — ${delivered?.issues?.[0]?.message||'unknown'}`);
+          } catch (error) {
+            console.warn(`generated image ${registration.id}: delivery failed — ${error instanceof Error?error.message:error}`);
+          }
+        }
+      };
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
         if(!result.ok||!payload.ok)throw new Error(payload.error?.message||'The local source call failed.');
+        // A successful registration kicks the transfer off; the sweep below
+        // retries anything the kick missed (a transient read failure must not
+        // strand a registration the agent already made).
+        if(method==='saveGeneratedImage'&&payload.value?.ok){emitHostEvent('generated_image');deliverGeneratedAttachments().catch((error)=>console.warn(`generated image delivery kick failed — ${error instanceof Error?error.message:error}`));}
+        if(['saveRevision','saveRevisions','savePoster','saveInstructionOverrides'].includes(method))emitHostEvent('revision');
+        if(method==='requestGeneration')emitHostEvent('drafts_changed');
         return payload.value;
       }});
       // Only granted doors appear, so an ungranted one is absent from `env` —
       // the same absence an installed gadget sees, which is what lets the
       // gadget read a missing door as configuration rather than failure.
-      const doors = await agent.doors(doorMethodsByEnvKey()).catch(() => null);
+      let doors = await agent.doors(doorMethodsByEnvKey());
       // `doors` is null when the owner has granted none, and the testkit rejects a
       // null where it accepts an absence — so a workspace with no doors could not
       // start its runtime at all, and the preview reported that as a generic 409.
       // Absence is the documented, supported state; pass it as one.
-      const startRuntime=(files)=>createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined});
+      const startRuntime=async(files)=>{
+        const before=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
+        try{return await createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
+        finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!before.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
+      };
       local=await startRuntime(archive.files);
       readyLocal();
+      // Any registration left pending (a refused read, a restart between
+      // register and deliver) is retried on a slow sweep — a delivery that
+      // can never complete reads as `generatedImage.ready: false` forever,
+      // which is the truth, but a transient 5xx must not pin it there.
+      deliverTimer=setInterval(()=>{ deliverGeneratedAttachments().catch(()=>{}); },30000);
+      deliverTimer.unref?.();
 
       /**
        * Hot reload: new source becomes the live source without a restart.
@@ -234,6 +311,41 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
        */
       let reloading=Promise.resolve();
       let lastHash=connectedSourceHash;
+      // `force`: an activation retry restarts the isolate even when the spec
+      // reads the same, because "consent saved but the door is missing" is
+      // exactly the case where the running env disagrees with the grant list.
+      const refreshDoors=async(force=false)=>{
+        const next=await agent.doors(doorMethodsByEnvKey());
+        if(!force && JSON.stringify(next?.spec ?? {})===JSON.stringify(doors?.spec ?? {}))return;
+        const previousDoors=doors;
+        await localReady;
+        localReady=new Promise(resolve=>{readyLocal=resolve;});
+        await local.dispose();
+        try { doors=next;local=await startRuntime(archive.files); }
+        catch(error){doors=previousDoors;local=await startRuntime(archive.files);throw error;}
+        finally{readyLocal();}
+      };
+      const activateRuntime=async(force,requirementKey)=>{
+        reloading=reloading.then(()=>refreshDoors(force),()=>refreshDoors(force));
+        try {
+          await reloading;
+          // A refresh that finishes without throwing only proves the refresh
+          // ran — an unchanged, still-empty spec "finishes" the same way a
+          // real activation does. Require the requested door to actually be
+          // in the running spec before reporting ready (F02a); anything else
+          // is `refresh_failed`, the same vocabulary an isolate start failure
+          // already uses, so the caller never reads "the refresh completed"
+          // as "the door is live".
+          if(requirementKey && !doors?.spec?.[requirementKey]){
+            return {status:'refresh_failed',message:'The permission is saved, but the running local source does not have this door.'};
+          }
+          return {status:'ready'};
+        }
+        catch(error){
+          reloading=Promise.resolve();
+          return {status:'refresh_failed',message:`The permission is saved, but the local runtime could not start it: ${error instanceof Error?error.message:error}`};
+        }
+      };
       const reload=async()=>{
         let files;
         try { files=await readSourceFiles(); }
@@ -249,7 +361,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           await previousReady;            // let in-flight calls finish on the old isolate
           await previous.dispose();       // releases the state lock; data stays
           local=await startRuntime(files);
-          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements});
+          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:files['server.js']});
           lastHash=nextHash;
           archive={files};
           console.log(`reloaded ${nextHash.slice(0,12)} — ${Object.keys(files).length} files`);
@@ -266,22 +378,82 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       };
       const watchers=watchSource(scheduleReload);
       if (doors) console.log(`doors reachable from local source: ${Object.keys(doors.spec).join(', ')}`);
-      console.warn('preview seed: fetchBudgetCredits is 0 — a metered scan fails closed until you set a budget in Settings.');
       // `local` is read through a getter: a reload replaces the binding, and a
       // holder of this object must reach the CURRENT isolate, not the one that
       // existed when it was handed over.
       return {
         get token(){ return local.token; },
-        handle:(request)=>local.handle(request),
-        agent,
+        handle:async(request)=>{
+          const input=await request.clone().json();
+          if(input.method==='refreshGrants') {
+            reloading=reloading.then(refreshDoors,refreshDoors);
+            await reloading;
+          }
+          await localReady;
+          return local.handle(request);
+        },
+        /*
+         * The owner said yes in the host dialog. Record it on the platform,
+         * then swap the isolate onto the new door spec the same way
+         * `refreshGrants` does, so the canvas the host reloads next sees the
+         * door in `env`. A grant that landed but could not be loaded says so,
+         * rather than reading as a refusal.
+         */
+        /*
+         * The owner's view of connector families, and their choice of an
+         * existing account for one. A grant swaps the isolate onto the new
+         * door spec, like a door grant, so `env.<ACCOUNT>` exists before the
+         * canvas asks for new connections.
+         */
+        connections:async(input)=>{
+          if(input.operation==='list')return {families:await agent.connectionChoices()};
+          const granted=await agent.grantConnection(input);
+          reloading=reloading.then(refreshDoors,refreshDoors);
+          try { await reloading; }
+          catch(error){
+            reloading=Promise.resolve();
+            throw new Error(`The account was connected, but the local runtime could not load it: ${error instanceof Error?error.message:error}`);
+          }
+          return {granted};
+        },
+        /*
+         * Consent and activation are separate answers. A grant that saved but
+         * could not start in the running isolate returns `refresh_failed` (the
+         * API's own `GrantRuntimeRefresh` vocabulary) instead of throwing, so
+         * the host can tell the canvas to retry activation rather than ask for
+         * consent the owner already gave.
+         */
+        ...createDoorRuntime({agent,activateRuntime}),
+        /*
+         * Start a door this conversation ALREADY holds. Grants nothing: a key
+         * the platform does not list as granted is refused before any restart.
+         */
+        agent:{
+          get info(){return agent.info;},
+          handle:async(input,credential)=>{
+            if(input?.operation!=='draft')return agent.handle(input,credential);
+            if(typeof input.batchId!=='string'||!/^batch_[a-z0-9]+$/.test(input.batchId))throw new Error('A draft batch is required.');
+            await localReady;
+            const response=await local.handle(new Request(frontendOrigin+'/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method:'getBatch',args:[input.batchId]})}));
+            const batch=(await response.json()).value;
+            if(!response.ok||batch?.generation!=='requested')throw new Error('This batch has no pending generation request.');
+            return agent.handle({operation:'run',message:`The owner requested drafts for batch ${input.batchId} in LOCAL_DEVELOPMENT. The Social Content gadget is registered right now as ${agent.info?.gadgetId ?? 'the current LOCAL_DEVELOPMENT gadget'}; call it by that id only — gadget ids mentioned earlier in this conversation belong to registrations that have ended. Read this batch and summary, then generate a real image with the platform image tool and write a caption for each item whose own generation mark is set, honouring that mark's needs, the saved caption and image instructions and any per-post overrides; register each image with saveGeneratedImage (never a text poster, never the source photo), echoing that mark's id back as generationRequest on every saveRevision/savePoster. Keep publication intent save_draft. Do not create another batch or submit content. Follow the gadget instructions that accompany this message.`,instructions:archive.files['agent.md']},credential);
+          }
+        },
+        /** Host-observed changes, for the connected canvas's live updates. Returns an unsubscribe. */
+        events(listener){hostEventListeners.add(listener);return ()=>hostEventListeners.delete(listener);},
         dispose:async()=>{
+          hostEventListeners.clear();
           for (const watcher of watchers) watcher.close();
+          clearTimeout(pending);
+          clearInterval(deliverTimer);
+          await reloading;
           agent.close();
           await local.dispose();
         }
       };
     }
-    catch (error) { await local?.dispose().catch(() => undefined); throw error; }
+    catch (error) { agent?.close();await local?.dispose().catch(() => undefined); throw error; }
     finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!prior.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
   }
 }):null;
@@ -298,6 +470,9 @@ const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/toke
  */
 const DECODE_BYTES_SOURCE = overlay
   ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).DECODE_BYTES_SOURCE
+  : '';
+const ENCODE_BYTES_SOURCE = overlay
+  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).ENCODE_BYTES_SOURCE
   : '';
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
@@ -322,6 +497,9 @@ const priorSignalListeners = new Map(signals.map(signal => [signal, new Set(proc
 const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
   stateDirectory: await prepareLocalState(),
   origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
+// Only the seeded runtime has a budget to report. Connected mode seeds nothing,
+// so it keeps whatever budget the owner saved and says nothing here.
+if (runtime) console.warn('preview seed: fetchBudgetCredits is 0 — a metered scan fails closed until you set a budget in Settings.');
 // Pinned Miniflare 4.20260702.0 installs immediate process.exit signal hooks.
 // This foreground HTTP host owns graceful shutdown instead. Remove only the
 // known hooks installed by this runtime, never pre-existing process listeners.
@@ -338,20 +516,35 @@ const server = createServer(async (request, response) => {
   if(connected && url.pathname==='/dev-canvas' && request.method==='GET'){
     response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src data:; img-src blob: data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`);
     response.setHeader('Content-Type','text/html; charset=utf-8');
-    const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
-    response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
+    const script=(connectedCanvasBridge(frontendOrigin, DECODE_BYTES_SOURCE, ENCODE_BYTES_SOURCE)+'\n'+archive.files['client.js']).replaceAll('</script','<\\/script');
+    response.end(`<!doctype html><html lang="${url.searchParams.get("locale") === "zh-HK" ? "zh-HK" : "en"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${brandCss}\n${tokensCss}\n${canvasCss}</style></head><body><main id="gadget-root"></main><script nonce="${nonce}">${script}</script></body></html>`);return;
   }
   if (connected && url.pathname.startsWith('/api/')) {
     try {
       if (request.headers.host !== new URL(frontendOrigin).host) { response.writeHead(403).end(); return; }
+      // A client that goes away aborts its request, so a live-update stream
+      // unsubscribes instead of holding a listener for a closed tab.
+      const disconnected = new AbortController();
+      response.on('close', () => disconnected.abort());
       const result = await connected(new Request(new URL(request.url, frontendOrigin), {
-        method: request.method, headers: request.headers,
+        method: request.method, headers: request.headers, signal: disconnected.signal,
         ...(!['GET','HEAD'].includes(request.method) ? {body: Readable.toWeb(request), duplex: 'half'} : {})
       }));
       response.statusCode = result.status;
       for (const [key,value] of result.headers) if (key !== 'set-cookie') response.setHeader(key,value);
       const cookies = result.headers.getSetCookie();
       if (cookies.length) response.setHeader('Set-Cookie', cookies);
+      /*
+       * An event stream is piped, never buffered. `await result.text()` waits
+       * for the end of a body that by design does not end, so no event — and
+       * not even the status line — ever reached the browser, and an open
+       * drawer could not hear a delivered image.
+       */
+      if ((result.headers.get('content-type') || '').startsWith('text/event-stream') && result.body) {
+        response.flushHeaders();
+        Readable.fromWeb(result.body).on('error', () => response.end()).pipe(response);
+        return;
+      }
       response.end(await result.text());
     } catch { response.writeHead(502).end(); }
     return;
