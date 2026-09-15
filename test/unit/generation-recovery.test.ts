@@ -162,7 +162,7 @@ function installGadget(resolution: Resolution, calls: Calls) {
           batchId: "batch_1",
           sourceLabel: "Instagram · main",
           itemIds: [ITEM_ID],
-          intake: "saveRevision",
+          intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"],
           parts: { caption: true, image: true }
         }
       };

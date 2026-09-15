@@ -145,13 +145,13 @@ describe("what a scan asks for", () => {
     expect(gadget.workRequestFor(nothing, gadget.storage.getConfig())).toBeNull();
   });
 
-  it("names the batch, the accounts, the source items and the intake method", () => {
+  it("names the batch, the accounts, the source items and the intake methods", () => {
     const { gadget } = gadgetWith("on_new");
     const request = gadget.workRequestFor(found, gadget.storage.getConfig());
 
     expect(request).toMatchObject({
       sourceLabel: "@essentialfoodsofficial",
-      intake: "saveRevision"
+      intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"]
     });
     expect(request.batchId).toMatch(/^batch/);
     // Source ids, because they are the observation identity the ledger stands
@@ -259,7 +259,7 @@ describe("a canvas request the platform can file", () => {
 
     expect(opened.workRequest).toMatchObject({
       sourceLabel: "Main Instagram",
-      intake: "saveRevision",
+      intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"],
       itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"]
     });
     expect(opened.workRequest.batchId).toBe(opened.id);

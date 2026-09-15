@@ -1242,6 +1242,9 @@ function App() {
     // Which posts already have a status read in flight, so an automatic check
     // runs once per render rather than on every redraw.
     const statusChecked = new Set();
+    // Which outcome-bearing requests already had their pushed outcome read
+    // back, keyed by post and request — one re-check per outcome, never a poll.
+    const outcomeRechecked = new Set();
     // A status check and a resume have their OWN busy state. Using the save
     // state for them disabled every unrelated control for the duration and left
     // the body rendered busy when only the footer was redrawn (F2).
@@ -1559,6 +1562,17 @@ function App() {
 
     const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
 
+    /*
+     * A request the platform has finished with — stopped, declined or failed
+     * to execute — is not pending, even though its needs are still
+     * outstanding. Re-asking it replaces nothing, so no replace confirm is
+     * owed and the server takes it without `replace`.
+     */
+    const canonicalFinal = (item) => {
+      const stage = canonicalStatus.get(item.id)?.stage;
+      return stage === "stopped" || stage === "declined" || stage === "execution_failed";
+    };
+
     /** Explicit consent before a new request supersedes an outstanding one. */
     const confirmReplacePending = async (pendingList) => {
       const replacesImage = pendingList.includes("image");
@@ -1589,9 +1603,11 @@ function App() {
       const needs = { [part]: true };
       let supersede = false;
       // Any outstanding part — the other one, the same one, or the request a
-      // new post starts with — is replaced only on an explicit confirm.
+      // new post starts with — is replaced only on an explicit confirm. A
+      // request the platform already finished with asks for no confirm: there
+      // is nothing live left to replace.
       const outstanding = pendingParts(item);
-      if (outstanding.length) {
+      if (outstanding.length && !canonicalFinal(item)) {
         if (!(await confirmReplacePending(outstanding))) return;
         supersede = true;
       }
@@ -1702,6 +1718,33 @@ function App() {
       announce(t(locale, "drawerRequestSent"), "");
     };
 
+    /**
+     * Retry after a final platform outcome: the same outstanding needs are
+     * re-asked WITHOUT `replace`, because the finished request is not
+     * pending and there is nothing to retire. If the server still sees live
+     * work (no outcome reached it yet), its refusal is announced honestly.
+     */
+    const retryFinal = async (item) => {
+      if (saving || !live) return;
+      const mark = generationMark(item.generation);
+      const needs = mark && (mark.needs.image || mark.needs.caption) ? mark.needs : { image: true, caption: true };
+      saving = true;
+      redrawFooter();
+      let result;
+      try {
+        result = await rpc.requestGeneration(batch.id, [item.id], { needs });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      } finally {
+        saving = false;
+      }
+      if (!live) return;
+      if (result && result.ok === false) { announce(refusalMessage(result), ""); if (await refetchItems()) redraw(); return; }
+      await refetchItems();
+      redraw();
+      announce(t(locale, "drawerRequestSent"), "");
+    };
+
     const headerMeta = el("div", { class: "sl-drawer-meta" });
     const tabsEl = el("div", { class: "sl-drawer-tabs" });
     const bodyEl = el("div", { class: "sl-preview-scroll", tabindex: "-1" });
@@ -1741,6 +1784,17 @@ function App() {
           stage: platformStage(entry?.platform ?? null),
           state: entry?.platform?.state ?? null,
           actionId: entry?.platform?.actionId ?? null,
+          // The turn's terminal outcome, when the platform recorded one —
+          // what a stopped request names as its reason. The code when there
+          // is one (a turn's own report); the status otherwise (including the
+          // approval's own execution receipt, which still reads as
+          // approved-but-not-started).
+          outcome: (() => {
+            const code = entry?.platform?.outcomeCode;
+            if (typeof code === "string" && code) return code;
+            const status = entry?.platform?.outcomeStatus;
+            return typeof status === "string" && status ? status : null;
+          })(),
           resolution:
             entry?.resolution === "found" || entry?.resolution === "not_found" || entry?.resolution === "unavailable"
               ? entry.resolution
@@ -1831,10 +1885,22 @@ function App() {
           stageNote = t(locale, "drawerApprovalAccepted");
         } else if (canonical === "executing") {
           stageNote = t(locale, "drawerApprovalExecuting");
-        } else if (canonical === "executed") {
-          stageNote = t(locale, "drawerApprovalExecuted");
+        } else if (canonical === "stopped") {
+          // The approved turn ended with work still outstanding. The outcome
+          // code says why; the parts below say what remains. Never finished.
+          stageNote = t(locale, "drawerGenerationStopped", {
+            reason: resolved.outcome || t(locale, "genericError")
+          });
+        } else if (canonical === "approved_not_started") {
+          // The approval executed, but no completion was ever reported. Not
+          // finished, not running — just unreported.
+          stageNote = t(locale, "drawerApprovalNotStarted");
         } else if (canonical === "awaiting_approval") {
           stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
+        } else if (stage === "insufficient_credits" || stage === "credit_check_unavailable") {
+          // The filing itself was refused on credits. Nothing is pending, so
+          // topping up and retrying is a fresh ask, not a replacement.
+          stageNote = t(locale, stage === "insufficient_credits" ? "drawerInsufficientCredits" : "drawerCreditCheckUnavailable");
         } else if (stage === "start_failed" || canonical === "execution_failed") {
           stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
         } else if (resolution === "not_found") {
@@ -1871,6 +1937,19 @@ function App() {
           (stage === "awaiting_approval" || stage === "start_unconfirmed")
         ) {
           statusChecked.add(item.id);
+          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
+        }
+        /*
+         * A pushed turn outcome the canvas has not read back yet. The mark
+         * carries it — the room stamped it when the turn ended — while
+         * canonical still holds whatever the last read saw. Re-check once per
+         * outcome-bearing request so an open drawer converges on stopped
+         * without a manual press; the set bounds it to one read, never a poll.
+         */
+        const markOutcome = mark?.dispatch?.outcome?.status ?? null;
+        const outcomeKey = mark?.id && markOutcome ? `${item.id}:${mark.id}` : null;
+        if (live && !closing && outcomeKey && !outcomeRechecked.has(outcomeKey)) {
+          outcomeRechecked.add(outcomeKey);
           void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
         }
         const requestPending = stage === "start_unconfirmed" || stage === "awaiting_approval";
@@ -1925,16 +2004,25 @@ function App() {
                   }
                 }, t(locale, "drawerCheckGenerationStatus"))
               : null,
-            // Retry is offered only when nothing is running: the start failed,
-            // so a fresh request replaces the stranded mark and keeps whatever
-            // part already succeeded (the mark's remaining `needs`).
-            stage === "start_failed"
+            // Retry is offered only when nothing is running. A failed start —
+            // or a filing refused on credits — replaces the stranded mark
+            // and keeps whatever part already succeeded (the mark's remaining
+            // `needs`). A final platform outcome re-asks the outstanding
+            // needs without replacing: nothing is pending, so there is
+            // nothing to retire.
+            stage === "start_failed" || stage === "insufficient_credits" || stage === "credit_check_unavailable"
               ? el("button", {
                   type: "button", class: "sl-secondary",
                   disabled: saving,
                   onclick: () => retryStart(item)
                 }, t(locale, "drawerRetryStart"))
-              : null,
+              : canonicalFinal(item)
+                ? el("button", {
+                    type: "button", class: "sl-secondary",
+                    disabled: saving,
+                    onclick: () => retryFinal(item)
+                  }, t(locale, "drawerRetryStart"))
+                : null,
             el("button", {
               type: "button", class: "sl-primary",
               disabled: state.review.disabled,
