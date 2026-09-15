@@ -38,6 +38,11 @@ export function createRpc(gadget) {
     // `options.needs` ({ image, caption }) asks for one part and keeps the other.
     requestGeneration: (batchId, itemIds, options) =>
       options === undefined ? gadget.requestGeneration(batchId, itemIds) : gadget.requestGeneration(batchId, itemIds, options),
+    // Read-only re-read for uncertain or stale progress. The room answers it
+    // with the platform's canonical action state, so the canvas can show what
+    // actually happened to a request rather than what it last recorded.
+    // Creates nothing, notifies nobody, charges nothing.
+    checkGenerationStatus: (input) => gadget.checkGenerationStatus(input),
     // Per-post image/caption instructions; null resets a part to the saved default.
     saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),

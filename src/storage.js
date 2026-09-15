@@ -1180,6 +1180,32 @@ export class Storage {
     }
   }
 
+  /**
+   * Move an outstanding ask onto a replacement request id, without changing
+   * what it asked for.
+   *
+   * WHY THIS IS NOT `setGeneration`. When an owner replaces ONE post of a
+   * request that covered several, the replacement must not strand the others:
+   * the platform approval covers the whole request, so the siblings move onto
+   * the new id with it. Their scope, remaining needs and instruction snapshot
+   * are exactly what they already were — re-scoping them to the replacement's
+   * requested parts would silently regenerate work the owner did not ask for.
+   */
+  rearmGeneration(batchItemId, request, stamp = nowIso()) {
+    const row = rows(this.sql.exec("SELECT generation FROM batch_items WHERE id = ?", batchItemId))[0];
+    const mark = parseGenerationMark(row?.generation ?? null);
+    if (!mark || !request) return;
+    const next = JSON.stringify({ ...mark, id: request, at: stamp });
+    this.sql.exec(
+      "UPDATE batch_items SET generation = ?, last_generation = ?, updated_at = ? WHERE id = ?",
+      next,
+      next,
+      stamp,
+      batchItemId
+    );
+    this.markGeneratedMediaSuperseded(batchItemId, request);
+  }
+
   /** The owner's per-post instruction overrides — `{ image, caption }`, null meaning the saved default. */
   setInstructionOverrides(batchItemId, overrides) {
     const image = typeof overrides?.image === "string" && overrides.image.trim() ? overrides.image : null;
@@ -1220,9 +1246,18 @@ export class Storage {
       this.clearItemGeneration(batchItemId);
       return;
     }
+    /*
+     * SPREAD THE PARSED MARK, THEN OVERRIDE ONLY `needs`. A partial completion
+     * must not erase what the mark already recorded: rebuilding the object
+     * field by field is how a correlated caption save used to drop the
+     * `dispatch` acknowledgement while the image was still pending (audit
+     * 2026-09-15, finding P2). Everything the mark carried — `dispatch`,
+     * `scope`, `at`, `instructions` — survives, and only the outstanding parts
+     * shrink.
+     */
     this.sql.exec(
       "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
-      JSON.stringify({ id: mark.id, base: mark.base, scope: mark.scope, needs: remaining, at: mark.at, instructions: mark.instructions }),
+      JSON.stringify({ ...mark, needs: remaining }),
       nowIso(),
       batchItemId
     );
@@ -1237,6 +1272,62 @@ export class Storage {
       "SELECT COUNT(*) AS n FROM batch_items WHERE batch_id = ? AND active = 1 AND generation IS NOT NULL", batchId
     ))[0]?.n ?? 0);
     if (pending === 0) this.clearGeneration(batchId);
+  }
+
+  /**
+   * Stamp what the platform did with an outstanding request.
+   *
+   * THE REQUEST ID IS REQUIRED. The caller names the generation request this
+   * outcome acknowledges, and only rows whose mark still carries that same id
+   * are touched. Matching on the batch and item alone let a delayed refusal
+   * for request A overwrite the acknowledged dispatch of its replacement B
+   * (audit 2026-09-15, finding P1) — an item can be named by more than one
+   * request over its life, so the request is what identifies the write.
+   *
+   * SCOPE IS EXACT. `itemIds` omitted means every item carrying this request;
+   * an explicit array — including an empty one — is honoured to the item and
+   * never widened to the batch. A malformed scope is the caller's to refuse;
+   * this store never reads it as "all".
+   *
+   * THE RECEIPT IS WRITTEN ONCE AND DOES NOT MOVE.
+   *
+   * A request's first acknowledgement is the platform's own account of what it
+   * did, and it is what everything downstream reads. Letting a later write
+   * revise it is how a matching browser confirmation downgraded a platform
+   * receipt and a following contradictory browser value then replaced it
+   * (audit 2026-09-15 correction, F4). So an item that already carries a
+   * dispatch for this request is left exactly as it is; only the first write
+   * lands. A browser cannot establish that receipt or change it — the caller
+   * cannot label its own write authoritative, because provenance is not read
+   * from its input.
+   *
+   * SCOPE IS EXACT. `itemIds` omitted means every item carrying this request;
+   * an explicit array — including an empty one — is honoured to the item and
+   * never widened to the batch. A malformed scope is the caller's to refuse;
+   * this store never reads it as "all".
+   *
+   * `dispatch` is `{ filed, actionId, reason, source, at }` — see
+   * `generationMark` in model.js. Returns how many marks were stamped.
+   */
+  recordGenerationDispatch(batchId, { request = null, itemIds, dispatch } = {}) {
+    if (typeof request !== "string" || !request) return 0;
+    const scoped = Array.isArray(itemIds) ? new Set(itemIds) : null;
+    let updated = 0;
+    for (const item of this.listBatchItems(batchId)) {
+      if (scoped && !scoped.has(item.id)) continue;
+      const mark = parseGenerationMark(item.generation);
+      if (!mark || mark.id !== request) continue;
+      // Already acknowledged for this request: the receipt stands.
+      if (mark.dispatch) continue;
+      this.sql.exec(
+        "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify({ ...mark, dispatch }),
+        nowIso(),
+        item.id
+      );
+      updated += 1;
+    }
+    return updated;
   }
 
   getBatch(id) {

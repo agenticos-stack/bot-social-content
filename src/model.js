@@ -1257,7 +1257,36 @@ export function generationMark(mark) {
       // When the request was made, and the effective instructions it was made
       // under (`{ image, caption }`) — present only on marks that recorded them.
       at: typeof mark.at === "string" ? mark.at : undefined,
-      instructions: generationInstructions(mark.instructions)
+      instructions: generationInstructions(mark.instructions),
+      // What the PLATFORM did with the request, stamped by the host from the
+      // annotated method result and confirmed (never overridden) by the client.
+      // Absent means no acknowledgement was ever recorded — not that generation
+      // started. `filed: true` means the governed execution path accepted it
+      // (an approval is still required); `filed: false` means it did not, and
+      // `reason` says why.
+      //
+      // `source` records WHO wrote it. The host's own acknowledgement (the
+      // room stamps the outcome after it files) is `"host"` and outranks the
+      // browser's best-effort second RPC, which is `"client"`. Absent on marks
+      // written before the split, which read as the browser's.
+      //
+      // `conversationId` / `conversationTitle` say where the approval actually
+      // lives, so the drawer can point the owner at it rather than at whatever
+      // conversation they happen to be in.
+      dispatch:
+        mark.dispatch && typeof mark.dispatch === "object"
+          ? {
+              filed: mark.dispatch.filed === true,
+              actionId: typeof mark.dispatch.actionId === "string" ? mark.dispatch.actionId : null,
+              reason: typeof mark.dispatch.reason === "string" ? mark.dispatch.reason : null,
+              source: mark.dispatch.source === "host" ? "host" : "client",
+              conversationId:
+                typeof mark.dispatch.conversationId === "string" ? mark.dispatch.conversationId : null,
+              conversationTitle:
+                typeof mark.dispatch.conversationTitle === "string" ? mark.dispatch.conversationTitle : null,
+              at: typeof mark.dispatch.at === "string" ? mark.dispatch.at : undefined
+            }
+          : undefined
     };
   }
   if (typeof mark === "string" && mark.startsWith("{")) {
@@ -1270,6 +1299,55 @@ export function generationMark(mark) {
   // Legacy 'requested'/'drafting' strings: a request with no identity that
   // still needs both caption and image output.
   return { id: null, base: null, scope: { caption: true, image: true }, needs: { caption: true, image: true } };
+}
+
+/**
+ * What a pending generation mark can truthfully claim.
+ *
+ * A mark alone is a REQUEST, not evidence that anything started. The only
+ * acknowledgement this gadget can carry is the `dispatch` — written by the host
+ * when it files the request, and confirmed (never overridden) by the browser:
+ *
+ * - `start_unconfirmed` — saved, and nothing has told us it was accepted. This
+ *   is the honest reading of a legacy mark and of a click whose dispatch
+ *   outcome never came back. Never rendered as "generating", and never as
+ *   "no agent picked it up": we do not know either way.
+ * - `awaiting_approval` — the governed execution path took it; an approval is
+ *   still required before any drafting turn starts.
+ * - `start_failed` — the path refused it. `mark.dispatch.reason` says why.
+ *
+ * Returns `null` when nothing is being generated at all.
+ */
+export function generationStage(mark) {
+  const parsed = generationMark(mark);
+  if (!parsed) return null;
+  if (!parsed.dispatch) return "start_unconfirmed";
+  return parsed.dispatch.filed ? "awaiting_approval" : "start_failed";
+}
+
+/**
+ * What the PLATFORM's canonical action state means for a generation request.
+ *
+ * The mark's own `dispatch` records that a request was FILED. It cannot say
+ * whether the approval was then answered, declined, superseded or run — that
+ * lives in the platform's action log, and `checkGenerationStatus` is where the
+ * room reads it back by request identity. This maps that state to the one word
+ * the canvas shows.
+ *
+ * `requestGadgetWork` completing is its own effect: the approved turn was
+ * started. It is evidence the REQUEST was answered, never that the image was
+ * generated — the parts still outstanding are the mark's `needs`. Returns null
+ * when the platform said nothing, so the caller falls back to the filing state
+ * rather than inventing progress.
+ */
+export function platformStage(platform) {
+  const state = typeof platform?.state === "string" ? platform.state : null;
+  if (state === "refused") return "declined";
+  if (state === "failed") return "execution_failed";
+  if (state === "applying") return "executing";
+  if (state === "ran") return "executed";
+  if (state === "asked") return platform?.decision === "approved" ? "accepted" : "awaiting_approval";
+  return null;
 }
 
 /**

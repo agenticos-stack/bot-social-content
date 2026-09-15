@@ -1006,7 +1006,7 @@ describe("bundled client.js smoke test", () => {
     expect(glyphs[0].textContent).toBe("IG");
   });
 
-  it("Draft N posts lands on Content as a queued card, not the wizard", async () => {
+  it("Draft N posts lands on Content, records the filing, and the card says how it stands", async () => {
     installMinimalDom();
     document.documentElement.lang = "en";
 
@@ -1032,21 +1032,42 @@ describe("bundled client.js smoke test", () => {
         createdArgs = args;
         return {
           id: "batch_test1",
-          items: [{ id: "bi_1", sourceItem: item, state: "drafting", revision: 0, destinationBindings: [], publications: [] }]
+          items: [{ id: "bi_1", sourceItem: item, state: "drafting", revision: 0, destinationBindings: [], publications: [] }],
+          // What the host hands back: the gadget's request, annotated with the
+          // governed filing outcome (`attended-work-request.ts`). The request id
+          // travels with it so the client's stamp can be matched to the ask.
+          workRequest: {
+            requestId: "gen_1",
+            batchId: "batch_test1",
+            sourceLabel: "Instagram · main",
+            itemIds: ["a"],
+            intake: "saveRevision",
+            parts: { caption: true, image: true },
+            filed: true,
+            actionId: "act_1"
+          }
         };
       },
       async listBatchSummaries() {
         // Empty until the batch exists — otherwise the view opens on Content
-        // before the click this test is about. The batch row carries the
-        // durable `generation: "requested"` mark the server sets, and the
-        // per-item projection the Content grid reads its cards from.
+        // before the click this test is about. The item's mark carries the
+        // dispatch the ROOM recorded, because the canvas no longer records it
+        // itself (audit correction, F4).
         if (!createdArgs) return { batches: [], nextCursor: null, totals: { batches: 0, items: 0, drafts: 0, review: 0, scheduled: 0, attention: 0 } };
+        const generation = JSON.stringify({
+          id: "gen_1",
+          base: 0,
+          scope: { caption: true, image: true },
+          needs: { caption: true, image: true },
+          at: "2026-09-10T00:00:00.000Z",
+          dispatch: { filed: true, actionId: "act_1", reason: null, source: "host" }
+        });
         return {
           batches: [{
             id: "batch_test1", status: "open", generation: "requested", itemCount: 1, draftCount: 1, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
             sourceItemIds: ["a"],
             preview: { batchItemId: "bi_1", sourceLabel: "Instagram · main", sourceText: item.text, caption: null, revision: null, hasMediaReference: false },
-            items: [{ batchItemId: "bi_1", itemId: "a", state: "drafting", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null }]
+            items: [{ batchItemId: "bi_1", itemId: "a", state: "drafting", revision: 0, sourceLabel: "Instagram · main", provider: "instagram", sourceBinding: "IG_MAIN", sourceText: item.text, coverMediaId: null, caption: null, generation }]
           }],
           nextCursor: null,
           totals: { batches: 1, items: 1, drafts: 1, review: 0, scheduled: 0, attention: 0 }
@@ -1070,14 +1091,20 @@ describe("bundled client.js smoke test", () => {
     expect(createdArgs).toBeTruthy();
     expect((createdArgs as { destinationBindings: string[] }).destinationBindings).toEqual([]);
 
-    // Content tab shows the selected post as a queued card immediately — the
-    // Sources shape (article.sl-post) carrying the durable generation mark as
-    // its chip. There is no ask card: the owner is not the courier.
+    // The canvas did NOT record the filing outcome: that receipt is the room's
+    // own account, written before the result reached the page. There is no
+    // browser method to claim it.
+    expect((globalThis as any).gadget.recordGenerationDispatch).toBeUndefined();
+
+    // Content tab shows the selected post as a card immediately — the
+    // Sources shape (article.sl-post). With the filing accepted, the chip
+    // reads "Awaiting approval", not "generating" (agenticos#1861). There is
+    // no ask card: the owner is not the courier.
     expect(findAll(document.body, (element) => element.classList.contains("sl-ask"))).toHaveLength(0);
     const card = findAll(document.body, (element) => element.classList.contains("sl-post"))[0];
     expect(card).toBeTruthy();
     expect(card.textContent).toContain(item.text.split("\n")[0].slice(0, 90));
-    expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("queued");
+    expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("Awaiting approval");
     // The wizard's Localize step never opened.
     expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
   });

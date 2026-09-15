@@ -6,7 +6,7 @@
 // filter membership, count and drawer all read the shared `itemPresentation`
 // roll-up from `model.js` — one policy, so a filed or published item can
 // never fall through to "drafting" again.
-import { generationMark, itemPresentation, PHASE_FILTERS } from "../../model.js";
+import { generationMark, generationStage, itemPresentation, PHASE_FILTERS } from "../../model.js";
 import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
@@ -189,6 +189,10 @@ export function drawerProjection(batch, sourceItem, batchItemId) {
       publications: Array.isArray(item.publications) ? item.publications.map((pub) => ({ ...pub })) : [],
       state: item.state ?? "unknown",
       phase: item.phase ?? null,
+      // The durable request mark (`{ id, base, scope, needs, at, dispatch }`),
+      // so the drawer can say what actually happened to a pending request
+      // rather than inferring "generating" from its presence.
+      generation: item.generation ?? null,
       deliveries: Array.isArray(item.deliveries) ? item.deliveries.map((delivery) => ({ ...delivery })) : [],
       approval: item.approval ?? null
     }))
@@ -235,8 +239,16 @@ export function drawerAction(item) {
       targets: item?.targets ?? []
     }).phase;
   switch (phase) {
-    case "queued":
-      return { kind: "waiting", label: "Waiting for generation" };
+    case "queued": {
+      // A pending request is never labelled "generating" on the mark alone.
+      const stage = generationStage(item?.generation);
+      if (stage === "start_failed") return { kind: "retry", label: "Retry generation" };
+      if (stage === "awaiting_approval") return { kind: "waiting", label: "Awaiting approval" };
+      // An absent acknowledgement is "start not confirmed", never "not
+      // started": the request is durable and may well have been filed, and the
+      // card must not claim more than it knows.
+      return { kind: "waiting", label: "Start not confirmed" };
+    }
     case "regenerating":
     case "draft":
       return { kind: "resume", label: "Continue editing" };
@@ -261,9 +273,15 @@ export function drawerAction(item) {
  */
 function itemChip(locale, batch, item) {
   const phase = itemPhase(batch, item);
+  // A pending mark is a REQUEST, not evidence work started. The chip says which
+  // of the three true things is the case, never "generating" on a mark alone.
+  if (phase === "queued" || phase === "regenerating") {
+    const stage = generationStage(item.generation);
+    if (stage === "start_failed") return { label: t(locale, "cardStageStartFailed"), cls: "sl-chip-attention" };
+    if (stage === "awaiting_approval") return { label: t(locale, "cardStageAwaitingApproval"), cls: "sl-chip-queued" };
+    return { label: t(locale, "cardStageNotStarted"), cls: "sl-chip-queued" };
+  }
   const key = {
-    queued: ["stateQueued", "sl-chip-queued"],
-    regenerating: ["stateRegenerating", "sl-chip-queued"],
     draft: ["stateDraft", "sl-chip-drafting"],
     in_review: ["stateInReview", "sl-chip-submitted"],
     scheduled: ["stateScheduled", "sl-chip-scheduled"],
@@ -276,7 +294,13 @@ function itemChip(locale, batch, item) {
 /** The trailing line a card carries — the freshest delivery time when one exists, else the batch edit time. */
 function itemWhen(locale, batch, item) {
   const phase = itemPhase(batch, item);
-  if (phase === "queued" || phase === "regenerating") return null;
+  if (phase === "queued" || phase === "regenerating") {
+    // "Requested at", and the last confirmed update when a dispatch outcome was
+    // stamped. Elapsed time alone never establishes failure.
+    const mark = generationMark(item.generation);
+    const when = mark?.dispatch?.at ?? mark?.at;
+    return when ? t(locale, "cardRequestedAt", { time: relativeLabel(locale, when) }) : null;
+  }
   const deliveries = Array.isArray(item.deliveries) ? item.deliveries : [];
   const latest = deliveries
     .map((delivery) => delivery.filedAt)
@@ -301,11 +325,20 @@ function itemCard(locale, batch, item, state, ctx, covers) {
   // A queued/regenerating card shows what generation has NOT delivered yet —
   // the source text and photo stay, but only ever labelled as reference,
   // never dressed up as generated output (the same rule the drawer follows).
-  const waitingLabel = !pending?.needs?.image
-    ? t(locale, "cardWaitingCaption")
+  // It also says WHICH true state it is in: a saved request nobody has
+  // acknowledged is not "generating".
+  const waitingSubject = !pending?.needs?.image
+    ? t(locale, "waitingSubjectCaption")
     : !pending?.needs?.caption
-      ? t(locale, "posterPendingGeneration")
-      : t(locale, "cardWaitingPost");
+      ? t(locale, "waitingSubjectImage")
+      : t(locale, "waitingSubjectPost");
+  const stage = generationStage(item.generation);
+  const waitingLabel =
+    stage === "start_failed"
+      ? t(locale, "cardTitleStartFailed", { subject: waitingSubject })
+      : stage === "awaiting_approval"
+        ? t(locale, "cardTitleAwaitingApproval", { subject: waitingSubject })
+        : t(locale, "cardTitleNotStarted", { subject: waitingSubject });
   const snapshot = waiting ? waitingLabel : item.caption ?? item.sourceText ?? "";
   const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   const selected = Boolean(state?.selected?.[item.batchItemId]);

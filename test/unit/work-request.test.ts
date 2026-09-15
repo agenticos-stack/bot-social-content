@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Gadget } from "../../src/server.js";
 import { normalizeConfig, normalizeDrafting } from "../../src/config.js";
+import { generationMark, generationStage } from "../../src/model.js";
 
 /**
  * A scan asking for what it found to be drafted (TASK-019).
@@ -243,5 +244,129 @@ describe("opening a batch versus announcing one", () => {
     const { gadget, notices } = gadgetWith("on_new");
     gadget.openBatch({ itemIds: ["instagram:IG_MAIN:p1"], destinationBindings: ["FB_MAIN"] });
     expect(notices).toEqual([]);
+  });
+});
+
+/**
+ * The attended path: a canvas action returns a request the platform files, and
+ * the client stamps the filing outcome back onto the durable mark. A mark alone
+ * is a REQUEST — the card must never call it "generating".
+ */
+describe("a canvas request the platform can file", () => {
+  it("createBatch returns a work request naming what was opened", async () => {
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"] });
+
+    expect(opened.workRequest).toMatchObject({
+      sourceLabel: "Main Instagram",
+      intake: "saveRevision",
+      itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"]
+    });
+    expect(opened.workRequest.batchId).toBe(opened.id);
+  });
+
+  it("a replacement covers the whole request it supersedes, not just the post picked", async () => {
+    /**
+     * ONE ASK, WHOLE. `createBatch` armed both marks under one request. When the
+     * owner replaces one of them, the approval covers the request — so the
+     * sibling moves onto the new id with it, keeping its own scope and needs,
+     * rather than being stranded on an approval that is about to be retired.
+     */
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"] });
+    const ids = opened.items.map((entry) => entry.id);
+
+    // `replace: true` because createBatch already armed both marks.
+    const result = await gadget.requestGeneration(opened.id, [ids[1]], { replace: true });
+    expect(result.ok).toBe(true);
+    expect(result.workRequest.batchId).toBe(opened.id);
+    // Only the picked post was re-requested...
+    expect(result.requested).toEqual([ids[1]]);
+    expect(result.replaced).toEqual([{ batchItemId: ids[1], requestId: opened.workRequest.requestId }]);
+    // ...but the replacement names the work it supersedes and covers both.
+    expect(result.workRequest.replace).toBe(true);
+    expect(result.workRequest.replaces).toEqual([opened.workRequest.requestId]);
+    expect(result.workRequest.itemIds).toEqual(["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"]);
+    expect(gadget.storage.getBatchItem(ids[0]).generation).toContain(result.request);
+  });
+
+  it("treats a mark with no acknowledgement as not started, never generating", async () => {
+    // Every legacy mark and every click whose dispatch outcome never came back
+    // reads this way — the conservative, truthful reading.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const mark = gadget.storage.getBatchItem(opened.items[0].id).generation;
+    expect(generationStage(mark)).toBe("start_unconfirmed");
+  });
+
+  it("records one acknowledgement per request, and a later one cannot revise it", async () => {
+    /**
+     * THE RECEIPT IS WRITTEN ONCE. It is the platform's own account of what it
+     * did; a second write — matching or contradictory — is a no-op, because a
+     * receipt that can be revised is not a record (audit correction, F4).
+     */
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+    const request = opened.workRequest.requestId;
+    const stored = () => gadget.storage.getBatchItem(batchItemId).generation;
+
+    const accepted = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: request,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: true, actionId: "act_123", conversationTitle: "Pop-up launch" }
+    });
+    expect(accepted).toMatchObject({ ok: true, updated: 1 });
+    expect(generationStage(stored())).toBe("awaiting_approval");
+    // The request identity and the part scope survive the stamp.
+    expect(generationMark(stored()).dispatch.actionId).toBe("act_123");
+    expect(generationMark(stored()).dispatch.conversationTitle).toBe("Pop-up launch");
+    expect(generationMark(stored()).needs).toEqual({ caption: true, image: true });
+
+    const later = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: request,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: false, reason: "a later, contradictory value" }
+    });
+    expect(later.updated).toBe(0);
+    expect(generationStage(stored())).toBe("awaiting_approval");
+    expect(generationMark(stored()).dispatch.actionId).toBe("act_123");
+    expect(generationMark(stored()).dispatch.reason).toBeNull();
+  });
+
+  it("refuses an outcome that does not name the request it acknowledges", async () => {
+    // The request is what the write is matched against. Without it a delayed
+    // outcome for one request could be stamped onto whatever mark happens to be
+    // on the post, which is how a refusal for A overwrote B (audit P1).
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const result = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: true, actionId: "act_123" }
+    });
+    expect(result).toMatchObject({ ok: false, code: "dispatch_request_required" });
+    expect(generationStage(gadget.storage.getBatchItem(batchItemId).generation)).toBe("start_unconfirmed");
+  });
+
+  it("refuses an outcome that does not say whether the request was filed", async () => {
+    // The outcome decides whether the card says "start not confirmed" or "could
+    // not start"; a shape that answers neither is refused rather than guessed at.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const result = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      generationRequest: opened.workRequest.requestId,
+      batchItemIds: [batchItemId],
+      dispatch: {}
+    });
+    expect(result).toMatchObject({ ok: false, code: "dispatch_invalid" });
+    expect(generationStage(gadget.storage.getBatchItem(batchItemId).generation)).toBe("start_unconfirmed");
   });
 });
