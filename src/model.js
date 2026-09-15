@@ -1257,7 +1257,21 @@ export function generationMark(mark) {
       // When the request was made, and the effective instructions it was made
       // under (`{ image, caption }`) — present only on marks that recorded them.
       at: typeof mark.at === "string" ? mark.at : undefined,
-      instructions: generationInstructions(mark.instructions)
+      instructions: generationInstructions(mark.instructions),
+      // What the PLATFORM did with the request, stamped by the client from the
+      // annotated method result. Absent means no acknowledgement was ever
+      // recorded — not that generation started. `filed: true` means the
+      // governed execution path accepted it (an approval is still required);
+      // `filed: false` means it did not, and `reason` says why.
+      dispatch:
+        mark.dispatch && typeof mark.dispatch === "object"
+          ? {
+              filed: mark.dispatch.filed === true,
+              actionId: typeof mark.dispatch.actionId === "string" ? mark.dispatch.actionId : null,
+              reason: typeof mark.dispatch.reason === "string" ? mark.dispatch.reason : null,
+              at: typeof mark.dispatch.at === "string" ? mark.dispatch.at : undefined
+            }
+          : undefined
     };
   }
   if (typeof mark === "string" && mark.startsWith("{")) {
@@ -1270,6 +1284,29 @@ export function generationMark(mark) {
   // Legacy 'requested'/'drafting' strings: a request with no identity that
   // still needs both caption and image output.
   return { id: null, base: null, scope: { caption: true, image: true }, needs: { caption: true, image: true } };
+}
+
+/**
+ * What a pending generation mark can truthfully claim.
+ *
+ * A mark alone is a REQUEST, not evidence that anything started. The only
+ * acknowledgement this gadget can carry is the `dispatch` the client stamped
+ * from the platform's annotated result:
+ *
+ * - `start_unconfirmed` — saved, and nothing has told us it was accepted. This
+ *   is the honest reading of a legacy mark and of a click whose dispatch
+ *   outcome never came back. Never rendered as "generating".
+ * - `awaiting_approval` — the governed execution path took it; an owner
+ *   approval is still required before any drafting turn starts.
+ * - `start_failed` — the path refused it. `mark.dispatch.reason` says why.
+ *
+ * Returns `null` when nothing is being generated at all.
+ */
+export function generationStage(mark) {
+  const parsed = generationMark(mark);
+  if (!parsed) return null;
+  if (!parsed.dispatch) return "start_unconfirmed";
+  return parsed.dispatch.filed ? "awaiting_approval" : "start_failed";
 }
 
 /**

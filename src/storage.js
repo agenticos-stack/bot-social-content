@@ -1239,6 +1239,40 @@ export class Storage {
     if (pending === 0) this.clearGeneration(batchId);
   }
 
+  /**
+   * Stamp what the platform did with an outstanding request.
+   *
+   * `dispatch` is `{ filed, actionId, reason, at }` — see `generationMark` in
+   * model.js. Only rows that still carry a mark are touched: a request already
+   * satisfied or cleared has nothing left to acknowledge. Returns how many
+   * marks were stamped.
+   */
+  recordGenerationDispatch(batchId, itemIds = null, dispatch) {
+    const scoped = Array.isArray(itemIds) && itemIds.length ? new Set(itemIds) : null;
+    let updated = 0;
+    for (const item of this.listBatchItems(batchId)) {
+      if (scoped && !scoped.has(item.id)) continue;
+      const mark = parseGenerationMark(item.generation);
+      if (!mark) continue;
+      this.sql.exec(
+        "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify({
+          id: mark.id,
+          base: mark.base,
+          scope: mark.scope,
+          needs: mark.needs,
+          at: mark.at,
+          instructions: mark.instructions,
+          dispatch
+        }),
+        nowIso(),
+        item.id
+      );
+      updated += 1;
+    }
+    return updated;
+  }
+
   getBatch(id) {
     return rows(this.sql.exec("SELECT * FROM batches WHERE id = ?", id))[0] ?? null;
   }

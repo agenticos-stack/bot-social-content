@@ -15,7 +15,7 @@ import { t } from "../../src/src/client/i18n.js";
 import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { generationMark, itemPresentation } from "../../src/model.js";
+import { generationMark, generationStage, itemPresentation } from "../../src/model.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
 type AnyRec = Record<string, any>;
@@ -59,12 +59,15 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
   const held: Array<(value: AnyRec) => void> = [];
   let holdReads = 0;
   const scope: AnyRec = {
-    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationMark, setNotice,
+    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationMark, generationStage, setNotice,
     drawerRequest: 0, locale: "en", summary: { configured: true }, policy: { posterPrompt: "SAVED DEFAULT" },
     drawerSession: null, collectionState: {}, inboxState: createInboxState(), wizard: {},
     batchDialog: document.createElement("dialog"), leaveDialog: document.createElement("dialog"),
     PHASE_STATE_KEYS: { draft: "stateDraft", regenerating: "stateRegenerating" },
     detectProtectedLiterals: () => [],
+    // The real client records the host's filing outcome here; these extraction
+    // tests only need it to be callable.
+    recordDispatch: async () => {},
     announce: (message: string) => calls.announced.push(message),
     renderCurrentView() {}, refreshSummary: async () => {},
     mergeScanResult: (state: unknown) => state, setLastCheckedAt: (state: unknown) => state,

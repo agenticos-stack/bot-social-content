@@ -38,6 +38,10 @@ export function createRpc(gadget) {
     // `options.needs` ({ image, caption }) asks for one part and keeps the other.
     requestGeneration: (batchId, itemIds, options) =>
       options === undefined ? gadget.requestGeneration(batchId, itemIds) : gadget.requestGeneration(batchId, itemIds, options),
+    // What the platform did with a request the canvas just made — stamped onto
+    // the durable mark so the card can say "awaiting approval" or "could not
+    // start" rather than an indefinite "waiting for generation".
+    recordGenerationDispatch: (input) => gadget.recordGenerationDispatch(input),
     // Per-post image/caption instructions; null resets a part to the saved default.
     saveInstructionOverrides: (input) => gadget.saveInstructionOverrides(input),
     listBatches: () => gadget.listBatches(),

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Gadget } from "../../src/server.js";
 import { normalizeConfig, normalizeDrafting } from "../../src/config.js";
+import { generationMark, generationStage } from "../../src/model.js";
 
 /**
  * A scan asking for what it found to be drafted (TASK-019).
@@ -243,5 +244,88 @@ describe("opening a batch versus announcing one", () => {
     const { gadget, notices } = gadgetWith("on_new");
     gadget.openBatch({ itemIds: ["instagram:IG_MAIN:p1"], destinationBindings: ["FB_MAIN"] });
     expect(notices).toEqual([]);
+  });
+});
+
+/**
+ * The attended path: a canvas action returns a request the platform files, and
+ * the client stamps the filing outcome back onto the durable mark. A mark alone
+ * is a REQUEST — the card must never call it "generating".
+ */
+describe("a canvas request the platform can file", () => {
+  it("createBatch returns a work request naming what was opened", async () => {
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"] });
+
+    expect(opened.workRequest).toMatchObject({
+      sourceLabel: "Main Instagram",
+      intake: "saveRevision",
+      itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"]
+    });
+    expect(opened.workRequest.batchId).toBe(opened.id);
+  });
+
+  it("requestGeneration returns a request scoped to the posts asked for", async () => {
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1", "instagram:IG_MAIN:p2"] });
+    const ids = opened.items.map((entry) => entry.id);
+
+    // `replace: true` because createBatch already armed both marks.
+    const result = await gadget.requestGeneration(opened.id, [ids[1]], { replace: true });
+    expect(result.ok).toBe(true);
+    expect(result.workRequest.batchId).toBe(opened.id);
+    expect(result.workRequest.itemIds).toEqual(["instagram:IG_MAIN:p2"]);
+  });
+
+  it("treats a mark with no acknowledgement as not started, never generating", async () => {
+    // Every legacy mark and every click whose dispatch outcome never came back
+    // reads this way — the conservative, truthful reading.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const mark = gadget.storage.getBatchItem(opened.items[0].id).generation;
+    expect(generationStage(mark)).toBe("start_unconfirmed");
+  });
+
+  it("stamps an accepted filing as awaiting approval, and a refusal as actionable", async () => {
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+    const stored = () => gadget.storage.getBatchItem(batchItemId).generation;
+
+    const accepted = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: true, actionId: "act_123" }
+    });
+    expect(accepted).toMatchObject({ ok: true, updated: 1 });
+    expect(generationStage(stored())).toBe("awaiting_approval");
+    // The request identity and the part scope survive the stamp.
+    expect(generationMark(stored()).dispatch.actionId).toBe("act_123");
+    expect(generationMark(stored()).needs).toEqual({ caption: true, image: true });
+
+    const refused = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      dispatch: { filed: false, reason: "the conversation is archived" }
+    });
+    expect(refused.ok).toBe(true);
+    expect(generationStage(stored())).toBe("start_failed");
+    expect(generationMark(stored()).dispatch.reason).toContain("archived");
+  });
+
+  it("refuses an outcome that does not say whether the request was filed", async () => {
+    // The outcome decides whether the card says "not started" or "could not
+    // start"; a shape that answers neither is refused rather than guessed at.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const result = await gadget.recordGenerationDispatch({
+      batchId: opened.id,
+      batchItemIds: [batchItemId],
+      dispatch: {}
+    });
+    expect(result).toMatchObject({ ok: false, code: "dispatch_invalid" });
+    expect(generationStage(gadget.storage.getBatchItem(batchItemId).generation)).toBe("start_unconfirmed");
   });
 });

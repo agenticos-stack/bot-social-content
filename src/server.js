@@ -979,6 +979,28 @@ export class Gadget extends DurableObject {
     }
   }
 
+  /**
+   * The work request a canvas action returns to the platform.
+   *
+   * `agent.md`'s contract: SOURCE post ids (the observation identity the ledger
+   * stands on), the accounts in the owner's own words, and the one method a
+   * finished draft is returned through. The platform files an approval from it;
+   * until an owner answers, nothing drafts. Returned on the method result, not
+   * sent anywhere — there is nothing here for the gadget to call (SEC-003).
+   */
+  draftingWorkRequest(batchId, batchItems) {
+    const itemIds = [];
+    const labels = new Set();
+    for (const batchItem of batchItems ?? []) {
+      const source = batchItem?.sourceItem ?? (batchItem?.itemId ? this.storage.getItem(batchItem.itemId) : null);
+      if (source?.id) itemIds.push(source.id);
+      if (source?.sourceLabel) labels.add(source.sourceLabel);
+    }
+    const unique = [...new Set(itemIds)];
+    if (!batchId || !unique.length) return undefined;
+    return { batchId, sourceLabel: [...labels].join(", "), itemIds: unique, intake: "saveRevision" };
+  }
+
   /** One source, cursor-paginated, at most `MAX_ITEMS_PER_SOURCE` items, isolated so one source's failure never stops another's. */
   async scanOneSource(source) {
     const provider = PROVIDERS[source.provider];
@@ -1431,7 +1453,11 @@ export class Gadget extends DurableObject {
       title: `${opened.items.length} ${postWord} ready to localize`,
       body: `${opened.items.length} ${postWord} moved to Localize. Drafts start from here.`
     });
-    return opened;
+    // The platform reads this off the method result and files the governed
+    // request; the client then records the outcome with
+    // `recordGenerationDispatch`.
+    const workRequest = this.draftingWorkRequest(opened.id, opened.items);
+    return { ...opened, ...(workRequest ? { workRequest } : {}) };
   }
 
   /**
@@ -1861,13 +1887,51 @@ export class Gadget extends DurableObject {
           return { image: effective.image.text, caption: effective.caption.text };
         }
       });
+      const workRequest = this.draftingWorkRequest(batch.id, draftable);
       return {
         ok: true,
         request,
         requested: draftable.map((item) => item.id),
         needs: needs ?? { image: true, caption: true },
+        ...(workRequest ? { workRequest } : {}),
         ...(pendingItems.length ? { replaced: pendingItems.map(({ batchItemId, requestId }) => ({ batchItemId, requestId })) } : {})
       };
+    });
+  }
+
+  /**
+   * The client telling us what the platform did with a request it just made.
+   *
+   * The durable mark is written BEFORE the platform files anything, so this is
+   * the only place an acknowledged outcome lands. It never registers generation
+   * and never touches revisions — it stamps `dispatch` onto the outstanding
+   * mark so the card can say "awaiting approval" or "could not start" instead
+   * of an indefinite "waiting for generation". Refuses by value (PAT-007).
+   */
+  recordGenerationDispatch(input) {
+    return this.enqueueMutation(() => {
+      const batchId = typeof input?.batchId === "string" ? input.batchId : "";
+      const batch = batchId ? this.storage.getBatch(batchId) : null;
+      if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const raw = input?.dispatch && typeof input.dispatch === "object" ? input.dispatch : null;
+      if (!raw || typeof raw.filed !== "boolean") {
+        return {
+          ok: false,
+          code: "dispatch_invalid",
+          message: "A dispatch outcome says whether the request was filed."
+        };
+      }
+      const batchItemIds = Array.isArray(input?.batchItemIds)
+        ? input.batchItemIds.filter((id) => typeof id === "string" && id).slice(0, 50)
+        : null;
+      const dispatch = {
+        filed: raw.filed === true,
+        actionId: typeof raw.actionId === "string" ? raw.actionId.slice(0, 120) : null,
+        reason: typeof raw.reason === "string" ? raw.reason.slice(0, 500) : null,
+        at: new Date().toISOString()
+      };
+      const updated = this.storage.recordGenerationDispatch(batchId, batchItemIds, dispatch);
+      return { ok: true, dispatch, updated };
     });
   }
 

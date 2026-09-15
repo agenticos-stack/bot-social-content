@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, itemPresentation } from "../../model.js";
+import { detectProtectedLiterals, generationMark, generationStage, itemPresentation } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -712,6 +712,29 @@ function drawerFacts(locale, item, frameCount) {
 function App() {
   const gadget = globalThis.gadget;
   const rpc = createRpc(gadget);
+
+  /**
+   * Record what the platform did with a request the canvas just made.
+   *
+   * The host annotates the method result with `workRequest.filed` from the
+   * governed filing (`attended-work-request.ts`). Without stamping it, the card
+   * cannot tell an accepted request from one that never started and would show
+   * "waiting for generation" for both. Best-effort: a stamp that fails leaves
+   * the mark without an acknowledgement, which reads conservatively.
+   */
+  async function recordDispatch(batchId, batchItemIds, result) {
+    const workRequest = result && typeof result === "object" ? result.workRequest : null;
+    if (!workRequest || typeof workRequest.filed !== "boolean") return;
+    try {
+      await rpc.recordGenerationDispatch({
+        batchId,
+        batchItemIds,
+        dispatch: { filed: workRequest.filed, actionId: workRequest.actionId, reason: workRequest.reason }
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }
 
   /*
    * A grid cover: cached bytes, as a `blob:` the canvas is allowed to show.
@@ -1626,8 +1649,11 @@ function App() {
       }
       const send = (withReplace) =>
         rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
+      // Declared outside the try so the recognised `result` is still in scope
+      // for the dispatch stamp below, whatever the request path did.
+      let result = null;
       try {
-        let result = await send(supersede);
+        result = await send(supersede);
         if (result && result.ok === false && result.code === "generation_pending" && !supersede) {
           const owed = ["image", "caption"].filter((entry) => result.pending?.needs?.[entry]);
           if (!live || !(await confirmReplacePending(owed.length ? owed : [part]))) {
@@ -1642,10 +1668,40 @@ function App() {
         return;
       }
       if (!live) return;
+      await recordDispatch(batch.id, [item.id], result);
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
       try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+    };
+
+    /**
+     * Retry a failed start: a fresh request replaces the stranded mark.
+     *
+     * Only the parts still outstanding are asked for again — a caption that
+     * already landed is not re-generated. `replace: true` is explicit because
+     * the failed request's mark is still present.
+     */
+    const retryStart = async (item) => {
+      if (saving || !live) return;
+      const mark = generationMark(item.generation);
+      const needs = mark && (mark.needs.image || mark.needs.caption) ? mark.needs : { image: true, caption: true };
+      saving = true;
+      redrawFooter();
+      let result;
+      try {
+        result = await rpc.requestGeneration(batch.id, [item.id], { needs, replace: true });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      } finally {
+        saving = false;
+      }
+      if (!live) return;
+      if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+      await recordDispatch(batch.id, [item.id], result);
+      await refetchItems();
+      redraw();
+      announce(t(locale, "drawerRequestSent"), "");
     };
 
     const headerMeta = el("div", { class: "sl-drawer-meta" });
@@ -1676,7 +1732,23 @@ function App() {
       if (isEditableItem(item)) {
         const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
         const reason = state.review.reason || state.save.reason;
+        /*
+         * The truthful pending state, from the mark's dispatch outcome. A mark
+         * alone is a request: with no acknowledgement it is "not started", and
+         * "could not start" is actionable. Never "generating".
+         */
+        const mark = generationMark(item.generation);
+        const stage = generationStage(item.generation);
+        const stageNote =
+          stage === "start_failed"
+            ? t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") })
+            : stage === "awaiting_approval"
+              ? t(locale, "drawerAwaitingApproval")
+              : stage === "start_unconfirmed"
+                ? t(locale, "drawerStartUnconfirmed")
+                : null;
         replace(footerEl, [
+          stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
           el("div", { class: "sl-drawer-footer-actions" }, [
             el("button", {
@@ -1688,6 +1760,16 @@ function App() {
               // not clear; its focus and caret survive the re-render.
               onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
+            // Retry is offered only when nothing is running: the start failed,
+            // so a fresh request replaces the stranded mark and keeps whatever
+            // part already succeeded (the mark's remaining `needs`).
+            stage === "start_failed"
+              ? el("button", {
+                  type: "button", class: "sl-secondary",
+                  disabled: saving,
+                  onclick: () => retryStart(item)
+                }, t(locale, "drawerRetryStart"))
+              : null,
             el("button", {
               type: "button", class: "sl-primary",
               disabled: state.review.disabled,
@@ -2156,13 +2238,15 @@ function App() {
       }
       collectionState = clearNotice(collectionState);
       /*
-       * The batch is pending drafts now — generation happens on the agent's
-       * next turn (no platform work-request mechanism exists yet;
-       * agenticos-stack/agenticos#1863). Land on Content, where the pending
-       * items read as queued cards off the batch's durable `generation`
-       * mark and drafts appear as they are saved. Editing still reaches the
-       * wizard through a card → Continue editing.
+       * The batch is pending drafts now. The host reads the returned
+       * `workRequest` and files the governed agent request; the outcome is
+       * stamped onto each item's durable mark so the Content cards say
+       * "awaiting approval" or "could not start" rather than an indefinite
+       * "waiting for generation". Land on Content, where drafts appear as they
+       * are saved. Editing still reaches the wizard through a card → Continue
+       * editing.
        */
+      await recordDispatch(batch.id, (Array.isArray(batch.items) ? batch.items : []).map((entry) => entry.id), batch);
       if (draftable.length && draftable.length < selected.length) {
         collectionState = setNotice(collectionState, {
           message: t(locale, "skippedDrafts", { n: selected.length - draftable.length })
