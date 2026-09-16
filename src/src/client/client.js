@@ -243,10 +243,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-state { display: block; margin-top: 2px; }
 .sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; }
+.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; position: relative; }
 .sl-output-frame img { width: 100%; height: 100%; object-fit: contain; }
 .sl-output-frame .sl-pc-media-empty { padding: 12px; text-align: center; }
 .sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
+.sl-output-frame-skel::before { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.32); pointer-events: none; }
+.sl-output-frame-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(255,255,255,0) 36%, rgba(255,255,255,.5) 50%, rgba(255,255,255,0) 64%); background-size: 220% 100%; animation: sl-skel-sweep 1.6s linear infinite; pointer-events: none; }
+.sl-skel-label { position: absolute; z-index: 2; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; font-weight: 650; padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,.94); color: var(--sl-ink); white-space: nowrap; }
+@keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
+.sl-drawer-caption.sl-skel { color: transparent; }
+.sl-pub { margin-top: 6px; }
+.sl-pub-dest { margin: 0 0 8px; font-size: 12.5px; color: var(--sl-ink-soft); }
+.sl-pub-radios { display: grid; gap: 6px; }
+.sl-pub-choice { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.sl-pub-choice input { accent-color: var(--sl-ink); }
+.sl-pub-when { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--sl-muted); }
+.sl-pub-when input { height: var(--sl-h-control); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); }
 .sl-part-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
 .sl-reference-text { color: var(--sl-muted); }
@@ -1392,10 +1405,11 @@ function App() {
                 target.revision = one.revision;
                 if (job.entry.caption !== undefined) target.caption = job.entry.caption;
                 if (job.entry.altText !== undefined) target.altText = job.entry.altText;
+                if (job.entry.publicationIntent) target.publicationIntent = job.entry.publicationIntent;
                 target.generation = one.generation ?? null;
                 target.phase = null;
               }
-              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText"]);
+              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText", "publicationIntent"]);
               captionConflicts.delete(job.item.id);
               if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
             } else {
@@ -1441,10 +1455,10 @@ function App() {
 
     /**
      * The one exit guard every drawer dismissal runs — Close, Escape and
-     * Review call it. Unsaved caption, staged image and instruction edits
+     * Publish call it. Unsaved caption, staged image and instruction edits
      * are one decision: keep editing, discard, or save and leave.
      *
-     * One policy for every continuation (Close, Review, generation): a save
+     * One policy for every continuation (Close, Publish, generation): a save
      * acknowledges only the field versions it submitted, so an edit typed
      * while it was in flight stays buffered and dirty. After every await the
      * guard looks again; a newer edit is shown and asked about afresh — an
@@ -1482,14 +1496,13 @@ function App() {
     };
 
     /**
-     * Review this ONE post: save its buffer, materialize a legacy poster when
-     * one is still what ships, then resume the wizard on the FINAL
-     * acknowledged revision (a required reread — never a stale snapshot).
-     * Edits typed during any of those awaits stop Review before the drawer
-     * is disposed; they are shown dirty and asked about, and a resolved
-     * decision re-reads rather than reviewing an older snapshot.
+     * Publish or schedule this ONE post from the sheet: save its buffer,
+     * materialize a legacy poster when one is still what ships, then file
+     * through submitForReview. The click is the grant — no wizard hop, no
+     * second approve-elsewhere to-do. Edits typed during those awaits stop
+     * the submit; they stay dirty and are asked about.
      */
-    const reviewPost = async (item) => {
+    const submitFromDrawer = async (item) => {
       if (saving) return;
       if (dirtyItemIds().some((id) => id !== item.id) && !(await requestExit())) return;
       if (!live) return;
@@ -1533,21 +1546,38 @@ function App() {
           readFailed();
           return;
         }
-        // Immediately before disposal: nothing typed during the reads.
         if (!dirtyItemIds().length) break;
       }
-      buffers.clear();
-      closing = true;
-      session.dispose();
-      batchDialog.close();
-      wizard = resumeBatch(wizard, { ...fresh, id: batch.id, items: [current] });
-      if (!wizard.batch?.items?.length) {
-        closing = false;
-        announce(t(locale, "batchUnavailable"), "");
+      const intent = bufferOf(item.id).publicationIntent ?? current.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" };
+      try {
+        const result = await rpc.submitForReview({
+          batchItemId: current.id,
+          expectedRevision: current.revision ?? 0,
+          intent
+        });
+        if (!live) return;
+        if (result && result.ok === false) {
+          const message = refusalMessage(result) || t(locale, "genericError");
+          const line = note();
+          if (line) line.textContent = message;
+          announce(message, "");
+          return;
+        }
+        const dest = (current.destinationBindings ?? []).map((binding) => destinationLabel(binding)).join(" · ");
+        const when = intent.publishLocalTime ? String(intent.publishLocalTime).replace("T", " ") : "";
+        announce(
+          intent.publishMode === "schedule"
+            ? t(locale, "drawerScheduleFiled", { when })
+            : t(locale, "drawerPublishFiled", { dest }),
+          ""
+        );
+        if (result?.warnings?.length) announce(result.warnings[0].message, "");
+      } catch (error) {
+        announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
         return;
       }
-      await refreshPublishState();
-      renderCurrentView();
+      await refetchItems();
+      if (live) redrawPreserving();
     };
 
     const requestClose = async () => {
@@ -1902,7 +1932,7 @@ function App() {
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
         const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
-        const reason = state.review.reason || state.save.reason;
+        const reason = state.primary.reason || state.save.reason;
         /*
          * The truthful pending state. The mark's dispatch says whether the
          * request was FILED; the platform's canonical state, read back by
@@ -2094,11 +2124,11 @@ function App() {
                 : null,
             el("button", {
               type: "button", class: "sl-primary",
-              disabled: state.review.disabled,
-              title: state.review.reason || null,
-              "aria-describedby": state.review.disabled ? DRAWER_FOOTER_HINT_ID : null,
-              onclick: () => reviewPost(item)
-            }, t(locale, "drawerReviewPost"))
+              disabled: state.primary.disabled,
+              title: state.primary.reason || null,
+              "aria-describedby": state.primary.disabled ? DRAWER_FOOTER_HINT_ID : null,
+              onclick: () => submitFromDrawer(item)
+            }, state.primary.label)
           ])
         ]);
         return;
@@ -2261,6 +2291,13 @@ function App() {
           onAltTextInput: (value) => {
             patchBuffer(item.id, { altText: value });
             redrawFooter();
+          },
+          destinationLabel,
+          onPublicationIntent: (patch) => {
+            const before = bufferOf(item.id).publicationIntent ?? item.publicationIntent ?? { publishMode: "save_draft" };
+            patchBuffer(item.id, { publicationIntent: { ...before, ...patch } });
+            if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
+            else redrawFooter();
           },
           captionConflict: captionConflicts.get(item.id) ?? null,
           onReacceptImage: async (mediaId) => {
