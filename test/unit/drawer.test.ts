@@ -94,15 +94,15 @@ describe("Output section", () => {
     expect(imageState(post({ generatedCandidate: { id: "gm_b", ready: false } }) as never)).toBe("generating");
   });
 
-  it("overlays generating on the empty image frame when nothing is accepted yet", () => {
+  it("keeps the empty image region compact while a first image is requested", () => {
     const view = output(post({
       generatedImage: null,
       acceptedVisualMode: null,
       generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
     }));
-    const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
-    expect(frames).toHaveLength(1);
-    expect(String(frames[0].className)).toContain("sl-output-frame-skel");
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-empty"))).toHaveLength(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
+    expect(view.root.textContent).toContain("No generated image yet.");
     expect(view.loads).toEqual([]);
   });
 

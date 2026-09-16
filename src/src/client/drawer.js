@@ -326,10 +326,11 @@ export function renderOutputPanel(locale, item, ctx) {
 
   // The accepted image — what publish files. Never the reference photo.
   // Generating overlays this same frame. A ready candidate still sits beside
-  // it. With nothing accepted, nothing generating, and no candidate there is
-  // nothing to frame: a compact note keeps the next action visible.
-  const acceptedSkel = imageBusy ? " sl-output-frame-skel" : "";
-  const acceptedBlock = !accepted && !showCandidate && !imageBusy
+  // it. With nothing accepted and no ready candidate there is nothing to
+  // frame: a compact note keeps the next action visible instead of an
+  // enormous empty region (including while a first image is still requested).
+  const acceptedSkel = accepted && imageBusy ? " sl-output-frame-skel" : "";
+  const acceptedBlock = !accepted && !showCandidate
     ? el("p", { class: "sl-field-note sl-output-empty", role: "status" }, t(locale, "drawerImageNone"))
     : el("div", { class: "sl-output-accepted" }, [
     el("div", { class: "sl-output-label" }, [
@@ -338,7 +339,7 @@ export function renderOutputPanel(locale, item, ctx) {
     ]),
     accepted
       ? figure(accepted, "drawerImageAccepted", `sl-output-frame-accepted${acceptedSkel}`)
-      : figure(null, "drawerImageAccepted", `sl-output-frame-empty${acceptedSkel}`),
+      : figure(null, "drawerImageAccepted", "sl-output-frame-empty"),
     facts(accepted),
     // The server cannot vouch for which image this revision accepted: say so
     // and let the owner accept it again explicitly (a new revision).
