@@ -2757,12 +2757,24 @@ export class Gadget extends DurableObject {
      * The stamp is the CALLER's request id, validated against the item's
      * current mark — never the mark read here, which would relabel an old
      * job's image as the answer to a newer ask. A mismatched id (superseded,
-     * already answered, or no mark at all) is kept as explicit stale history:
-     * its delivery satisfies nothing and it is never auto-accepted. No id at
-     * all is unattributed — it answers no mark, pending or not.
+     * already answered, or no mark at all) is REFUSED below: registering it
+     * as quiet history let a replayed call read as delivered work while its
+     * bytes could never satisfy the current ask. No id at all is
+     * unattributed — it answers no mark, pending or not.
      */
     const request = typeof generationRequest === "string" && generationRequest ? generationRequest : null;
-    const stale = request !== null && staleGenerationIssue(batchItem, request) !== null;
+    /*
+     * A registration that names a request the item's mark has moved past is
+     * refused, not quietly filed: its bytes could never satisfy the current
+     * ask, and an `ok` answer is what let a replayed call read as delivered
+     * work. `saveRevision` already refuses the same stale id the same way.
+     * A registration naming NO request stays admissible — unattributed media
+     * is how owner-side saves arrive, and it answers no mark by design.
+     */
+    if (request !== null) {
+      const staleIssue = staleGenerationIssue(batchItem, request);
+      if (staleIssue) return { ok: false, issues: [staleIssue] };
+    }
     this.storage.saveGeneratedMedia({
       id,
       batchItemId,
@@ -2770,21 +2782,28 @@ export class Gadget extends DurableObject {
       altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
       mimeType: typeof mimeType === "string" ? mimeType : null,
       generationRequest: request,
-      stale
+      // Reaching here means the named request is the item's current mark —
+      // a stale one was refused above, so the row is never filed stale.
+      stale: false
     });
     // Registering the asset does not satisfy the mark — only delivered
     // bytes do (deliverGeneratedImage). The row just records WHICH upload
     // answers the ask, so a later byte delivery can be correlated.
-    return { ok: true, id, generationRequest: request, stale };
+    return { ok: true, id, generationRequest: request, stale: false };
   }
 
-  /** Registrations still waiting on bytes — the delivery sweep's read. */
+  /**
+   * Registrations still waiting on bytes — the delivery sweep's read. The
+   * request stamp rides along so the platform's job delivery can reuse a
+   * registration it already made instead of minting a duplicate on retry.
+   */
   async pendingGeneratedImages() {
     return { pending: this.storage.pendingGeneratedMedia().map((row) => ({
       id: row.id,
       batchItemId: row.batchItemId,
       attachmentId: row.attachmentId,
       mimeType: row.mimeType,
+      generationRequest: row.generationRequest ?? null,
       createdAt: row.createdAt
     })) };
   }
