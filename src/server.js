@@ -1027,6 +1027,12 @@ export class Gadget extends DurableObject {
         batchItemId: batchItem.id,
         parts: { caption: mark.scope.caption === true, image: mark.scope.image === true },
         ...(instructionFingerprint(mark.instructions) ? { instructionsRef: instructionFingerprint(mark.instructions) } : {}),
+        ...(typeof mark.instructions?.image === "string" && mark.instructions.image
+          ? { imagePrompt: mark.instructions.image.slice(0, 4000) }
+          : {}),
+        ...(typeof mark.instructions?.caption === "string" && mark.instructions.caption
+          ? { captionPrompt: mark.instructions.caption.slice(0, 4000) }
+          : {}),
         base: mark.base ?? 0
       });
     }
@@ -1056,6 +1062,7 @@ export class Gadget extends DurableObject {
       // has to guess which write answers the ask.
       intake: deliveryIntake(parts),
       parts,
+      recipe: "social-content.draft.v1",
       ...(instructionsRef ? { instructionsRef } : {}),
       items,
       ...(replaces.length ? { replace: true, replaces } : {})
