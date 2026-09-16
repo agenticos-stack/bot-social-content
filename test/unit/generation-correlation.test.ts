@@ -3,8 +3,11 @@
  *
  * 1. Request correlation — a registration carries the CALLER's request id,
  *    validated against the item's current mark. Late work from a superseded
- *    ask is kept as explicit stale history: it never clears the newer mark,
- *    never overwrites the newer draft, and is never auto-accepted.
+ *    ask is REFUSED at the door — the same `generation_request_stale` block
+ *    a late caption or poster gets — because an `ok` answer is what let a
+ *    replayed registration read as delivered work. A row already registered
+ *    when the mark moves keeps its bytes as explicit stale history: it never
+ *    clears the newer mark and is never auto-accepted.
  * 2. The reviewed asset is pinned on the revision — filing ships exactly the
  *    pinned bytes, whatever registered later.
  */
@@ -149,7 +152,7 @@ async function projected(gadget: Gadget) {
 }
 
 describe("generation request correlation", () => {
-  it("a late registration from an older request is stale history: it clears nothing and is not accepted", async () => {
+  it("a late registration from an older request is refused outright, like a late caption save", async () => {
     const { ctx } = sqliteContext();
     const gadget = new Gadget(ctx as never, mockSocial([], []) as never);
     seed(gadget);
@@ -159,15 +162,23 @@ describe("generation request correlation", () => {
     const newAsk = (await gadget.requestGeneration("batch-1", ["item-1"], { replace: true })).request;
     expect(newAsk).not.toBe(oldAsk);
 
+    // The replayed call that named the retired request used to file as quiet
+    // history — and its `ok` is what let a replay read as delivered work.
+    // Now it is refused by value, and nothing is persisted.
     const late = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "old", generationRequest: oldAsk });
-    expect(late).toMatchObject({ ok: true, generationRequest: oldAsk, stale: true });
-    const row = gadget.storage.getGeneratedMedia(late.id);
-    expect(row).toMatchObject({ generationRequest: oldAsk, stale: true });
-    expect(row.generationRequest).not.toBe(needs(gadget).id);
-
-    // Late byte delivery for the older request: bytes kept, newer mark untouched.
-    expect(await gadget.deliverGeneratedImage({ id: late.id, bytes: JPEG })).toMatchObject({ ok: true });
+    expect(late).toMatchObject({ ok: false, issues: [{ code: "generation_request_stale" }] });
+    expect(late).not.toHaveProperty("id");
+    expect((await gadget.pendingGeneratedImages()).pending).toHaveLength(0);
     expect(needs(gadget)).toMatchObject({ id: newAsk, needs: { caption: true, image: true } });
+
+    // A row registered BEFORE the mark moved keeps the old semantics: its
+    // late bytes are kept as stale history and satisfy nothing.
+    const early = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "early", generationRequest: newAsk });
+    expect(early).toMatchObject({ ok: true, stale: false });
+    const thirdAsk = (await gadget.requestGeneration("batch-1", ["item-1"], { replace: true })).request;
+    expect(await gadget.deliverGeneratedImage({ id: early.id, bytes: JPEG })).toMatchObject({ ok: true });
+    expect(gadget.storage.getGeneratedMedia(early.id)).toMatchObject({ generationRequest: newAsk });
+    expect(needs(gadget)).toMatchObject({ id: thirdAsk, needs: { caption: true, image: true } });
 
     // Never auto-accepted: switching to ai_refinement pins nothing stale.
     const saved = await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: CAPTION, acceptedVisualMode: "ai_refinement" });

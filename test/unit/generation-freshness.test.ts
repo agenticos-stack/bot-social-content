@@ -220,8 +220,12 @@ describe("G1 — requested scope is immutable, remaining needs shrink", () => {
     expect(await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 0, caption: CAPTION, generationRequest: ask.request })).toMatchObject({ ok: true, generation: null });
     // Replays after completion: refused by value, nothing re-completed.
     expect(await gadget.saveRevision({ batchItemId: "item-1", expectedRevision: 1, caption: CAPTION_2, generationRequest: ask.request })).toMatchObject({ ok: false, issues: [{ code: "generation_request_stale" }] });
-    const again = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "dup", generationRequest: ask.request });
-    expect(again).toMatchObject({ ok: true, stale: true });
+    // A registration replaying the completed request is refused the same
+    // way — the mark is gone, so its id cannot be stamped on a new row.
+    expect(await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "dup", generationRequest: ask.request })).toMatchObject({
+      ok: false,
+      issues: [{ code: "generation_request_stale" }]
+    });
     expect(await gadget.deliverGeneratedImage({ id: image, bytes: JPEG_A })).toMatchObject({ ok: true, unchanged: true });
     expect(gadget.storage.getBatchItem("item-1").currentRevision).toBe(1);
   });
@@ -303,14 +307,26 @@ describe("G2 — freshness is derived at every step", () => {
     expect(gadget.storage.latestRevision("item-1").acceptedGeneratedMediaId).toBeNull();
   });
 
-  it("A requested → B requested → A registered and delivered: stale at registration, completes nothing", async () => {
+  it("A requested → B requested → A registered: refused stale at the door, nothing persisted", async () => {
     const { gadget } = setup();
     const a = await gadget.requestGeneration("batch-1", ["item-1"]);
     const b = await gadget.requestGeneration("batch-1", ["item-1"], { replace: true });
+    // A's mark already moved to B, so a registration echoing A's id is late
+    // work: refused, not filed as quiet stale history.
+    const late = await gadget.saveGeneratedImage({ batchItemId: "item-1", attachmentId: "up-late", generationRequest: a.request });
+    expect(late).toMatchObject({ ok: false, issues: [{ code: "generation_request_stale" }] });
+    expect((await itemOf(gadget)).generatedHistory).toHaveLength(0);
+    expect(mark(gadget)).toMatchObject({ id: b.request, needs: { image: true, caption: true } });
+  });
+
+  it("A registered → B requested → A delivered: superseded at delivery, completes nothing", async () => {
+    const { gadget } = setup();
+    const a = await gadget.requestGeneration("batch-1", ["item-1"]);
     const image = await imageFor(gadget, a.request);
+    const b = await gadget.requestGeneration("batch-1", ["item-1"], { replace: true });
     await gadget.deliverGeneratedImage({ id: image, bytes: JPEG_A });
     expect(await statusOf(gadget, image)).toMatchObject({ status: "superseded", generationRequest: a.request });
-    expect(mark(gadget)).toMatchObject({ id: b.request, needs: { image: true } });
+    expect(mark(gadget)).toMatchObject({ id: b.request, needs: { image: true, caption: true } });
   });
 
   it("B completed → A delivered: A stays superseded; B is the candidate; explicit owner acceptance of A is allowed and recorded", async () => {
