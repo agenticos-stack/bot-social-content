@@ -15,7 +15,7 @@ import { t } from "../../src/src/client/i18n.js";
 import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { generationMark, generationStage, itemPresentation } from "../../src/model.js";
+import { generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage } from "../../src/model.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
 type AnyRec = Record<string, any>;
@@ -59,7 +59,7 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
   const held: Array<(value: AnyRec) => void> = [];
   let holdReads = 0;
   const scope: AnyRec = {
-    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationMark, generationStage, setNotice,
+    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationDisplayStage, generationMark, generationStage, platformStage, setNotice,
     drawerRequest: 0, locale: "en", summary: { configured: true }, policy: { posterPrompt: "SAVED DEFAULT" },
     drawerSession: null, collectionState: {}, inboxState: createInboxState(), wizard: {},
     batchDialog: document.createElement("dialog"), leaveDialog: document.createElement("dialog"),

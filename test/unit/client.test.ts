@@ -1041,7 +1041,7 @@ describe("bundled client.js smoke test", () => {
             batchId: "batch_test1",
             sourceLabel: "Instagram · main",
             itemIds: ["a"],
-            intake: "saveRevision",
+            intake: ["saveRevisions", "saveRevision", "saveGeneratedImage"],
             parts: { caption: true, image: true },
             filed: true,
             actionId: "act_1"

@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationMark, generationStage, itemPresentation, platformStage } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -1242,6 +1242,14 @@ function App() {
     // Which posts already have a status read in flight, so an automatic check
     // runs once per render rather than on every redraw.
     const statusChecked = new Set();
+    // Which outcome-bearing requests already had their pushed outcome read
+    // back, keyed by post and request — one re-check per outcome, never a poll.
+    const outcomeRechecked = new Set();
+    // A status check and a resume have their OWN busy state. Using the save
+    // state for them disabled every unrelated control for the duration and left
+    // the body rendered busy when only the footer was redrawn (F2).
+    let statusChecking = false;
+    let resuming = false;
     let activeTab = "output";
     let closing = false;
     let saving = false;
@@ -1554,6 +1562,38 @@ function App() {
 
     const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
 
+    /*
+     * A turn outcome code in readable words — never the raw code. The drawer
+     * names why a turn ended; `credits_exhausted` inside a zh-HK sentence is
+     * a defect, not information. Unknown codes fall back to a generic reason
+     * rather than leaking the wire value.
+     */
+    const outcomeReasonText = (code) => {
+      switch (code) {
+        case "credits_exhausted":
+          return t(locale, "drawerReasonOutOfCredits");
+        case "turn_cancelled":
+          return t(locale, "drawerReasonTurnCancelled");
+        case "turn_crashed":
+          return t(locale, "drawerReasonTurnCrashed");
+        case "succeeded":
+          return t(locale, "drawerReasonTurnEnded");
+        default:
+          return t(locale, "drawerReasonUnknown");
+      }
+    };
+
+    /*
+     * A request the platform has finished with — stopped, declined or failed
+     * to execute — is not pending, even though its needs are still
+     * outstanding. Re-asking it replaces nothing, so no replace confirm is
+     * owed and the server takes it without `replace`.
+     */
+    const canonicalFinal = (item) => {
+      const stage = canonicalStatus.get(item.id)?.stage;
+      return stage === "stopped" || stage === "declined" || stage === "execution_failed";
+    };
+
     /** Explicit consent before a new request supersedes an outstanding one. */
     const confirmReplacePending = async (pendingList) => {
       const replacesImage = pendingList.includes("image");
@@ -1581,12 +1621,28 @@ function App() {
     const requestPart = async (item, part) => {
       if (saving) return;
       const parts = [part];
-      const needs = { [part]: true };
-      let supersede = false;
       // Any outstanding part — the other one, the same one, or the request a
-      // new post starts with — is replaced only on an explicit confirm.
+      // new post starts with — is replaced only on an explicit confirm. A
+      // request the platform already finished with asks for no confirm: there
+      // is nothing live left to replace.
       const outstanding = pendingParts(item);
-      if (outstanding.length) {
+      // A request the platform already finished with asks for no confirm:
+      // for a dead one (declined or failed, which nothing stamps onto the
+      // mark) the re-ask replaces, since there is nothing live left to
+      // retire; a stopped one re-asks cleanly on its recorded outcome. After
+      // a final outcome the other outstanding part stays owed — re-asking one
+      // part must not silently drop it.
+      const itemFinal = canonicalFinal(item);
+      const deadFinal =
+        itemFinal &&
+        (canonicalStatus.get(item.id)?.stage === "declined" ||
+          canonicalStatus.get(item.id)?.stage === "execution_failed");
+      let supersede = Boolean(deadFinal);
+      const needs = { [part]: true };
+      if (itemFinal) {
+        for (const other of outstanding) needs[other] = true;
+      }
+      if (outstanding.length && !itemFinal) {
         if (!(await confirmReplacePending(outstanding))) return;
         supersede = true;
       }
@@ -1697,6 +1753,38 @@ function App() {
       announce(t(locale, "drawerRequestSent"), "");
     };
 
+    /**
+     * Retry after a final platform outcome: the same outstanding needs are
+     * re-asked WITHOUT `replace`, because the finished request is not
+     * pending and there is nothing to retire — except a declined or failed
+     * request, which nothing stamps onto the mark, so the server would
+     * refuse it as still pending: those re-ask WITH `replace`. If the server
+     * still sees live work (no outcome reached it yet), its refusal is
+     * announced honestly.
+     */
+    const retryFinal = async (item) => {
+      if (saving || !live) return;
+      const mark = generationMark(item.generation);
+      const needs = mark && (mark.needs.image || mark.needs.caption) ? mark.needs : { image: true, caption: true };
+      const finalStage = canonicalStatus.get(item.id)?.stage;
+      const replaceDead = finalStage === "declined" || finalStage === "execution_failed";
+      saving = true;
+      redrawFooter();
+      let result;
+      try {
+        result = await rpc.requestGeneration(batch.id, [item.id], replaceDead ? { needs, replace: true } : { needs });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      } finally {
+        saving = false;
+      }
+      if (!live) return;
+      if (result && result.ok === false) { announce(refusalMessage(result), ""); if (await refetchItems()) redraw(); return; }
+      await refetchItems();
+      redraw();
+      announce(t(locale, "drawerRequestSent"), "");
+    };
+
     const headerMeta = el("div", { class: "sl-drawer-meta" });
     const tabsEl = el("div", { class: "sl-drawer-tabs" });
     const bodyEl = el("div", { class: "sl-preview-scroll", tabindex: "-1" });
@@ -1723,29 +1811,89 @@ function App() {
      * Ask the platform what happened to this post's request, and remember it.
      *
      * Read-only: the room answers with the canonical action state and does no
-     * work of its own. Never throws to the caller — a status read that fails
-     * leaves the filing state showing, which is still true.
+     * work of its own. It also records the RESOLUTION — `found`, `not_found`,
+     * `unavailable`, or `unknown` when the host did not say — because "there is
+     * no action" is a fact the owner can act on and "this host cannot tell you"
+     * is not (F1). Never throws to the caller: a failed read is recorded as
+     * unavailable, which is still true.
      */
     const checkCanonicalStatus = async (item) => {
       statusChecked.add(item.id);
+      const record = (entry) =>
+        canonicalStatus.set(item.id, {
+          stage: platformStage(entry?.platform ?? null),
+          state: entry?.platform?.state ?? null,
+          actionId: entry?.platform?.actionId ?? null,
+          // The turn's terminal outcome, when the platform recorded one —
+          // what a stopped request names as its reason. The code when there
+          // is one (a turn's own report); the status otherwise (including the
+          // approval's own execution receipt, which still reads as
+          // approved-but-not-started).
+          outcome: (() => {
+            const code = entry?.platform?.outcomeCode;
+            if (typeof code === "string" && code) return code;
+            const status = entry?.platform?.outcomeStatus;
+            return typeof status === "string" && status ? status : null;
+          })(),
+          resolution:
+            entry?.resolution === "found" || entry?.resolution === "not_found" || entry?.resolution === "unavailable"
+              ? entry.resolution
+              : "unknown",
+          reason: typeof entry?.reason === "string" ? entry.reason : null,
+          at: new Date().toISOString()
+        });
       try {
         const status = await rpc.checkGenerationStatus({ batchId: batch.id, batchItemId: item.id });
         if (!live) return false;
-        if (status && status.ok === false) return false;
+        if (status && status.ok === false) {
+          record({ resolution: "unavailable", reason: typeof status.reason === "string" ? status.reason : null });
+          return false;
+        }
         const entry = Array.isArray(status?.workRequestStatus)
           ? status.workRequestStatus.find((candidate) => candidate.batchItemId === item.id)
           : null;
-        const platform = entry?.platform ?? null;
-        canonicalStatus.set(item.id, {
-          stage: platformStage(platform),
-          state: platform?.state ?? null,
-          actionId: platform?.actionId ?? null,
-          at: new Date().toISOString()
-        });
+        record(entry ?? null);
         return true;
       } catch (error) {
         console.error(error);
+        if (live) record({ resolution: "unavailable", reason: null });
         return false;
+      }
+    };
+
+    /*
+     * Deliver a request that was saved but never submitted.
+     *
+     * The gadget re-derives the handoff from the EXISTING mark — same request
+     * id, same scope, same instructions — and the host files it through the
+     * governed route, so pressing twice (or a lost response) converges on one
+     * approval. Nothing is recorded here: what the platform did comes back on
+     * the next read, exactly as a fresh request's does.
+     */
+    const resumeRequest = async (item) => {
+      if (resuming || !live) return;
+      const generationRequest = generationMark(item.generation)?.id ?? null;
+      if (!generationRequest) return;
+      resuming = true;
+      redrawPreserving();
+      try {
+        const result = await rpc.resumeGeneration({ batchId: batch.id, batchItemId: item.id, generationRequest });
+        if (!live) return;
+        if (result && result.ok === false) {
+          announce(refusalMessage(result), "");
+          return;
+        }
+        // The cached resolution is now stale: the platform has an action to
+        // report, and asking again is how we learn it.
+        canonicalStatus.delete(item.id);
+        statusChecked.delete(item.id);
+        await refetchItems();
+        announce(t(locale, "drawerResumeSent"), "");
+      } catch (error) {
+        announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
+      } finally {
+        resuming = false;
+        if (live) redrawPreserving();
       }
     };
 
@@ -1763,28 +1911,82 @@ function App() {
          * superseded request stops reading as awaiting approval.
          */
         const mark = generationMark(item.generation);
-        const stage = generationStage(item.generation);
-        const canonical = canonicalStatus.get(item.id)?.stage ?? null;
+        const display = generationDisplayStage(item.generation);
+        const resolved = canonicalStatus.get(item.id) ?? null;
+        const canonical = resolved?.stage ?? null;
+        const resolution = resolved?.resolution ?? null;
+        const markOutcomeCode =
+          typeof mark?.dispatch?.outcome?.code === "string" && mark.dispatch.outcome.code
+            ? mark.dispatch.outcome.code
+            : null;
+        const where = mark?.dispatch?.conversationTitle
+          ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
+          : "";
         let stageNote = null;
         if (canonical === "declined") {
           stageNote = t(locale, "drawerApprovalDeclined");
-        } else if (canonical === "accepted") {
-          stageNote = t(locale, "drawerApprovalAccepted");
         } else if (canonical === "executing") {
           stageNote = t(locale, "drawerApprovalExecuting");
-        } else if (canonical === "executed") {
-          stageNote = t(locale, "drawerApprovalExecuted");
-        } else if (stage === "start_failed" || canonical === "execution_failed") {
-          stageNote = t(locale, "drawerStartFailed", { reason: mark?.dispatch?.reason || t(locale, "genericError") });
-        } else if (stage === "awaiting_approval") {
-          // Where the approval actually lives, when the filing told us.
-          const where = mark?.dispatch?.conversationTitle
-            ? ` ${t(locale, "drawerGenerationDestination", { conversation: mark.dispatch.conversationTitle })}`
-            : "";
+        } else if (canonical === "execution_failed") {
+          stageNote = t(locale, "drawerStartFailed", {
+            reason: resolved.outcome ? outcomeReasonText(resolved.outcome) : mark?.dispatch?.reason || t(locale, "genericError")
+          });
+        } else if (canonical === "stopped") {
+          // The approved turn ended with work still outstanding. The outcome
+          // code says why, in readable words — never the raw code; the parts
+          // below say what remains. Never finished.
+          stageNote = t(locale, "drawerGenerationStopped", {
+            reason: outcomeReasonText(resolved.outcome ?? markOutcomeCode)
+          });
+        } else if (display === "stopped") {
+          // The mark already carries the turn's end (stamped when it ended)
+          // while the platform read still lags without it — the fresher fact
+          // wins over an approved-not-started or awaiting canonical.
+          stageNote = t(locale, "drawerGenerationStopped", { reason: outcomeReasonText(markOutcomeCode) });
+        } else if (display === "declined") {
+          stageNote = t(locale, "drawerApprovalDeclined");
+        } else if (display === "execution_failed") {
+          stageNote = t(locale, "drawerStartFailed", { reason: outcomeReasonText(markOutcomeCode) });
+        } else if (canonical === "accepted") {
+          stageNote = t(locale, "drawerApprovalAccepted");
+        } else if (canonical === "approved_not_started") {
+          // The approval executed, but no completion was ever reported. Not
+          // finished, not running — just unreported.
+          stageNote = t(locale, "drawerApprovalNotStarted");
+        } else if (canonical === "awaiting_approval") {
           stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
-        } else if (stage === "start_unconfirmed") {
+        } else if (display === "approved_not_started") {
+          // No status read yet, but the receipt says the approval already ran
+          // at filing — never a wait for approval.
+          stageNote = t(locale, "drawerApprovalNotStarted");
+        } else if (display === "insufficient_credits" || display === "credit_check_unavailable") {
+          // The filing itself was refused on credits. Nothing is pending, so
+          // topping up and retrying is a fresh ask, not a replacement.
+          stageNote = t(locale, display === "insufficient_credits" ? "drawerInsufficientCredits" : "drawerCreditCheckUnavailable");
+        } else if (display === "start_failed") {
+          stageNote = t(locale, "drawerStartFailed", {
+            reason: mark?.dispatch?.reason || t(locale, "genericError")
+          });
+        } else if (resolution === "not_found") {
+          // The platform looked and there is no action. That is a request that
+          // was saved but never submitted, and it is the only state that offers
+          // a resume.
+          stageNote = t(locale, "drawerRequestNotSubmitted");
+        } else if (resolution === "unavailable") {
+          // We could not find out. Unknown is not permission to create work, so
+          // the only offer is to look again.
+          stageNote = `${t(locale, "drawerStatusUnavailable")} ${t(locale, "drawerStatusCheckedAt", {
+            time: new Date(resolved.at).toLocaleTimeString()
+          })}`;
+        } else if (display === "awaiting_approval") {
+          stageNote = `${t(locale, "drawerAwaitingApproval")}${where}`;
+        } else if (display === "start_unconfirmed") {
+          // No platform answer at all: an older host, or a check that has not
+          // run yet. Say what is known and nothing more.
           stageNote = t(locale, "drawerStartUnconfirmed");
         }
+        const canResume =
+          resolution === "not_found" && Boolean(mark?.needs.image || mark?.needs.caption) && isEditableItem(item);
         /*
          * One automatic status read for a request that looks pending. The
          * filing record cannot say an approval was answered, so this is how a
@@ -1796,12 +1998,30 @@ function App() {
           !closing &&
           !canonicalStatus.has(item.id) &&
           !statusChecked.has(item.id) &&
-          (stage === "awaiting_approval" || stage === "start_unconfirmed")
+          (display === "awaiting_approval" || display === "start_unconfirmed" || display === "approved_not_started")
         ) {
           statusChecked.add(item.id);
-          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawFooter(); });
+          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
         }
-        const requestPending = stage === "start_unconfirmed" || stage === "awaiting_approval";
+        /*
+         * A pushed turn outcome the canvas has not read back yet. The mark
+         * carries it — the room stamped it when the turn ended — while
+         * canonical still holds whatever the last read saw. Re-check once per
+         * outcome-bearing request so an open drawer converges on stopped
+         * without a manual press; the set bounds it to one read, never a poll.
+         */
+        const markOutcome = mark?.dispatch?.outcome?.status ?? null;
+        const outcomeKey = mark?.id && markOutcome ? `${item.id}:${mark.id}` : null;
+        if (live && !closing && outcomeKey && !outcomeRechecked.has(outcomeKey)) {
+          outcomeRechecked.add(outcomeKey);
+          void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
+        }
+        const requestPending =
+          display === "start_unconfirmed" ||
+          display === "awaiting_approval" ||
+          display === "approved_not_started" ||
+          display === "insufficient_credits" ||
+          display === "credit_check_unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
@@ -1815,39 +2035,63 @@ function App() {
               // not clear; its focus and caret survive the re-render.
               onclick: () => saveItems([item.id]).then(() => redrawPreserving())
             }, t(locale, "drawerSaveDraft")),
+            // Continue generation: the one owner action for a request the
+            // platform has confirmed was never submitted. It re-delivers the
+            // EXISTING request, so it is offered only when that is what the
+            // platform said, and only while a part is still outstanding.
+            canResume
+              ? el("button", {
+                  type: "button", class: "sl-primary",
+                  disabled: resuming || statusChecking,
+                  onclick: () => resumeRequest(item)
+                }, t(locale, "drawerResumeGeneration"))
+              : null,
             // Check status: a read-only re-read of the platform's canonical
             // state for this request. It launches nothing, notifies nobody and
             // charges nothing, and it reuses the request identity on the mark.
-            requestPending || canonical
+            requestPending || canonical || resolution
               ? el("button", {
                   type: "button", class: "sl-secondary",
-                  disabled: saving,
+                  disabled: statusChecking,
                   onclick: async () => {
-                    if (saving || !live) return;
-                    saving = true;
+                    if (statusChecking || !live) return;
+                    statusChecking = true;
                     redrawFooter();
                     try {
                       const ok = await checkCanonicalStatus(item);
                       if (!live) return;
                       announce(t(locale, ok ? "drawerGenerationStatusChecked" : "drawerGenerationStatusFailed"), "");
-                      if (await refetchItems()) redraw();
+                      await refetchItems();
                     } finally {
-                      saving = false;
-                      redrawFooter();
+                      statusChecking = false;
+                      // Every affected control, not just the footer: the body
+                      // was rendered with the busy snapshot and only a full
+                      // redraw clears it. Preserving keeps edits, focus,
+                      // selection, section and scroll (F2).
+                      if (live) redrawPreserving();
                     }
                   }
                 }, t(locale, "drawerCheckGenerationStatus"))
               : null,
-            // Retry is offered only when nothing is running: the start failed,
-            // so a fresh request replaces the stranded mark and keeps whatever
-            // part already succeeded (the mark's remaining `needs`).
-            stage === "start_failed"
+            // Retry is offered only when nothing is running. A failed start —
+            // or a filing refused on credits — replaces the stranded mark
+            // and keeps whatever part already succeeded (the mark's remaining
+            // `needs`). A final platform outcome re-asks the outstanding
+            // needs without replacing: nothing is pending, so there is
+            // nothing to retire.
+            display === "start_failed" || display === "insufficient_credits" || display === "credit_check_unavailable"
               ? el("button", {
                   type: "button", class: "sl-secondary",
                   disabled: saving,
                   onclick: () => retryStart(item)
                 }, t(locale, "drawerRetryStart"))
-              : null,
+              : canonicalFinal(item)
+                ? el("button", {
+                    type: "button", class: "sl-secondary",
+                    disabled: saving,
+                    onclick: () => retryFinal(item)
+                  }, t(locale, "drawerRetryStart"))
+                : null,
             el("button", {
               type: "button", class: "sl-primary",
               disabled: state.review.disabled,
@@ -1900,11 +2144,48 @@ function App() {
       }
       const phase = phaseOf(item);
       const editable = isEditableItem(item);
+      // The header reads the same stage as the card chip and the footer: the
+      // canonical platform stage when a status read reported one, else the
+      // mark's own receipt, recorded outcome and outstanding needs. A queued
+      // phase alone never implies an agent queue — an approved receipt reads
+      // approved, a recorded end reads ended. A request the platform confirmed
+      // was never submitted is not "queued" either.
+      const resolvedHeader = canonicalStatus.get(item.id) ?? null;
+      const headerStateKey = (() => {
+        if (resolvedHeader?.resolution === "not_found") return "cardStageNotStarted";
+        if (phase !== "queued" && phase !== "regenerating") return PHASE_STATE_KEYS[phase] ?? "stateUnknown";
+        if (resolvedHeader?.stage) {
+          return (
+            {
+              declined: "cardStageDeclined",
+              accepted: "cardStageApproved",
+              executing: "cardStageRunning",
+              stopped: "cardStageStopped",
+              approved_not_started: "cardStageApproved",
+              awaiting_approval: "cardStageAwaitingApproval",
+              execution_failed: "cardStageFailed"
+            }[resolvedHeader.stage] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+          );
+        }
+        return (
+          {
+            start_unconfirmed: "cardStageNotStarted",
+            start_failed: "cardStageStartFailed",
+            insufficient_credits: "cardStageInsufficientCredits",
+            credit_check_unavailable: "cardStageCreditUnavailable",
+            awaiting_approval: "cardStageAwaitingApproval",
+            approved_not_started: "cardStageApproved",
+            stopped: "cardStageStopped",
+            declined: "cardStageDeclined",
+            execution_failed: "cardStageFailed"
+          }[generationDisplayStage(item.generation)] ?? (PHASE_STATE_KEYS[phase] ?? "stateUnknown")
+        );
+      })();
 
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [
           items.length > 1 ? t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }) + " · " : "",
-          t(locale, PHASE_STATE_KEYS[phase] ?? "stateUnknown"),
+          t(locale, headerStateKey),
           " · ",
           (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"),
           item.approval && (item.revision ?? 0) > (item.approval.approvedRevision ?? 0) ? " · " + t(locale, "approvalExpiredTitle") : ""
@@ -1966,6 +2247,9 @@ function App() {
         panel = renderOutputPanel(locale, item, {
           editable,
           saving,
+          // Confirmed missing filing: per-part copy agrees with the footer
+          // instead of implying an agent queue.
+          unsubmitted: canonicalStatus.get(item.id)?.resolution === "not_found",
           buffers: buffer,
           highlighted: highlightedCaption(buffer.caption ?? item.caption ?? ""),
           loadImage: loadImage(item),

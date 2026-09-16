@@ -1330,6 +1330,40 @@ export class Storage {
     return updated;
   }
 
+  /**
+   * A turn's terminal outcome lands on the filing receipt it ended.
+   *
+   * The outcome is a second, later fact about the SAME request — it never
+   * creates a dispatch (an outcome for a request that was never filed is
+   * refused by the caller) and, like the API's own seed row, the LATEST
+   * report stands: a later outcome for the same request replaces the
+   * earlier one, so the mark agrees with the platform about how the turn
+   * ended. `outcome` is `{ status, code, at }` — see
+   * `FINAL_GENERATION_OUTCOMES` in model.js. Returns how many marks were
+   * stamped.
+   */
+  recordGenerationOutcome(batchId, { request = null, itemIds, outcome } = {}) {
+    if (typeof request !== "string" || !request) return 0;
+    if (!outcome || typeof outcome !== "object") return 0;
+    const scoped = Array.isArray(itemIds) ? new Set(itemIds) : null;
+    let updated = 0;
+    for (const item of this.listBatchItems(batchId)) {
+      if (scoped && !scoped.has(item.id)) continue;
+      const mark = parseGenerationMark(item.generation);
+      if (!mark || mark.id !== request) continue;
+      // No filing receipt, no outcome: the platform never took this request.
+      if (!mark.dispatch) continue;
+      this.sql.exec(
+        "UPDATE batch_items SET generation = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify({ ...mark, dispatch: { ...mark.dispatch, outcome } }),
+        nowIso(),
+        item.id
+      );
+      updated += 1;
+    }
+    return updated;
+  }
+
   getBatch(id) {
     return rows(this.sql.exec("SELECT * FROM batches WHERE id = ?", id))[0] ?? null;
   }

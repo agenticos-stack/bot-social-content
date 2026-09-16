@@ -6,7 +6,7 @@
 // filter membership, count and drawer all read the shared `itemPresentation`
 // roll-up from `model.js` — one policy, so a filed or published item can
 // never fall through to "drafting" again.
-import { generationMark, generationStage, itemPresentation, PHASE_FILTERS } from "../../model.js";
+import { generationDisplayStage, generationMark, itemPresentation, PHASE_FILTERS } from "../../model.js";
 import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
@@ -241,8 +241,16 @@ export function drawerAction(item) {
   switch (phase) {
     case "queued": {
       // A pending request is never labelled "generating" on the mark alone.
-      const stage = generationStage(item?.generation);
-      if (stage === "start_failed") return { kind: "retry", label: "Retry generation" };
+      // The display stage — receipt, recorded outcome, outstanding needs —
+      // is what the chip and title read too, so all four surfaces agree.
+      const stage = generationDisplayStage(item?.generation);
+      if (stage === "start_failed" || stage === "insufficient_credits" || stage === "credit_check_unavailable") {
+        return { kind: "retry", label: "Retry generation" };
+      }
+      if (stage === "stopped" || stage === "declined" || stage === "execution_failed") {
+        return { kind: "retry", label: "Retry generation" };
+      }
+      if (stage === "approved_not_started") return { kind: "waiting", label: "Approved" };
       if (stage === "awaiting_approval") return { kind: "waiting", label: "Awaiting approval" };
       // An absent acknowledgement is "start not confirmed", never "not
       // started": the request is durable and may well have been filed, and the
@@ -276,9 +284,17 @@ function itemChip(locale, batch, item) {
   // A pending mark is a REQUEST, not evidence work started. The chip says which
   // of the three true things is the case, never "generating" on a mark alone.
   if (phase === "queued" || phase === "regenerating") {
-    const stage = generationStage(item.generation);
+    const stage = generationDisplayStage(item.generation);
     if (stage === "start_failed") return { label: t(locale, "cardStageStartFailed"), cls: "sl-chip-attention" };
+    if (stage === "insufficient_credits") return { label: t(locale, "cardStageInsufficientCredits"), cls: "sl-chip-attention" };
+    if (stage === "credit_check_unavailable") {
+      return { label: t(locale, "cardStageCreditUnavailable"), cls: "sl-chip-attention" };
+    }
     if (stage === "awaiting_approval") return { label: t(locale, "cardStageAwaitingApproval"), cls: "sl-chip-queued" };
+    if (stage === "approved_not_started") return { label: t(locale, "cardStageApproved"), cls: "sl-chip-submitted" };
+    if (stage === "stopped") return { label: t(locale, "cardStageStopped"), cls: "sl-chip-attention" };
+    if (stage === "declined") return { label: t(locale, "cardStageDeclined"), cls: "sl-chip-attention" };
+    if (stage === "execution_failed") return { label: t(locale, "cardStageFailed"), cls: "sl-chip-attention" };
     return { label: t(locale, "cardStageNotStarted"), cls: "sl-chip-queued" };
   }
   const key = {
@@ -332,13 +348,25 @@ function itemCard(locale, batch, item, state, ctx, covers) {
     : !pending?.needs?.caption
       ? t(locale, "waitingSubjectImage")
       : t(locale, "waitingSubjectPost");
-  const stage = generationStage(item.generation);
+  const stage = generationDisplayStage(item.generation);
   const waitingLabel =
     stage === "start_failed"
       ? t(locale, "cardTitleStartFailed", { subject: waitingSubject })
-      : stage === "awaiting_approval"
-        ? t(locale, "cardTitleAwaitingApproval", { subject: waitingSubject })
-        : t(locale, "cardTitleNotStarted", { subject: waitingSubject });
+      : stage === "insufficient_credits"
+        ? t(locale, "cardTitleInsufficientCredits", { subject: waitingSubject })
+        : stage === "credit_check_unavailable"
+          ? t(locale, "cardTitleCreditUnavailable", { subject: waitingSubject })
+          : stage === "awaiting_approval"
+            ? t(locale, "cardTitleAwaitingApproval", { subject: waitingSubject })
+            : stage === "approved_not_started"
+              ? t(locale, "cardTitleApproved", { subject: waitingSubject })
+              : stage === "stopped"
+                ? t(locale, "cardTitleStopped", { subject: waitingSubject })
+                : stage === "declined"
+                  ? t(locale, "cardTitleDeclined", { subject: waitingSubject })
+                  : stage === "execution_failed"
+                    ? t(locale, "cardTitleFailed", { subject: waitingSubject })
+                    : t(locale, "cardTitleNotStarted", { subject: waitingSubject });
   const snapshot = waiting ? waitingLabel : item.caption ?? item.sourceText ?? "";
   const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   const selected = Boolean(state?.selected?.[item.batchItemId]);
