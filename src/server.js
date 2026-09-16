@@ -2775,7 +2775,6 @@ export class Gadget extends DurableObject {
       const staleIssue = staleGenerationIssue(batchItem, request);
       if (staleIssue) return { ok: false, issues: [staleIssue] };
     }
-    const stale = false;
     this.storage.saveGeneratedMedia({
       id,
       batchItemId,
@@ -2783,12 +2782,14 @@ export class Gadget extends DurableObject {
       altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
       mimeType: typeof mimeType === "string" ? mimeType : null,
       generationRequest: request,
-      stale
+      // Reaching here means the named request is the item's current mark —
+      // a stale one was refused above, so the row is never filed stale.
+      stale: false
     });
     // Registering the asset does not satisfy the mark — only delivered
     // bytes do (deliverGeneratedImage). The row just records WHICH upload
     // answers the ask, so a later byte delivery can be correlated.
-    return { ok: true, id, generationRequest: request, stale };
+    return { ok: true, id, generationRequest: request, stale: false };
   }
 
   /**
