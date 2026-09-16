@@ -42,7 +42,8 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
     generation: null,
     instructionOverrides: { image: null, caption: null },
     sourceItem: { id: `src_${id}`, text: "Reference text", media: [{ id: "m1", kind: "image" }, { id: "m2", kind: "image" }] },
-    destinationBindings: [],
+    destinationBindings: ["FB_MAIN"],
+    publicationIntent: { publishMode: "save_draft", latePolicy: "hold" },
     publications: [],
     deliveries: [],
     ...overrides
@@ -54,7 +55,7 @@ const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: 
 function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec } = {}) {
   installMinimalDom();
   const db: AnyRec = { id: "b", items: options.items ?? [post()] };
-  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [] };
+  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [] };
   const responses: AnyRec = { requestGeneration: [], saveInstructionOverrides: null };
   const held: Array<(value: AnyRec) => void> = [];
   let holdReads = 0;
@@ -113,6 +114,10 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     saveRevisions: async (input: AnyRec) => {
       calls.revisionWrites.push(input);
       return { ok: true, results: input.revisions.map(() => ({ ok: true, revision: 2 })) };
+    },
+    submitForReview: async (input: AnyRec) => {
+      calls.submits.push(input);
+      return { ok: true, submitted: [] };
     }
   };
   const open = extract("  async function openBatchDrawer(", "\n  function closePreview()", "openBatchDrawer", scope);

@@ -1,4 +1,4 @@
-// F01: every save that continues into something else — Review, Save and
+// F01: every save that continues into something else — Publish, Save and
 // leave, Save instructions and generate — keeps edits typed while it was in
 // flight, and does not navigate past them.
 //
@@ -57,7 +57,15 @@ async function type(field: any, value: string) {
 const caption = (r: AnyRec) => byId(r.dialog(), "sl-drawer-caption-input");
 const alt = (r: AnyRec) => byId(r.dialog(), "sl-drawer-alt-text");
 const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraft"));
-const REVIEW = t("en", "drawerReviewPost");
+const PUBLISH = t("en", "drawerPublishPost");
+
+function ready(overrides: AnyRec = {}) {
+  return post("a", {
+    destinationBindings: ["FB_MAIN"],
+    publicationIntent: { publishMode: "publish_now", latePolicy: "hold" },
+    ...overrides
+  });
+}
 
 /** Holds each save RPC until released; a released save persists exactly what it was sent. */
 function gateSaves(r: AnyRec) {
@@ -74,6 +82,7 @@ function gateSaves(r: AnyRec) {
         row.generatedImage = { id: rev.acceptedGeneratedMediaId, ready: true, mimeType: "image/jpeg", status: "accepted" };
         row.generatedCandidate = null;
       }
+      if (rev.publicationIntent) row.publicationIntent = rev.publicationIntent;
       row.revision = (row.revision ?? 0) + 1;
       return { ok: true, revision: row.revision };
     });
@@ -102,8 +111,6 @@ function decisions(r: AnyRec, ...answers: string[]) {
   return asked;
 }
 
-const reviewed = (r: AnyRec) => r.scope.wizard.batch?.items?.[0] ?? null;
-
 describe("F01 control: ordinary Save", () => {
   it("saves A, keeps B visible and dirty, and a second Save persists B", async () => {
     const r = rig();
@@ -124,41 +131,47 @@ describe("F01 control: ordinary Save", () => {
   });
 });
 
-describe("F01: Review", () => {
-  it("caption: an edit typed during Review's save stops Review; the next Review saves and reviews B", async () => {
-    const r = rig();
+describe("F01: Publish from the sheet", () => {
+  it("caption: an edit typed during Publish's save stops Publish; the next Publish saves and files B", async () => {
+    const r = rig({ items: [ready()] });
     const saves = gateSaves(r);
     const asked = decisions(r); // keep editing when asked about B
     await r.open({ id: "b", itemId: "a" });
     await type(caption(r), "Caption A");
-    const { done } = await start_(r.dialog(), REVIEW);
+    const { done } = await start_(r.dialog(), PUBLISH);
     await type(caption(r), "Caption B");
     await saves.release();
     await done;
     expect(r.calls.revisionWrites[0].revisions[0].caption).toBe("Caption A");
     expect(r.db.items[0].caption).toBe("Caption A");
     expect(r.dialog().open).toBe(true);
-    expect(reviewed(r)).toBeNull();
+    expect(r.calls.submits).toEqual([]);
     expect(caption(r).value).toBe("Caption B");
     expect(saveButton(r).disabled).toBe(false);
     expect(asked).toEqual(["keep"]);
 
-    const again = await start_(r.dialog(), REVIEW);
+    const again = await start_(r.dialog(), PUBLISH);
     await saves.release();
     await again.done;
     await flushAsyncWork();
     expect(r.db.items[0].caption).toBe("Caption B");
-    expect(r.dialog().open).toBe(false);
-    expect(reviewed(r)).toMatchObject({ caption: "Caption B", revision: 3 });
+    expect(r.dialog().open).toBe(true);
+    expect(r.calls.submits).toEqual([expect.objectContaining({
+      batchItemId: "a",
+      expectedRevision: 3,
+      intent: expect.objectContaining({ publishMode: "publish_now" })
+    })]);
+    expect(r.calls.announced.join(" ")).toContain("Sent to");
+    expect(r.calls.announced.join(" ")).not.toMatch(/please approve|Awaiting approval/i);
   });
 
-  it("answering Save for the newer edit saves it and reviews the acknowledged revision", async () => {
-    const r = rig();
+  it("answering Save for the newer edit saves it and files the acknowledged revision", async () => {
+    const r = rig({ items: [ready()] });
     const saves = gateSaves(r);
     const asked = decisions(r, "save");
     await r.open({ id: "b", itemId: "a" });
     await type(caption(r), "Caption A");
-    const { done } = await start_(r.dialog(), REVIEW);
+    const { done } = await start_(r.dialog(), PUBLISH);
     await type(caption(r), "Caption B");
     await saves.release(); // A acknowledged; B asked about and its save starts
     expect(asked).toEqual(["save"]);
@@ -167,35 +180,35 @@ describe("F01: Review", () => {
     await done;
     await flushAsyncWork();
     expect(r.calls.revisionWrites.map((w: AnyRec) => w.revisions[0].caption)).toEqual(["Caption A", "Caption B"]);
-    expect(r.dialog().open).toBe(false);
-    expect(reviewed(r)).toMatchObject({ caption: "Caption B", revision: 3 });
+    expect(r.dialog().open).toBe(true);
+    expect(r.calls.submits[0]).toMatchObject({ batchItemId: "a", expectedRevision: 3 });
   });
 
-  it("alt text: B typed during Review's save is kept dirty and Review does not proceed", async () => {
-    const r = rig();
+  it("alt text: B typed during Publish's save is kept dirty and Publish does not proceed", async () => {
+    const r = rig({ items: [ready()] });
     const saves = gateSaves(r);
     decisions(r);
     await r.open({ id: "b", itemId: "a" });
     await type(alt(r), "Alt A");
-    const { done } = await start_(r.dialog(), REVIEW);
+    const { done } = await start_(r.dialog(), PUBLISH);
     await type(alt(r), "Alt B");
     await saves.release();
     await done;
     expect(r.db.items[0].altText).toBe("Alt A");
     expect(alt(r).value).toBe("Alt B");
     expect(r.dialog().open).toBe(true);
-    expect(reviewed(r)).toBeNull();
-    const again = await start_(r.dialog(), REVIEW);
+    expect(r.calls.submits).toEqual([]);
+    const again = await start_(r.dialog(), PUBLISH);
     await saves.release();
     await again.done;
     await flushAsyncWork();
     expect(r.db.items[0].altText).toBe("Alt B");
-    expect(reviewed(r)).toMatchObject({ altText: "Alt B" });
+    expect(r.calls.submits).toHaveLength(1);
   });
 
-  it("staged image: a different image staged during Review's save stays staged and Review does not proceed", async () => {
+  it("staged image: a different image staged during Publish's save stays staged and Publish does not proceed", async () => {
     const r = rig({
-      items: [post("a", {
+      items: [ready({
         generatedCandidate: { id: "gm_cand", ready: true, mimeType: "image/jpeg", status: "candidate" },
         generatedHistory: [{ id: "gm_old", ready: true, status: "superseded", createdAt: "2026-09-13T03:00:00.000Z" }]
       })]
@@ -204,7 +217,7 @@ describe("F01: Review", () => {
     decisions(r);
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerUseCandidate"));
-    const { done } = await start_(r.dialog(), REVIEW);
+    const { done } = await start_(r.dialog(), PUBLISH);
     await click(r.dialog(), t("en", "drawerTabHistory"));
     await click(r.dialog(), t("en", "drawerHistoryUseImage"));
     await saves.release();
@@ -212,24 +225,24 @@ describe("F01: Review", () => {
     expect(r.calls.revisionWrites[0].revisions[0].acceptedGeneratedMediaId).toBe("gm_cand");
     expect(r.db.items[0].generatedImage.id).toBe("gm_cand");
     expect(r.dialog().open).toBe(true);
-    expect(reviewed(r)).toBeNull();
+    expect(r.calls.submits).toEqual([]);
     expect(saveButton(r).disabled).toBe(false);
-    const again = await start_(r.dialog(), REVIEW);
+    const again = await start_(r.dialog(), PUBLISH);
     expect(r.calls.revisionWrites[1].revisions[0].acceptedGeneratedMediaId).toBe("gm_old");
     await saves.release();
     await again.done;
     await flushAsyncWork();
-    expect(reviewed(r)?.generatedImage?.id).toBe("gm_old");
+    expect(r.calls.submits).toHaveLength(1);
   });
 
-  it("an edit typed during Review's post-save read also stops Review before the drawer is disposed", async () => {
-    const r = rig();
+  it("an edit typed during Publish's post-save read also stops Publish before filing", async () => {
+    const r = rig({ items: [ready()] });
     decisions(r);
     await r.open({ id: "b", itemId: "a" });
     await type(caption(r), "Caption A");
     r.holdNextRead(); // the save's own refetch
-    r.holdNextRead(); // Review's first read of the acknowledged revision
-    const { done } = await start_(r.dialog(), REVIEW);
+    r.holdNextRead(); // Publish's first read of the acknowledged revision
+    const { done } = await start_(r.dialog(), PUBLISH);
     r.release(r.db);
     await flushAsyncWork();
     await type(caption(r), "Caption B");
@@ -238,23 +251,23 @@ describe("F01: Review", () => {
     await flushAsyncWork();
     expect(r.calls.revisionWrites[0].revisions[0].caption).toBe("Caption A");
     expect(r.dialog().open).toBe(true);
-    expect(reviewed(r)).toBeNull();
+    expect(r.calls.submits).toEqual([]);
     expect(caption(r).value).toBe("Caption B");
   });
 
   it("a refused save does not navigate and keeps every buffer", async () => {
-    const r = rig();
+    const r = rig({ items: [ready()] });
     const saves = gateSaves(r);
     await r.open({ id: "b", itemId: "a" });
     await type(caption(r), "Caption A");
     await type(alt(r), "Alt A");
-    const { done } = await start_(r.dialog(), REVIEW);
+    const { done } = await start_(r.dialog(), PUBLISH);
     await type(caption(r), "Caption B");
     await saves.fail();
     await done;
     expect(r.calls.announced).toContain("Revision conflict.");
     expect(r.dialog().open).toBe(true);
-    expect(reviewed(r)).toBeNull();
+    expect(r.calls.submits).toEqual([]);
     expect(caption(r).value).toBe("Caption B");
     expect(alt(r).value).toBe("Alt A");
     expect(r.db.items[0].caption).toBe("Saved caption");
