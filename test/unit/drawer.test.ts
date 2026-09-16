@@ -82,12 +82,35 @@ describe("Output section", () => {
     });
   });
 
-  it("says a new image is being generated without replacing the accepted one or offering to use it", () => {
+  it("overlays generating on the accepted image instead of a second empty frame", () => {
     const view = output(post({ generatedCandidate: { id: "gm_b", ready: false } }));
-    expect(view.root.textContent).toContain("New image being generated");
+    const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
+    expect(frames.filter((e) => String(e.className).includes("sl-output-frame-candidate"))).toHaveLength(0);
+    const accepted = frames.find((e) => String(e.className).includes("sl-output-frame-accepted"));
+    expect(accepted).toBeTruthy();
+    expect(String(accepted!.className)).toContain("sl-output-frame-skel");
     expect(view.loads).toEqual(["gm_a"]);
     expect(buttonNamed(view.root, "Use this image")).toBeUndefined();
     expect(imageState(post({ generatedCandidate: { id: "gm_b", ready: false } }) as never)).toBe("generating");
+  });
+
+  it("keeps the empty image region compact while a first image is requested", () => {
+    const view = output(post({
+      generatedImage: null,
+      acceptedVisualMode: null,
+      generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
+    }));
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-empty"))).toHaveLength(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
+    expect(view.root.textContent).toContain("No generated image yet.");
+    expect(view.loads).toEqual([]);
+  });
+
+  it("rewrites the caption in the same field", () => {
+    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }));
+    const textarea = all(view.root, (e) => e.getAttribute("id") === "sl-drawer-caption-input")[0];
+    expect(textarea).toBeTruthy();
+    expect(String(textarea.className)).toContain("sl-skel");
   });
 
   it("offers Regenerate image and Rewrite caption separately, each naming what it keeps", async () => {
@@ -117,15 +140,36 @@ describe("Output section", () => {
 
   it("has no visual-mode radios: no text poster, no source photo as output", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: null }));
-    expect(all(view.root, (e) => e.tagName === "INPUT")).toHaveLength(0);
+    const visual = all(view.root, (e) => e.tagName === "INPUT" && String(e.getAttribute("name") ?? "").includes("visual"));
+    expect(visual).toHaveLength(0);
     expect(view.root.textContent).toContain("No generated image yet.");
     expect(view.loads).toEqual([]);
+  });
+
+  it("offers keep as draft, publish now, and schedule on the same sheet", async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const view = output(post({ destinationBindings: ["FB_MAIN"] }), {
+      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding),
+      onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch)
+    });
+    const radios = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode");
+    expect(radios).toHaveLength(3);
+    expect(view.root.textContent).toContain("Keep as draft");
+    expect(view.root.textContent).toContain("Publish now");
+    expect(view.root.textContent).toContain("Schedule");
+    expect(view.root.textContent).toContain("Facebook Main");
+    expect(view.root.textContent).not.toContain("please approve");
+    expect(view.root.textContent).not.toContain("Awaiting approval");
+    await radios[1].dispatchEvent({ type: "change" });
+    expect(patches[0]).toMatchObject({ publishMode: "publish_now" });
   });
 
   it("renders the zh-HK labels", () => {
     const root = renderOutputPanel("zh-HK", post() as never, { editable: true, buffers: {} } as never);
     expect(root.textContent).toContain("重新生成圖片");
     expect(root.textContent).toContain("重新撰寫文案");
+    expect(root.textContent).toContain("立即發佈");
+    expect(root.textContent).toContain("排程發佈");
   });
 });
 
@@ -145,13 +189,58 @@ describe("unsaved changes and footer reasons", () => {
     expect(footerState("en", post() as never, { buffers: { caption: "新文案內容" } }).save.disabled).toBe(false);
     expect(footerState("en", post({ generatedImage: null, acceptedVisualMode: null }) as never, {}).review).toEqual({
       disabled: true,
-      reason: "Accept a generated image before review."
+      reason: "Accept a generated image before publishing."
     });
     expect(footerState("en", post({ generatedImage: { id: "gm_a", ready: false } }) as never, {}).review.reason).toBe(
       "The accepted image has not arrived yet."
     );
-    // A staged ready candidate is what review will file once saved.
-    expect(footerState("en", post({ generatedImage: null, generatedCandidate: { id: "gm_b", ready: true } }) as never, { buffers: { imageId: "gm_b" } }).review.disabled).toBe(false);
+    // A staged ready candidate is what publish will file once saved.
+    expect(footerState("en", post({
+      generatedImage: null,
+      generatedCandidate: { id: "gm_b", ready: true },
+      publicationIntent: { publishMode: "publish_now" },
+      destinationBindings: ["FB_MAIN"]
+    }) as never, { buffers: { imageId: "gm_b" } }).review.disabled).toBe(false);
+  });
+
+  it("names Publish or Schedule from the sheet radios, and keeps draft as Save only", () => {
+    const ready = post({ destinationBindings: ["FB_MAIN"] });
+    expect(footerState("en", ready as never, {}).primary).toMatchObject({
+      disabled: true,
+      label: "Publish",
+      reason: "This stays a draft until you publish or schedule it."
+    });
+    expect(footerState("en", post({
+      destinationBindings: ["FB_MAIN"],
+      publicationIntent: { publishMode: "publish_now" }
+    }) as never, {}).primary).toMatchObject({ disabled: false, label: "Publish" });
+    expect(footerState("en", post({
+      destinationBindings: ["FB_MAIN"],
+      publicationIntent: { publishMode: "schedule" }
+    }) as never, {}).primary).toMatchObject({
+      disabled: true,
+      label: "Schedule",
+      reason: "Choose a date and time to schedule."
+    });
+    expect(footerState("en", post({
+      destinationBindings: ["FB_MAIN"],
+      publicationIntent: { publishMode: "schedule", publishLocalTime: "2026-09-18T11:00", timezone: "Asia/Hong_Kong" }
+    }) as never, {}).primary).toMatchObject({ disabled: false, label: "Schedule" });
+    expect(footerState("en", post({
+      destinationBindings: ["FB_MAIN"],
+      publicationIntent: { publishMode: "publish_now" },
+      generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } }
+    }) as never, {}).primary.reason).toBe("The image is generating in place. Publish when it finishes.");
+  });
+
+  it("counts a publication-intent change as unsaved so Save keeps it", () => {
+    const item = post({ publicationIntent: { publishMode: "save_draft" } });
+    expect(dirtyParts(item as never, { publicationIntent: { publishMode: "publish_now" } })).toMatchObject({ publication: true, any: true });
+    expect(revisionEntryFor(item as never, { publicationIntent: { publishMode: "publish_now" } })).toEqual({
+      batchItemId: "item-1",
+      expectedRevision: 2,
+      publicationIntent: { publishMode: "publish_now" }
+    });
   });
 });
 
@@ -223,7 +312,7 @@ describe("History section", () => {
     expect(links).toHaveLength(1);
     expect(links[0].getAttribute("href")).toBe("https://provider.example/receipt/1");
     expect(root.textContent).toContain("Outcome not confirmed");
-    expect(root.textContent).toContain("Publish after approval");
+    expect(root.textContent).toContain("Publish now");
   });
 });
 

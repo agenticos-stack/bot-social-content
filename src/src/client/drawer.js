@@ -82,7 +82,8 @@ export function dirtyParts(item, buffers = {}) {
   const altText = buffers.altText !== undefined && buffers.altText !== (item?.altText || "");
   const visual = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
   const instructions = dirtyInstructionParts(item, buffers).length > 0;
-  return { caption, altText, visual, instructions, any: caption || altText || visual || instructions };
+  const publication = buffers.publicationIntent !== undefined && !intentsEqual(buffers.publicationIntent, item?.publicationIntent);
+  return { caption, altText, visual, instructions, publication, any: caption || altText || visual || instructions || publication };
 }
 
 /** Which instruction parts (of `parts`) carry an unsaved edit. */
@@ -121,6 +122,22 @@ function normalizeOverride(value) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function intentOf(item, buffers = {}) {
+  return buffers.publicationIntent ?? item?.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" };
+}
+
+function intentsEqual(a, b) {
+  const left = a ?? {};
+  const right = b ?? {};
+  return (left.publishMode ?? "save_draft") === (right.publishMode ?? "save_draft")
+    && (left.publishLocalTime ?? null) === (right.publishLocalTime ?? null)
+    && (left.timezone ?? null) === (right.timezone ?? null);
+}
+
+function recordedBindings(item) {
+  return Array.isArray(item?.destinationBindings) ? item.destinationBindings.filter(Boolean) : [];
+}
+
 /**
  * The `saveRevisions` entry for this item's unsaved caption and staged image,
  * or null when neither changed. Accepting a candidate is a revision like any
@@ -128,14 +145,15 @@ function normalizeOverride(value) {
  */
 export function revisionEntryFor(item, buffers = {}) {
   const dirty = dirtyParts(item, buffers);
-  if (!dirty.caption && !dirty.visual && !dirty.altText) return null;
+  if (!dirty.caption && !dirty.visual && !dirty.altText && !dirty.publication) return null;
   return {
     batchItemId: item.id,
     expectedRevision: item.revision ?? 0,
     ...(dirty.caption ? { caption: buffers.caption } : {}),
     // An emptied alt text clears it (null); omitted carries the saved one forward.
     ...(dirty.altText ? { altText: buffers.altText.trim() ? buffers.altText : null } : {}),
-    ...(dirty.visual ? { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId } : {})
+    ...(dirty.visual ? { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId } : {}),
+    ...(dirty.publication ? { publicationIntent: buffers.publicationIntent } : {})
   };
 }
 
@@ -240,13 +258,23 @@ export function footerState(locale, item, { buffers = {}, saving = false } = {})
   const caption = (buffers.caption ?? item?.caption ?? "").trim();
   const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
   const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || item?.acceptedVisualMode === "keep_original" || item?.posterStored);
+  const intent = intentOf(item, buffers);
+  const mode = intent.publishMode === "schedule" ? "schedule" : intent.publishMode === "publish_now" ? "publish_now" : "save_draft";
+  const img = imageState(item);
+  const cap = captionState(item);
   let review = { disabled: false, reason: null };
   if (saving) review = { disabled: true, reason: t(locale, "saving") };
   else if ((item?.revision ?? 0) === 0 && !caption) review = { disabled: true, reason: t(locale, "drawerReviewNeedsOutput") };
   else if (!caption) review = { disabled: true, reason: t(locale, "drawerReviewNeedsCaption") };
   else if (!staged && item?.generatedImage && item.generatedImage.ready !== true) review = { disabled: true, reason: t(locale, "drawerReviewImageNotArrived") };
   else if (!staged && !item?.generatedImage && !legacyVisual) review = { disabled: true, reason: t(locale, "drawerReviewNeedsImage") };
-  return { save, review };
+  else if (img === "requested" || img === "generating") review = { disabled: true, reason: t(locale, "drawerPublishBusyImage") };
+  else if (cap === "requested") review = { disabled: true, reason: t(locale, "drawerPublishBusyCaption") };
+  else if (!recordedBindings(item).length) review = { disabled: true, reason: t(locale, "drawerPublishNeedsDestination") };
+  else if (mode === "save_draft") review = { disabled: true, reason: t(locale, "drawerPublishKeepDraft") };
+  else if (mode === "schedule" && !(intent.publishLocalTime && intent.timezone)) review = { disabled: true, reason: t(locale, "drawerPublishNeedsTime") };
+  const primary = { ...review, label: t(locale, mode === "schedule" ? "drawerSchedulePost" : "drawerPublishPost") };
+  return { save, review, primary };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,17 +294,24 @@ export function renderOutputPanel(locale, item, ctx) {
   const staged = typeof buffers.imageId === "string" && buffers.imageId !== (accepted?.id ?? null) ? buffers.imageId : null;
   const imgState = imageState(item);
   const capState = captionState(item);
+  const imageBusy = imgState === "requested" || imgState === "generating";
+  const showCandidate = Boolean(candidate && candidate.ready === true);
 
   const figure = (generated, labelKey, extraClass) => {
     const frame = el("div", { class: `sl-output-frame ${extraClass}` });
-    if (generated.ready === true) {
+    if (generated?.ready === true) {
       const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
       frame.appendChild(img);
       ctx.loadImage?.(generated, img, () => {
         img.replaceWith(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerGeneratedImageFailed")));
       });
-    } else {
+    } else if (generated) {
       frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, labelKey === "drawerImageAccepted" ? "drawerImageArriving" : "drawerCandidatePending")));
+    } else {
+      frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageNone")));
+    }
+    if (String(extraClass).includes("sl-output-frame-skel")) {
+      frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
     }
     return frame;
   };
@@ -289,12 +324,13 @@ export function renderOutputPanel(locale, item, ctx) {
     return lines.length ? el("p", { class: "sl-field-note" }, lines.join(" · ")) : null;
   };
 
-  // The accepted image — what review files. Never the reference photo.
-  // With no accepted image and no candidate there is nothing to frame: a
-  // compact note keeps the next action visible instead of an enormous empty
-  // region under an "accepted image" heading. The framed preview is unchanged
-  // whenever an image actually exists.
-  const acceptedBlock = !accepted && !candidate
+  // The accepted image — what publish files. Never the reference photo.
+  // Generating overlays this same frame. A ready candidate still sits beside
+  // it. With nothing accepted and no ready candidate there is nothing to
+  // frame: a compact note keeps the next action visible instead of an
+  // enormous empty region (including while a first image is still requested).
+  const acceptedSkel = accepted && imageBusy ? " sl-output-frame-skel" : "";
+  const acceptedBlock = !accepted && !showCandidate
     ? el("p", { class: "sl-field-note sl-output-empty", role: "status" }, t(locale, "drawerImageNone"))
     : el("div", { class: "sl-output-accepted" }, [
     el("div", { class: "sl-output-label" }, [
@@ -302,10 +338,8 @@ export function renderOutputPanel(locale, item, ctx) {
       staged ? el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag")) : null
     ]),
     accepted
-      ? figure(accepted, "drawerImageAccepted", "sl-output-frame-accepted")
-      : el("div", { class: "sl-output-frame sl-output-frame-empty" }, [
-          el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageNone"))
-        ]),
+      ? figure(accepted, "drawerImageAccepted", `sl-output-frame-accepted${acceptedSkel}`)
+      : figure(null, "drawerImageAccepted", "sl-output-frame-empty"),
     facts(accepted),
     // The server cannot vouch for which image this revision accepted: say so
     // and let the owner accept it again explicitly (a new revision).
@@ -324,16 +358,18 @@ export function renderOutputPanel(locale, item, ctx) {
         : null
   ]);
 
-  // A newer image, shown BESIDE the accepted one — never in its place.
-  const candidateBlock = candidate
-    ? el("div", { class: "sl-output-candidate", role: "group", "aria-label": t(locale, candidate.ready ? "drawerCandidateReady" : "drawerCandidatePending") }, [
+  // A ready candidate sits BESIDE the accepted image — never in its place.
+  // A not-ready candidate is generating: overlay the accepted/empty frame
+  // instead of drawing a second empty tile.
+  const candidateBlock = showCandidate
+    ? el("div", { class: "sl-output-candidate", role: "group", "aria-label": t(locale, "drawerCandidateReady") }, [
         el("div", { class: "sl-output-label" }, [
-          el("strong", null, t(locale, candidate.ready ? "drawerCandidateReady" : "drawerCandidatePending"))
+          el("strong", null, t(locale, "drawerCandidateReady"))
         ]),
         figure(candidate, "drawerCandidatePending", "sl-output-frame-candidate"),
         facts(candidate),
         el("p", { class: "sl-field-note" }, t(locale, staged === candidate.id ? "drawerCandidateStaged" : candidate.status === "legacy" ? "drawerCandidateLegacy" : "drawerCandidateNote")),
-        candidate.ready && editable
+        editable
           ? staged === candidate.id
             ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
             : el("button", { type: "button", class: "sl-primary sl-use-candidate", disabled: ctx.saving, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate"))
@@ -419,7 +455,7 @@ export function renderOutputPanel(locale, item, ctx) {
     ctx.noteRef?.(note);
     const textarea = el("textarea", {
       id: "sl-drawer-caption-input",
-      class: "sl-drawer-caption",
+      class: capState === "requested" ? "sl-drawer-caption sl-skel" : "sl-drawer-caption",
       rows: "5",
       "aria-labelledby": "sl-output-caption-title",
       placeholder: t(locale, "drawerCaptionPlaceholder")
@@ -458,7 +494,59 @@ export function renderOutputPanel(locale, item, ctx) {
     partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested")
   ]);
 
-  return el("div", { class: "sl-drawer-panel-body" }, [imageSection, captionSection]);
+  const intent = intentOf(item, buffers);
+  const dests = recordedBindings(item);
+  const destLine = dests.map((binding) => ctx.destinationLabel?.(binding) || binding).join(" · ");
+  const pubHint = intent.publishMode === "schedule"
+    ? t(locale, "drawerPublishHintSchedule")
+    : intent.publishMode === "publish_now"
+      ? t(locale, "drawerPublishHintNow")
+      : t(locale, "drawerPublishHintDraft");
+  const publicationSection = el("section", { class: "sl-drawer-section sl-pub", "aria-labelledby": "sl-output-publish-title" }, [
+    el("h3", { id: "sl-output-publish-title" }, t(locale, "drawerPublishSection")),
+    destLine
+      ? el("p", { class: "sl-pub-dest" }, destLine)
+      : el("p", { class: "sl-field-note" }, t(locale, "drawerPublishNeedsDestination")),
+    el("div", { class: "sl-pub-radios", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
+      [["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
+        el("label", { class: "sl-pub-choice" }, [
+          el("input", {
+            type: "radio",
+            name: "publicationMode",
+            value: mode,
+            checked: (intent.publishMode ?? "save_draft") === mode,
+            disabled: !editable || ctx.saving,
+            onchange: () => ctx.onPublicationIntent?.({
+              publishMode: mode,
+              publishLocalTime: null,
+              timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null,
+              utcOffsetMinutes: null,
+              latePolicy: "hold"
+            })
+          }),
+          t(locale, key)
+        ]))),
+    intent.publishMode === "schedule"
+      ? el("label", { class: "sl-pub-when" }, [
+          el("span", null, t(locale, "publicationLocalTime")),
+          el("input", {
+            type: "datetime-local",
+            id: "sl-drawer-publish-when",
+            value: intent.publishLocalTime || "",
+            disabled: !editable || ctx.saving,
+            oninput: (event) => ctx.onPublicationIntent?.({
+              ...intent,
+              publishMode: "schedule",
+              publishLocalTime: event.currentTarget.value,
+              timezone: intent.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+            })
+          })
+        ])
+      : null,
+    el("p", { class: "sl-field-note" }, pubHint)
+  ]);
+
+  return el("div", { class: "sl-drawer-panel-body" }, [imageSection, captionSection, publicationSection]);
 }
 
 function formatLabel(mimeType) {
