@@ -72,6 +72,35 @@ This preview preceded any PR, per the kickoff's local-first gate.
   · 4:5 以編輯計價, 圖片來源 segment 生成 / 上載 / 採用來源, publish
   radios, statuses.
 
+## Exercised (v2 visual revamp, same runtime)
+
+Drawer re-verified after the component-study reskin — publication controls
+moved to the persistent footer (three-way segment + destination line +
+hint + right-aligned actions), header is eyebrow-first with 32px icon
+controls, underline tabs, compact section gaps replacing scattered margins,
+chip-styled destination/layer tags, reference stage at 228px.
+
+- Button contract measured on the live dialog (dialogs append to `body`,
+  outside `.sl-app`, so both roots are covered by the doubled selectors):
+  enabled `.sl-primary` computes `rgb(24,24,27)` ink on "Save changes"
+  (Settings) and "Replace the pending image request" (centered confirm);
+  disabled "Publish" computes `rgb(244,244,245)` surface-2 with
+  `rgb(113,113,122)` muted text — no shell-gold `data-variant=primary`
+  fill anywhere in the drawer. `preview/canvas.css` restates the same
+  mapping under `#gadget-root`: `.sl-primary` ink, `.sl-brand` gold.
+- Narrow viewport (400×760 outer, 400×560 iframe): drawer 386px wide
+  (`100vw−14px`), 7px insets, `100dvh−14px` high, 12px radius — matches
+  the mockup's narrow values.
+- zh-HK re-verified on the revamped drawer: 帖文 / 參考 / 生成指示 / 紀錄
+  tabs, footer segment 保留為草稿 / 立即發佈 / 排程發佈, hint
+  "請先儲存或等待草稿完成，再發佈。", actions 儲存草稿 / 檢查狀態 / 發佈.
+  The fixture destination label "Local draft only (not connected)" is
+  seeded data, not chrome.
+- Note: a `<dialog>` inside the gadget iframe can only cover the iframe's
+  box — host-page fullscreen would need shell-owned rendering. The inset
+  floating drawer is the iframe-level ceiling, matching the accepted
+  mockup.
+
 ## Evidence files
 
 `/tmp/image-brief-evidence-b/` on the preview host (names match contents):
@@ -88,6 +117,13 @@ This preview preceded any PR, per the kickoff's local-first gate.
 - `07-post-tab-carousel-brief.png` — carousel item, brief expanded, ratio
   segment + source toggle
 - `08-zhhk-post-tab.png` — zh-HK drawer, localized brief disclosure
+
+`/tmp/image-brief-revamp/` (v2 reskin):
+
+- `10-drawer-ink.png` — English drawer, footer publication segment +
+  disabled Publish in surface-2 (ink rule verified on enabled primaries)
+- `11-drawer-narrow.png` — 400px viewport, 386px drawer, 7px insets
+- `12-drawer-zhHK.png` — zh-HK drawer fully localized
 
 ## Known fixture limits
 

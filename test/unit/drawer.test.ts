@@ -8,10 +8,12 @@ import {
   footerState,
   imageState,
   instructionPatchFor,
+  publicationHint,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
+  renderPublicationControls,
   renderReferencePanel,
   revisionEntryFor
 } from "../../src/src/client/drawer.js";
@@ -62,6 +64,18 @@ function output(item: Record<string, unknown>, extra: Record<string, unknown> = 
   return { root, loads, staged, parts };
 }
 
+function pubsHost(locale: string, item: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  const patches: Record<string, unknown>[] = [];
+  const host = document.createElement("div");
+  for (const node of renderPublicationControls(locale, item as never, {
+    editable: true,
+    buffers: {},
+    onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch),
+    ...extra
+  } as never)) host.appendChild(node);
+  return { root: host, patches };
+}
+
 describe("Output section", () => {
   it("shows a ready candidate beside the accepted image, and accepting it sends acceptedGeneratedMediaId", async () => {
     const item = post({ generatedCandidate: { id: "gm_b", ready: true, altText: "A newer bowl" } });
@@ -104,7 +118,6 @@ describe("Output section", () => {
     const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
     expect(frames.some((e) => String(e.className).includes("sl-output-frame-skel"))).toBe(true);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
-    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
     expect(view.loads).toEqual([]);
   });
 
@@ -132,11 +145,14 @@ describe("Output section", () => {
     expect(String(textarea.className)).toContain("sl-skel");
   });
 
-  it("lays out a compact thumbnail beside the caption so publish stays on the first screen", () => {
-    const view = output(post({ destinationBindings: ["FB_MAIN"] }));
+  it("lays out a compact thumbnail beside the caption and keeps publish controls in the foot", () => {
+    const item = post({ destinationBindings: ["FB_MAIN"] });
+    const view = output(item);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-compose"))).toHaveLength(1);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-thumb")).length).toBeGreaterThan(0);
-    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
+    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(0);
+    const pubs = pubsHost("en", item);
+    expect(all(pubs.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
   });
 
   it("offers Generate, Upload and Use reference as the image sources", async () => {
@@ -209,11 +225,9 @@ describe("Output section", () => {
     expect(view.loads).toEqual([]);
   });
 
-  it("offers keep as draft, publish now, and schedule on the same sheet", async () => {
-    const patches: Array<Record<string, unknown>> = [];
-    const view = output(post({ destinationBindings: ["FB_MAIN"] }), {
-      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding),
-      onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch)
+  it("offers keep as draft, publish now, and schedule in the foot", async () => {
+    const view = pubsHost("en", post({ destinationBindings: ["FB_MAIN"] }), {
+      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding)
     });
     const radios = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode");
     expect(radios).toHaveLength(3);
@@ -224,7 +238,7 @@ describe("Output section", () => {
     expect(view.root.textContent).not.toContain("please approve");
     expect(view.root.textContent).not.toContain("Awaiting approval");
     await radios[1].dispatchEvent({ type: "change" });
-    expect(patches[0]).toMatchObject({ publishMode: "publish_now" });
+    expect(view.patches[0]).toMatchObject({ publishMode: "publish_now" });
   });
 
   it("renders the zh-HK labels", () => {
@@ -233,8 +247,9 @@ describe("Output section", () => {
     expect(root.textContent).toContain("上載");
     expect(root.textContent).toContain("採用來源");
     expect(root.textContent).toContain("重新撰寫文案");
-    expect(root.textContent).toContain("立即發佈");
-    expect(root.textContent).toContain("排程發佈");
+    const pubs = pubsHost("zh-HK", post());
+    expect(pubs.root.textContent).toContain("立即發佈");
+    expect(pubs.root.textContent).toContain("排程發佈");
   });
 });
 

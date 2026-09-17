@@ -48,10 +48,12 @@ import {
   drawerTabId,
   footerState,
   instructionPatchFor,
+  publicationHint,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
+  renderPublicationControls,
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
@@ -122,17 +124,24 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
   --sl-line: var(--color-line, #e7e7ea);
   --sl-line-strong: var(--color-line-strong, #d9d9de);
   --sl-ink: var(--color-ink, #18181b);
+  --sl-ink-2: var(--studio-v2-ink-2, #52525b);
   --sl-muted: var(--color-muted, #71717a);
+  --sl-ink-4: var(--studio-v2-ink-4, #a1a1aa);
   --sl-accent: var(--color-accent, #f5b544);
   --sl-accent-strong: var(--color-accent-strong, #e09a2e);
   --sl-accent-soft: var(--color-accent-soft, #fdf5e4);
   --sl-danger: var(--color-danger, #df1b41);
   --sl-warning: var(--color-warning, #b26b00);
   --sl-success: var(--color-success, #0e8a5f);
+  --sl-success-soft: var(--studio-v2-success-soft, #d8f6e8);
   --sl-selected: var(--studio-v2-selected, #f1f1f1);
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
-  --sl-radius-card: var(--studio-v2-radius-card, 14px);
-  --sl-radius-control: var(--studio-v2-radius-control, 9px);
+  --sl-radius-card: var(--studio-v2-radius-card, 12px);
+  --sl-radius-panel: var(--studio-v2-radius-panel, 16px);
+  --sl-radius-control: var(--studio-v2-radius-control, 8px);
+  --sl-radius-chip: var(--studio-v2-radius-chip, 6px);
+  --sl-e-1: 0 1px 2px rgba(24,24,27,.05);
+  --sl-e-3: 0 2px 6px rgba(24,24,27,.08), 0 32px 64px -24px rgba(24,24,27,.35);
   /*
    * THE control scale. Every button, input, chip and tab in this sheet sizes
    * off one of these three -- nothing below declares a height of its own.
@@ -235,13 +244,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-card-foot .sl-state-chip { margin: 0; }
 .sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
-.sl-drawer-section { padding: 12px 0; }
-.sl-drawer-tablist { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
-.sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 13px; font-weight: 600; box-shadow: none; }
+/* Section content gaps come from the flex layout, not per-child margins —
+   the same spacing contract the mockup's .sheet-body/.layers use. */
+.sl-drawer-section { display: flex; flex-direction: column; gap: 10px; }
+.sl-drawer-section > * { margin-block: 0; }
+.sl-drawer-panel-body { display: flex; flex-direction: column; gap: 12px; }
+.sl-drawer-panel-body > * { margin-block: 0; }
+.sl-drawer-tablist { display: flex; gap: 16px; overflow-x: auto; scrollbar-width: none; }
+.sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 32px; padding: 6px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 12.5px; font-weight: 600; box-shadow: none; }
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
-.sl-drawer-meta { font-size: 12px; color: var(--sl-muted); }
-.sl-drawer-state { display: block; margin-top: 2px; }
-.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sl-drawer-meta { font-size: 10.5px; color: var(--sl-muted); letter-spacing: .02em; margin-bottom: 3px; }
+.sl-drawer-state { display: block; }
+.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 14px; align-items: start; }
 .sl-output-compose .sl-output-images { display: block; }
 .sl-output-compose .sl-output-frame,
 .sl-output-thumb { width: 128px; max-width: 128px; }
@@ -249,50 +263,57 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-output-copy h3 { margin-top: 0; }
 /* One joined segmented control, per the accepted mockup: the segment carries
    the border and radius; the buttons inside share dividers, not chrome. */
-.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 10px 0 8px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-src-btn.sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-soft, var(--sl-muted)); font-weight: 600; }
+.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
+.sl-src-btn.sl-src-btn { min-height: 38px; padding: 0 8px; font-size: 12.5px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-2); font-weight: 600; }
 .sl-src-btn:last-child { border-right: 0; }
-.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 650; }
+.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
+.sl-src-btn:disabled { opacity: .45; }
 .sl-src-btn:focus-visible { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
 /* The image brief: a quiet collapsible that belongs to the Generate source
    only. Its summary line always names the resolved ask, so the collapsed
    state is still honest about what a press would send. */
-.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); margin: 0 0 10px; }
-.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: var(--sl-h-compact); padding: 0 10px; cursor: pointer; font-size: 11px; }
+.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-brief[open] { box-shadow: var(--sl-e-1); }
+.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 0 12px; cursor: pointer; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-brief > summary::-webkit-details-marker { display: none; }
-.sl-brief-caret { color: var(--sl-muted); transition: transform .15s ease; }
+.sl-brief-caret { color: var(--sl-ink-4); transition: transform .15s ease; }
 .sl-brief[open] > summary .sl-brief-caret { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .sl-brief-caret { transition: none; } }
-.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sl-ink); }
-.sl-brief-chip { flex-shrink: 0; padding: 1px 8px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
-.sl-brief-body { padding: 2px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-.sl-brief-switch { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; cursor: pointer; }
-.sl-brief-switch input { margin-top: 2px; accent-color: var(--sl-ink); }
-.sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-brief-chip { flex-shrink: 0; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); background: transparent; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.sl-brief-body { padding: 2px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.sl-brief-body > * { margin-block: 0; }
+.sl-brief-switch, .sl-brief-save { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; font-weight: 600; color: var(--sl-ink); cursor: pointer; }
+.sl-brief-switch input, .sl-brief-save input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
+.sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
 .sl-brief-switch-label { font-weight: 600; color: var(--sl-ink); }
+.sl-brief-switch .sl-field-note { font-weight: 400; }
 .sl-brief-warn { color: var(--sl-warning); }
-.sl-brief-ratios { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.sl-brief-ratios-lead { font-size: 11px; color: var(--sl-muted); }
-.sl-brief-ratio { min-height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
-.sl-brief-ratio[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
+.sl-brief-ratios { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.sl-brief-ratios-lead { font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-brief-ratio { min-height: 30px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-chip); background: transparent; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-brief-ratio[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
 .sl-brief-once-wrap { display: flex; flex-direction: column; gap: 6px; }
-.sl-brief-save { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
-.sl-brief-save input { accent-color: var(--sl-ink); }
-.sl-brief-link { border: 0; background: transparent; padding: 0; color: var(--sl-ink); font-size: 11px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; min-height: 0; text-align: left; }
+.sl-brief-once-wrap > * { margin-block: 0; }
+.sl-brief-once.sl-drawer-caption { min-height: 58px; height: auto; }
+.sl-brief-link { border: 0; background: transparent; padding: 0; color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; min-height: 0; text-align: left; }
+.sl-brief-link:hover:not(:disabled) { color: var(--sl-ink); }
 .sl-brief-link:disabled { color: var(--sl-line-strong); cursor: not-allowed; text-decoration: none; }
 /* The instruction layers: which of the four a Generate ask would use. */
-.sl-layers { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; }
-.sl-layer { padding: 8px 10px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-layers { display: flex; flex-direction: column; gap: 10px; }
+.sl-layer { padding: 11px 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
 .sl-layer-live { border-color: var(--sl-ink); }
-.sl-layer-top { display: flex; align-items: center; gap: 8px; }
-.sl-layer-name { font-size: 11px; font-weight: 600; }
-.sl-layer-text { margin: 4px 0 0; font-size: 11px; line-height: 1.5; color: var(--sl-ink-soft); }
-.sl-layer-none { color: var(--sl-muted); }
-.sl-upload-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
-.sl-upload-row .sl-field-note { margin: 0; }
+.sl-layer-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.sl-layer-name { font-size: 12.5px; font-weight: 600; }
+.sl-layer-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--sl-ink-2); white-space: pre-wrap; }
+.sl-layer-none { color: var(--sl-ink-4); }
+/* The staged upload row — the mockup's dashed drop slot. */
+.sl-upload-row { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px 10px; font-size: 12.5px; color: var(--sl-ink-2); }
+.sl-upload-row .sl-field-note { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+.sl-upload-row .sl-primary { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; }
 .sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; position: relative; }
+.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; padding: 0; position: relative; }
 @media (max-width: 420px) {
   .sl-output-compose { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
   .sl-output-compose .sl-output-frame,
@@ -306,49 +327,56 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* The label wraps inside the frame — a nowrap pill in a 128px frame clipped
    mid-word. Inset both sides instead of left:50% + translateX so shrink-to-fit
    measures against the full frame, not the half-width region. */
-.sl-skel-label { position: absolute; z-index: 2; top: 50%; left: 8px; right: 8px; width: fit-content; margin-inline: auto; transform: translateY(-50%); font-size: 11px; font-weight: 650; padding: 4px 8px; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.94); color: var(--sl-ink); max-width: 100%; text-align: center; line-height: 1.35; overflow-wrap: anywhere; }
+.sl-skel-label { position: absolute; z-index: 2; top: 50%; left: 8px; right: 8px; width: fit-content; margin-inline: auto; transform: translateY(-50%); font-size: 11.5px; font-weight: 600; padding: 4px 9px; border-radius: var(--sl-radius-chip); background: rgba(255,255,255,.95); box-shadow: var(--sl-e-1); color: var(--sl-ink); max-width: 100%; text-align: center; line-height: 1.35; overflow-wrap: anywhere; }
 @keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
 .sl-drawer-caption.sl-skel { color: transparent; }
-.sl-pub { margin-top: 6px; }
-.sl-pub-dest { margin: 0 0 8px; font-size: 12.5px; color: var(--sl-ink-soft); }
+.sl-pub-dest { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 /* Publish timing is a joined segment like the source group above it: three
    cells in one bordered strip, the checked one shaded. The radio input stays
    real but invisible; the cell carries the state. */
 .sl-pub-radios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; font-weight: 600; color: var(--sl-ink-soft, var(--sl-muted)); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
+.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 38px; margin: 0; padding: 0 8px; font-size: 12.5px; font-weight: 600; color: var(--sl-ink-2); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
 .sl-pub-choice:last-child { border-right: 0; }
 .sl-pub-choice:has(input:checked) { background: var(--sl-surface-2); color: var(--sl-ink); }
 .sl-pub-choice:focus-within { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
 .sl-pub-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.sl-pub-when { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--sl-muted); }
-.sl-pub-when input { height: var(--sl-h-control); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); }
+.sl-pub-when { display: grid; gap: 4px; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-pub-when input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
 .sl-output-frame-skel .sl-pc-media-empty { display: none; }
-.sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
-.sl-reference-text { color: var(--sl-muted); }
-.sl-instructions-part { margin: 0 0 18px; }
-.sl-instructions-disclosure { margin-top: 4px; }
+.sl-reference-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: var(--sl-radius-chip); border: 1px solid var(--sl-line); font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-reference-text { color: var(--sl-ink-2); font-size: 12.5px; }
+.sl-field-label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-instructions-disclosure .sl-instructions-part { margin-bottom: 0; }
-.sl-instructions-used { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-instructions-used { padding: 11px 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-instructions-used > strong { font-size: 12.5px; font-weight: 600; display: block; }
+.sl-instructions-used > * { margin-block: 0; }
+.sl-instructions-used > * + * { margin-top: 6px; }
+.sl-instructions-reset.sl-secondary { min-height: 32px; padding: 0 11px; font-size: 11.5px; justify-self: start; }
 /* History is one time-ordered feed: the instant leads, then the event. */
-.sl-history-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.sl-history-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .sl-history-event { display: flex; gap: 10px; align-items: baseline; }
 .sl-history-when { flex: 0 0 auto; min-width: 8em; font-size: 10.5px; color: var(--sl-muted); font-variant-numeric: tabular-nums; }
 .sl-history-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.sl-history-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; margin: 0; }
-.sl-history-line strong { font-size: 12px; }
-.sl-history-detail { color: var(--sl-muted); font-size: 11px; }
+.sl-history-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; margin: 0; }
+.sl-history-line strong { font-size: 12.5px; font-weight: 600; }
+.sl-history-detail { color: var(--sl-ink-2); font-size: 11.5px; }
 .sl-history-use-image { flex-shrink: 0; }
-.sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 6px; }
+/* The batch foot is a column: status, the publication segment, the note,
+   then right-aligned small actions — the mockup's .sheet-foot. The tripled
+   class outranks the shared .sl-preview-actions.sl-preview-actions rule. */
+.sl-preview-actions.sl-drawer-footer.sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 10px; }
+.sl-drawer-stage-note { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 .sl-drawer-footer-actions { display: flex; gap: 8px; }
-.sl-drawer-footer-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
-.sl-drawer-footer-hint { margin: 0; font-size: 12px; color: var(--sl-muted); min-height: 1em; }
+.sl-drawer-footer .sl-drawer-footer-actions { justify-content: flex-end; }
+.sl-drawer-footer .sl-drawer-footer-actions button { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; white-space: normal; }
+.sl-drawer-footer-hint { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 .sl-drawer-footer-hint:empty { display: none; }
-.sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-section h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
 .sl-drawer-regen-row { margin: 0 0 16px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: var(--sl-h-compact); padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
-.sl-drawer-section p { margin: 4px 0; font-size: 11px; }
+.sl-drawer-section p { margin: 0; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
 .sl-selectbox { position: absolute; z-index: 2; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.9); display: grid; place-items: center; cursor: pointer; }
@@ -416,13 +444,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-h-control); padding: 0 10px; }
 .sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
 /* Appearance only -- alignment belongs to the footer container (see
-   .sl-selection-inner and .sl-preview-actions above/below), not this class. */
-.sl-primary, .sl-secondary { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
-.sl-primary { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
-.sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
-/* A faded brand fill reads as a broken button. An unavailable action is inert,
-   so it drops the brand entirely instead of wearing a washed-out version. */
-.sl-primary:disabled, .sl-app .sl-primary.sl-primary:disabled {
+   .sl-selection-inner and .sl-preview-actions above/below), not this class.
+   v2 button contract (component study): the primary action is ink; gold is
+   the restrained brand variant for creation calls-to-action. The doubled
+   selectors outrank the shell's bot-button[data-variant] rules. */
+.sl-primary, .sl-secondary, .sl-brand { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+/* Dialogs are appended to body, not .sl-app — both roots are covered. */
+.sl-app .sl-primary.sl-primary, .sl-preview-dialog .sl-primary.sl-primary { border: 1px solid var(--sl-ink); background: var(--sl-ink); color: var(--sl-surface); }
+.sl-app .sl-primary.sl-primary:hover:not(:disabled), .sl-preview-dialog .sl-primary.sl-primary:hover:not(:disabled) { background: #36363d; border-color: #36363d; }
+.sl-app .sl-brand.sl-brand, .sl-preview-dialog .sl-brand.sl-brand { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
+.sl-app .sl-brand.sl-brand:hover:not(:disabled), .sl-preview-dialog .sl-brand.sl-brand:hover:not(:disabled) { background: var(--sl-accent-strong); }
+/* A faded fill reads as a broken button. An unavailable action is inert,
+   so it drops the fill entirely instead of wearing a washed-out version. */
+.sl-primary:disabled, .sl-brand:disabled, .sl-app .sl-primary.sl-primary:disabled, .sl-app .sl-brand.sl-brand:disabled,
+.sl-preview-dialog .sl-primary.sl-primary:disabled, .sl-preview-dialog .sl-brand.sl-brand:disabled {
   border-color: var(--sl-line); background: var(--sl-surface-2); color: var(--sl-muted); opacity: 1; cursor: not-allowed;
 }
 .sl-secondary { border: 1px solid var(--sl-line-strong); background: var(--sl-surface); }
@@ -520,7 +555,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-dest-row-revoked { border-style: dashed; color: var(--sl-muted); cursor: default; }
 .sl-dest-row-revoked:hover { background: none; }
 .sl-dest-row-revoked.sl-dest-row-selected { border-color: var(--sl-line-strong); background: var(--sl-surface-2); }
-.sl-dest-tag { margin-left: auto; color: var(--sl-muted); font-size: 10px; }
+.sl-dest-tag { margin-left: auto; display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; }
+/* The live layer's chip reads ok-green, the neutral ones stay outlined. */
+.sl-layer-chip { border-color: transparent; background: var(--sl-success-soft); color: var(--sl-success); }
 /* Pill segments, the active one filled in ink -- not radio dots. The input
    stays for keyboard/screen-reader semantics; it is visually hidden, not
    display:none, so it keeps its place in the tab order. */
@@ -550,8 +587,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-state-failed_safe { background: color-mix(in srgb, var(--sl-danger) 12%, var(--sl-surface)); color: var(--sl-danger); }
 .sl-state-unknown { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); color: var(--sl-warning); }
 .sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
-.sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
-.sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
+.sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-ink-2); font-size: 11.5px; line-height: 1.55; }
+.sl-receipt { color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; }
+.sl-receipt:hover { color: var(--sl-ink); }
 
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
 .sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
@@ -574,7 +612,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Doubled class: inside the real shell every preview dialog also carries the
    SDK's bot-drawer class, whose dialog.bot-drawer rule still describes the
    old edge dock — the doubled class outranks it so the panel really floats. */
-.sl-preview-dialog.sl-preview-dialog { margin: auto; padding: 0; max-width: calc(100vw - 30px); max-height: calc(100dvh - 30px); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); color: var(--sl-ink); box-shadow: 0 24px 60px -24px rgba(24,24,27,.5); overflow: hidden; translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog.sl-preview-dialog { margin: auto; padding: 0; max-width: calc(100vw - 30px); max-height: calc(100dvh - 30px); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-panel); background: var(--sl-surface); color: var(--sl-ink); box-shadow: var(--sl-e-3); overflow: hidden; translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
 .sl-preview-dialog.sl-drawer { margin: 12px 12px 12px auto; width: 535px; height: calc(100dvh - 24px); max-height: none; }
 /* The drawer slides in from the edge it is docked to. The display and overlay
    properties have to transition discretely or the closing frames are never
@@ -598,15 +636,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    just the grid that portions it into head / tabs / body / footer. */
 .sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-sheet.sl-sheet-drawer { grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.sl-sheet-drawer .sl-drawer-tabs { padding: 8px 24px 0; display: grid; gap: 8px; }
+.sl-sheet-drawer .sl-drawer-tabs { padding: 6px 18px 0; display: grid; gap: 8px; }
 .sl-sheet-drawer .sl-drawer-tabs:empty { padding: 0; }
 /* Inside the floating shell there are no structural rules: spacing separates
    head, tabs, body and footer; only the selected tab keeps its underline.
    The zeros are explicit — the host shell's bot-drawer-head/-actions classes
    still carry their rules, so removing the value is not enough. */
-.sl-preview-head.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
-.sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
-.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
+.sl-preview-head.sl-preview-head { min-height: 0; padding: 16px 18px 4px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
+.sl-preview-who { flex: 1 1 auto; min-width: 0; }
+.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
+.sl-preview-head .sl-icon-action { width: 32px; height: 32px; }
 /*
  * Scoped to the eyebrow, not to every span in the header.
  *
@@ -618,10 +657,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  *
  * (No backticks in here: this stylesheet is a template literal.)
  */
-.sl-preview-head strong { display: block; font-size: 13px; }
-.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.sl-preview-head strong { display: block; margin: 0; font-size: 15px; font-weight: 600; }
+.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 10.5px; letter-spacing: .02em; margin-bottom: 3px; }
 
-.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
+.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 18px 18px; overflow-wrap: anywhere; }
 /* The media stage. See preview-media.js for why the cap is a length. */
 .sl-preview-stage-wrap { margin-bottom: 20px; }
 .sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; padding: 0; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
@@ -673,31 +712,49 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-announce-dismiss { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; cursor: pointer; border: 0; background: transparent; color: var(--sl-muted); font-size: 17px; line-height: 1; }
 .sl-announce-card { position: relative; padding-right: 34px; }
 .sl-needs-setup { white-space: normal; }
-.sl-preview-head { padding: 12px 20px; }
-.sl-preview-head strong { font-size: 16px; }
-.sl-preview-kicker { font-size: 11px; }
-.sl-preview-scroll .sl-field-note { font-size: 13px; line-height: 1.65; }
-.sl-preview-scroll .sl-drawer-section { padding: 12px 0; }
-.sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
-.sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+/* Drawer-scoped compact type, per the accepted mockup's one scale —
+   meta 10.5 / label 11.5 / compact 12.5 / body 13.5. The earlier overrides
+   inflated every section paragraph to 14px; the components now carry their
+   own sizes. */
+.sl-preview-scroll .sl-field-note { margin: 2px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--sl-ink-2); }
+.sl-preview-scroll .sl-field label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-preview-scroll .sl-output-copy .sl-output-label h3 { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 /* One footer rule for both drawers -- the single-post preview and the batch
    drawer each carry exactly one action now, so there is no second, opposing
    system to keep in sync with this one. */
-.sl-preview-actions.sl-preview-actions { padding: 12px 16px; border-top: 0; display: flex; gap: 8px; }
+.sl-preview-actions.sl-preview-actions { padding: 8px 18px 16px; border-top: 0; display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
 .sl-drawer-section .sl-stage { min-height: 220px; }
 .sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
 .sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
-.sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
+/* The Reference tab's source stage keeps the shared carousel mechanics but
+   wears the mockup's light frame — a 4/5 light panel, capped, not the dark
+   stage the single-post preview uses. */
+.sl-drawer-section .sl-reference-stage { max-width: 228px; margin-bottom: 0; }
+.sl-drawer-section .sl-reference-stage .sl-stage { min-height: 0; aspect-ratio: 4 / 5; background: var(--sl-surface-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-img { max-height: 320px; }
+.sl-drawer-section .sl-reference-stage .sl-stage-chip { color: var(--sl-ink-2); background: rgba(255,255,255,.92); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-nav { color: var(--sl-ink); background: rgba(255,255,255,.82); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-nav:hover { background: var(--sl-surface); }
+.sl-drawer-section .sl-reference-stage .sl-stage-state p { color: var(--sl-ink-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-state strong { color: var(--sl-ink); }
+.sl-drawer-section .sl-reference-stage .sl-stage-retry { color: var(--sl-ink); border-color: var(--sl-line-strong); }
+.sl-drawer-section .sl-reference-stage .sl-stage-retry:hover { background: var(--sl-surface); }
+.sl-drawer-section .sl-reference-stage .sl-stage-skeleton { background: linear-gradient(100deg, #e9e9ec 30%, #f7f7f9 50%, #e9e9ec 70%) 0 0 / 300% 100%; }
+.sl-drawer-section .sl-reference-stage .sl-stage-strip { background: var(--sl-surface-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-thumb { color: var(--sl-ink-2); background: var(--sl-surface); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-thumb[aria-selected="true"] { color: var(--sl-ink); border-color: var(--sl-accent); }
 /* What the composer below it must not lose, marked read-only -- a
    textarea cannot carry inline marks of its own. */
-.sl-drawer-caption-preview { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
-.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
-.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
+.sl-drawer-caption-preview { margin: 0; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
+.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 13.5px; line-height: 1.55; padding: 10px 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-ink); }
+.sl-drawer-caption[readonly] { background: var(--sl-surface-2); color: var(--sl-ink-2); }
+.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); }
 .sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
 .sl-drawer-caption::placeholder { color: var(--sl-muted); }
+.sl-drawer-composer .sl-drawer-caption { height: 126px; min-height: 42px; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -710,7 +767,6 @@ ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-dual { grid-template-columns: 1fr; }
   .sl-poster-grid { grid-template-columns: 1fr; }
   .sl-preview-dialog.sl-drawer { margin: 7px; width: calc(100vw - 14px); max-width: none; height: calc(100dvh - 14px); max-height: none; border-radius: 12px; }
-  .sl-preview-scroll { padding: 14px; }
   .sl-preview-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .sl-zh-edit, .sl-field input, .sl-field select { font-size: 16px; }
 }
@@ -2206,12 +2262,25 @@ function App() {
       }
     };
 
+    /*
+     * The one place a publication-intent patch lands. Shared by the footer's
+     * timing controls and kept honest with them: a mode change rebuilds the
+     * whole sheet (the schedule field joins or leaves), any other field only
+     * rebuilds the foot.
+     */
+    const patchPublicationIntent = (entry, patch) => {
+      const before = bufferOf(entry.id).publicationIntent ?? entry.publicationIntent ?? { publishMode: "save_draft" };
+      patchBuffer(entry.id, { publicationIntent: { ...before, ...patch } });
+      if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
+      else redrawFooter();
+    };
+
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
         const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
-        const reason = state.primary.reason || state.save.reason;
+        const reason = state.primary.reason || state.save.reason || publicationHint(locale, item, bufferOf(item.id));
         /*
          * The truthful pending state. The mark's dispatch says whether the
          * request was FILED; the platform's canonical state, read back by
@@ -2340,6 +2409,15 @@ function App() {
           resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
+          // Publication timing sits in the sheet foot per the accepted
+          // mockup — visible on every tab, above the actions.
+          ...renderPublicationControls(locale, item, {
+            editable: true,
+            saving,
+            buffers: bufferOf(item.id),
+            destinationLabel,
+            onPublicationIntent: (patch) => patchPublicationIntent(item, patch)
+          }),
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
           el("div", { class: "sl-drawer-footer-actions" }, [
             el("button", {
@@ -2589,12 +2667,7 @@ function App() {
             redrawFooter();
           },
           destinationLabel,
-          onPublicationIntent: (patch) => {
-            const before = bufferOf(item.id).publicationIntent ?? item.publicationIntent ?? { publishMode: "save_draft" };
-            patchBuffer(item.id, { publicationIntent: { ...before, ...patch } });
-            if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
-            else redrawFooter();
-          },
+          onPublicationIntent: (patch) => patchPublicationIntent(item, patch),
           captionConflict: captionConflicts.get(item.id) ?? null,
           onReacceptImage: async (mediaId) => {
             if (saving) return;
@@ -2719,8 +2792,8 @@ function App() {
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [
       el("header", { class: "sl-preview-head" }, [
         el("div", { class: "sl-preview-who" }, [
-          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork")),
-          headerMeta
+          headerMeta,
+          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork"))
         ]),
         el("div", { class: "sl-preview-head-actions" }, [
           el("button", {

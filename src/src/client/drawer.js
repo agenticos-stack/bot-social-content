@@ -654,19 +654,36 @@ export function renderOutputPanel(locale, item, ctx) {
     ...captionBody
   ]);
 
-  const intent = intentOf(item, buffers);
+  // Panel order follows the accepted mockup: compose, status, candidate
+  // actions, source segment, brief, upload. Publication timing lives in the
+  // sheet foot (renderPublicationControls), not the tab body.
+  return el("div", { class: "sl-drawer-panel-body" }, [
+    el("div", { class: "sl-output-compose" }, [
+      el("div", { class: "sl-output-images" }, [acceptedBlock]),
+      captionSection
+    ]),
+    imageStatusLine,
+    candidateBlock,
+    altField,
+    sourceRow,
+    briefBlock,
+    uploadBlock
+  ]);
+}
+
+/*
+ * The sheet foot's publication controls, per the accepted mockup: the
+ * destination line (when destinations are connected), the three-way timing
+ * segment, and the schedule field when Schedule is picked. Rendered by the
+ * drawer's footer builder so the choice stays visible on every tab; the
+ * matching hint sentence comes from publicationHint.
+ */
+export function renderPublicationControls(locale, item, ctx = {}) {
+  const intent = intentOf(item, ctx.buffers ?? {});
   const dests = recordedBindings(item);
   const destLine = dests.map((binding) => ctx.destinationLabel?.(binding) || binding).join(" · ");
-  const pubHint = intent.publishMode === "schedule"
-    ? t(locale, "drawerPublishHintSchedule")
-    : intent.publishMode === "publish_now"
-      ? t(locale, "drawerPublishHintNow")
-      : t(locale, "drawerPublishHintDraft");
-  const publicationSection = el("section", { class: "sl-drawer-section sl-pub", "aria-labelledby": "sl-output-publish-title" }, [
-    el("h3", { id: "sl-output-publish-title" }, t(locale, "drawerPublishSection")),
-    destLine
-      ? el("p", { class: "sl-pub-dest" }, destLine)
-      : el("p", { class: "sl-field-note" }, t(locale, "drawerPublishNeedsDestination")),
+  return [
+    destLine ? el("p", { class: "sl-pub-dest" }, destLine) : null,
     el("div", { class: "sl-pub-radios", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
       [["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
         el("label", { class: "sl-pub-choice" }, [
@@ -675,7 +692,7 @@ export function renderOutputPanel(locale, item, ctx) {
             name: "publicationMode",
             value: mode,
             checked: (intent.publishMode ?? "save_draft") === mode,
-            disabled: !editable || ctx.saving,
+            disabled: !ctx.editable || ctx.saving,
             onchange: () => ctx.onPublicationIntent?.({
               publishMode: mode,
               publishLocalTime: null,
@@ -693,8 +710,10 @@ export function renderOutputPanel(locale, item, ctx) {
             type: "datetime-local",
             id: "sl-drawer-publish-when",
             value: intent.publishLocalTime || "",
-            disabled: !editable || ctx.saving,
-            oninput: (event) => ctx.onPublicationIntent?.({
+            disabled: !ctx.editable || ctx.saving,
+            // change, not input: the footer rebuilds on each patch, and an
+            // input listener would rebuild the control mid-edit.
+            onchange: (event) => ctx.onPublicationIntent?.({
               ...intent,
               publishMode: "schedule",
               publishLocalTime: event.currentTarget.value,
@@ -702,23 +721,19 @@ export function renderOutputPanel(locale, item, ctx) {
             })
           })
         ])
-      : null,
-    el("p", { class: "sl-field-note" }, pubHint)
-  ]);
+      : null
+  ].filter(Boolean);
+}
 
-  return el("div", { class: "sl-drawer-panel-body" }, [
-    el("div", { class: "sl-output-compose" }, [
-      el("div", { class: "sl-output-images" }, [acceptedBlock]),
-      captionSection
-    ]),
-    candidateBlock,
-    altField,
-    imageStatusLine,
-    sourceRow,
-    briefBlock,
-    uploadBlock,
-    publicationSection
-  ]);
+/* What the picked timing means, in owner words — the footer's note line when
+   no stronger reason (a disabled action's explanation) takes the slot. */
+export function publicationHint(locale, item, buffers = {}) {
+  const intent = intentOf(item, buffers);
+  return intent.publishMode === "schedule"
+    ? t(locale, "drawerPublishHintSchedule")
+    : intent.publishMode === "publish_now"
+      ? t(locale, "drawerPublishHintNow")
+      : t(locale, "drawerPublishHintDraft");
 }
 
 function formatLabel(mimeType) {
@@ -753,7 +768,7 @@ export function renderReferencePanel(locale, item, ctx = {}) {
     hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
     // Adopting the source image happens in exactly one place: the Post tab's
     // "Use reference" source control. This panel is inspection only.
-    el("p", { class: "sl-field-note" }, t(locale, "drawerSourceCaption")),
+    el("span", { class: "sl-field-label" }, t(locale, "drawerSourceCaption")),
     el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
     source.permalink
       ? el("a", { href: source.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
