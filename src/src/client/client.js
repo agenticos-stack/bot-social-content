@@ -241,9 +241,25 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
 .sl-drawer-meta { font-size: 12px; color: var(--sl-muted); }
 .sl-drawer-state { display: block; margin-top: 2px; }
+.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sl-output-compose .sl-output-images { display: block; }
+.sl-output-compose .sl-output-frame,
+.sl-output-thumb { width: 128px; max-width: 128px; }
+.sl-output-copy { padding-top: 0; }
+.sl-output-copy h3 { margin-top: 0; }
+.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0 8px; }
+.sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; }
+.sl-src-btn[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
+.sl-upload-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
+.sl-upload-row .sl-field-note { margin: 0; }
 .sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; position: relative; }
+@media (max-width: 420px) {
+  .sl-output-compose { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
+  .sl-output-compose .sl-output-frame,
+  .sl-output-thumb { width: 96px; max-width: 96px; }
+}
 .sl-output-frame img { width: 100%; height: 100%; object-fit: contain; }
 .sl-output-frame .sl-pc-media-empty { padding: 12px; text-align: center; }
 .sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
@@ -1178,6 +1194,7 @@ function App() {
     // buffer is committed only by that post's own Save/Review, or by the
     // close guard's explicit "save and leave".
     const buffers = new Map(); // batchItemId -> buffer
+    const ownerUploads = new Map(); // batchItemId -> File
     const bufferOf = (id) => buffers.get(id) ?? {};
     // Every change to a buffered field bumps that field's edit version, so a
     // Save acknowledgment can tell "still what I submitted" from "typed
@@ -1366,6 +1383,104 @@ function App() {
         console.error(error);
       }
       return false;
+    };
+
+    const revisionIssue = (result) => {
+      const one = result?.results?.[0] ?? result;
+      if (one?.ok !== false && one?.ok !== undefined) return null;
+      if (one?.ok === true) return null;
+      return (one?.issues || []).map((issue) => issue.message).join(" ") || refusalMessage(one ?? {}) || t(locale, "saveFailed");
+    };
+
+    const applyVisual = async (item, patch) => {
+      if (saving) return false;
+      saving = true;
+      redrawFooter();
+      let result;
+      try {
+        result = await rpc.saveRevisions({
+          revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, ...patch }]
+        });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      } finally {
+        saving = false;
+      }
+      const failed = revisionIssue(result);
+      if (failed) announce(failed, "");
+      if (!live) return false;
+      if (!failed) {
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        ownerUploads.delete(item.id);
+      }
+      await refetchItems();
+      redraw();
+      return !failed;
+    };
+
+    const pickOwnerUpload = (item, file) => {
+      if (file) {
+        ownerUploads.set(item.id, file);
+        patchBuffer(item.id, { imageSource: "upload" });
+        redraw();
+        return;
+      }
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg";
+      input.addEventListener("change", () => {
+        const chosen = input.files?.[0];
+        if (!chosen) return;
+        ownerUploads.set(item.id, chosen);
+        patchBuffer(item.id, { imageSource: "upload" });
+        redraw();
+      });
+      input.click();
+    };
+
+    const adoptOwnerUpload = async (item) => {
+      const file = ownerUploads.get(item.id);
+      if (!file || saving) return;
+      saving = true;
+      redrawFooter();
+      let failed = null;
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const registered = await rpc.saveGeneratedImage({
+          batchItemId: item.id,
+          altText: file.name.replace(/\.[^.]+$/, "") || null,
+          mimeType: file.type || null
+        });
+        if (!registered?.id) {
+          failed = revisionIssue(registered);
+        } else {
+          const delivered = await rpc.deliverGeneratedImage({ id: registered.id, bytes });
+          if (delivered?.ok === false) failed = revisionIssue(delivered);
+          else {
+            const result = await rpc.saveRevisions({
+              revisions: [{
+                batchItemId: item.id,
+                expectedRevision: item.revision ?? 0,
+                acceptedVisualMode: "ai_refinement",
+                acceptedGeneratedMediaId: registered.id
+              }]
+            });
+            failed = revisionIssue(result);
+          }
+        }
+      } catch (error) {
+        failed = error instanceof Error ? error.message : String(error);
+      } finally {
+        saving = false;
+      }
+      if (failed) announce(failed, "");
+      if (!live) return;
+      if (!failed) {
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        ownerUploads.delete(item.id);
+      }
+      await refetchItems();
+      redraw();
     };
 
     /**
@@ -2256,7 +2371,12 @@ function App() {
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
-        panel = renderReferencePanel(locale, item, { stage: item.sourceItem ? stageFor(item) : null });
+        panel = renderReferencePanel(locale, item, {
+          stage: item.sourceItem ? stageFor(item) : null,
+          editable,
+          saving,
+          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
+        });
       } else if (activeTab === "instructions") {
         panel = renderInstructionsPanel(locale, item, {
           editable,
@@ -2340,7 +2460,11 @@ function App() {
             else dropBufferFields(item.id, ["imageId"]);
             redraw();
           },
-          onRequestPart: (part) => requestPart(item, part)
+          onRequestPart: (part) => requestPart(item, part),
+          uploadPreview: ownerUploads.has(item.id) ? { name: ownerUploads.get(item.id).name } : null,
+          onPickUpload: (file) => pickOwnerUpload(item, file),
+          onAdoptUpload: () => adoptOwnerUpload(item),
+          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
         });
       }
 
