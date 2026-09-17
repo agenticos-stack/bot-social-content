@@ -74,13 +74,15 @@ export function renderDrawerTablist(locale, { active, onSelect }) {
 // ---------------------------------------------------------------------------
 
 /**
- * `buffers` = `{ caption?: string, altText?: string, imageId?: string, instructions?: { image?, caption? } }`
+ * `buffers` = `{ caption?: string, altText?: string, imageId?: string, visualMode?: string, instructions?: { image?, caption? } }`
  * for ONE item. Returns which parts differ from the saved item.
  */
 export function dirtyParts(item, buffers = {}) {
   const caption = buffers.caption !== undefined && buffers.caption !== (item?.caption || "");
   const altText = buffers.altText !== undefined && buffers.altText !== (item?.altText || "");
-  const visual = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
+  const visualImage = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
+  const visualMode = buffers.visualMode !== undefined && buffers.visualMode !== (item?.acceptedVisualMode ?? null);
+  const visual = visualImage || visualMode;
   const instructions = dirtyInstructionParts(item, buffers).length > 0;
   const publication = buffers.publicationIntent !== undefined && !intentsEqual(buffers.publicationIntent, item?.publicationIntent);
   return { caption, altText, visual, instructions, publication, any: caption || altText || visual || instructions || publication };
@@ -152,7 +154,11 @@ export function revisionEntryFor(item, buffers = {}) {
     ...(dirty.caption ? { caption: buffers.caption } : {}),
     // An emptied alt text clears it (null); omitted carries the saved one forward.
     ...(dirty.altText ? { altText: buffers.altText.trim() ? buffers.altText : null } : {}),
-    ...(dirty.visual ? { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId } : {}),
+    ...(dirty.visual
+      ? buffers.visualMode === "keep_original"
+        ? { acceptedVisualMode: "keep_original" }
+        : { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId }
+      : {}),
     ...(dirty.publication ? { publicationIntent: buffers.publicationIntent } : {})
   };
 }
@@ -257,7 +263,8 @@ export function footerState(locale, item, { buffers = {}, saving = false } = {})
 
   const caption = (buffers.caption ?? item?.caption ?? "").trim();
   const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
-  const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || item?.acceptedVisualMode === "keep_original" || item?.posterStored);
+  const keepOriginal = buffers.visualMode === "keep_original" || item?.acceptedVisualMode === "keep_original";
+  const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || keepOriginal || item?.posterStored);
   const intent = intentOf(item, buffers);
   const mode = intent.publishMode === "schedule" ? "schedule" : intent.publishMode === "publish_now" ? "publish_now" : "save_draft";
   const img = imageState(item);
@@ -284,7 +291,8 @@ export function footerState(locale, item, { buffers = {}, saving = false } = {})
 /**
  * ctx: `{ editable, saving, buffers, loadImage(generated, img, onFail), highlighted,
  * noteRef(el), onCaptionInput(value), onAltTextInput(value), onStageImage(id|null),
- * onRequestPart("image"|"caption"), captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use") }`.
+ * onRequestPart("image"|"caption"), onPickUpload(file?), onAdoptUpload(), onAdoptReference(),
+ * uploadPreview?: { name }, captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use") }`.
  */
 export function renderOutputPanel(locale, item, ctx) {
   const buffers = ctx.buffers ?? {};
@@ -298,7 +306,7 @@ export function renderOutputPanel(locale, item, ctx) {
   const showCandidate = Boolean(candidate && candidate.ready === true);
 
   const figure = (generated, labelKey, extraClass) => {
-    const frame = el("div", { class: `sl-output-frame ${extraClass}` });
+    const frame = el("div", { class: `sl-output-frame sl-output-thumb ${extraClass}` });
     if (generated?.ready === true) {
       const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
       frame.appendChild(img);
@@ -308,7 +316,7 @@ export function renderOutputPanel(locale, item, ctx) {
     } else if (generated) {
       frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, labelKey === "drawerImageAccepted" ? "drawerImageArriving" : "drawerCandidatePending")));
     } else if (!String(extraClass).includes("sl-output-frame-skel")) {
-      frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageNone")));
+      frame.appendChild(el("span", { class: "sl-pc-media-empty sl-output-empty", role: "status" }, t(locale, "drawerImageNone")));
     }
     if (String(extraClass).includes("sl-output-frame-skel")) {
       frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
@@ -394,7 +402,7 @@ export function renderOutputPanel(locale, item, ctx) {
   // part's button stays pressable but says what is pending, and pressing it
   // asks before anything replaces that request.
   const outstanding = pendingParts(item);
-  const partButton = (part, labelKey, keepsKey, requested) => {
+  const partButton = (part, labelKey, keepsKey, requested, extra = {}) => {
     if (!editable) return null;
     // A pending request (including the one every new post starts with) is
     // never replaced silently: the button stays pressable and asks first.
@@ -406,18 +414,19 @@ export function renderOutputPanel(locale, item, ctx) {
         : other
           ? t(locale, other === "image" ? "drawerPartOtherPendingImage" : "drawerPartOtherPendingCaption")
           : t(locale, keepsKey);
-    return el("div", { class: "sl-part-action" }, [
-      el("button", {
-        type: "button",
-        class: "sl-secondary",
-        "data-part": part,
-        "data-pending": other && !requested ? other : null,
-        "data-requested": requested ? "true" : null,
-        disabled: ctx.saving,
-        title: note,
-        onclick: () => ctx.onRequestPart?.(part)
-      }, t(locale, labelKey))
-    ]);
+    const button = el("button", {
+      type: "button",
+      class: extra.className ?? "sl-secondary",
+      "data-part": part,
+      "data-src": extra.src ?? null,
+      "data-pending": other && !requested ? other : null,
+      "data-requested": requested ? "true" : null,
+      "aria-pressed": extra.pressed ?? null,
+      disabled: ctx.saving,
+      title: note,
+      onclick: extra.onclick ?? (() => ctx.onRequestPart?.(part))
+    }, t(locale, labelKey));
+    return extra.bare ? button : el("div", { class: "sl-part-action" }, [button]);
   };
 
   // Alt text belongs to the revision: edited here, saved with Save, carried to Review.
@@ -444,13 +453,40 @@ export function renderOutputPanel(locale, item, ctx) {
     altField = el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: item.altText }));
   }
 
-  const imageSection = el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-output-image-title" }, [
-    el("h3", { id: "sl-output-image-title" }, t(locale, "drawerOutputImage")),
-    el("div", { class: "sl-output-images" }, [acceptedBlock, candidateBlock]),
-    altField,
-    imageStatusLine,
-    partButton("image", "drawerRegenerateImage", "drawerRegenerateImageKeeps", imgState === "requested" || imgState === "generating")
-  ]);
+  const imageSource = buffers.imageSource ?? "generate";
+  const sourceRow = editable
+    ? el("div", { class: "sl-src-seg", role: "group", "aria-label": t(locale, "drawerSrcGroup") }, [
+        partButton("image", "drawerRegenerateImage", "drawerRegenerateImageKeeps", imgState === "requested" || imgState === "generating", {
+          bare: true,
+          className: "sl-secondary sl-src-btn",
+          src: "generate",
+          pressed: imageSource === "generate" ? "true" : "false"
+        }),
+        el("button", {
+          type: "button",
+          class: "sl-secondary sl-src-btn",
+          "data-src": "upload",
+          "aria-pressed": imageSource === "upload" ? "true" : "false",
+          disabled: ctx.saving,
+          onclick: () => ctx.onPickUpload?.()
+        }, t(locale, "drawerSrcUpload")),
+        el("button", {
+          type: "button",
+          class: "sl-secondary sl-src-btn",
+          "data-src": "reference",
+          "aria-pressed": imageSource === "reference" || buffers.visualMode === "keep_original" || item.acceptedVisualMode === "keep_original" ? "true" : "false",
+          disabled: ctx.saving,
+          onclick: () => ctx.onAdoptReference?.()
+        }, t(locale, "drawerSrcReference"))
+      ])
+    : null;
+  const uploadPreview = ctx.uploadPreview;
+  const uploadBlock = imageSource === "upload" && uploadPreview
+    ? el("div", { class: "sl-upload-row" }, [
+        el("p", { class: "sl-field-note" }, uploadPreview.name),
+        el("button", { type: "button", class: "sl-primary", disabled: ctx.saving, onclick: () => ctx.onAdoptUpload?.() }, t(locale, "drawerUseCandidate"))
+      ])
+    : null;
 
   let captionBody;
   if (editable) {
@@ -459,7 +495,7 @@ export function renderOutputPanel(locale, item, ctx) {
     const textarea = el("textarea", {
       id: "sl-drawer-caption-input",
       class: capState === "requested" ? "sl-drawer-caption sl-skel" : "sl-drawer-caption",
-      rows: "5",
+      rows: "4",
       "aria-labelledby": "sl-output-caption-title",
       placeholder: t(locale, "drawerCaptionPlaceholder")
     });
@@ -488,7 +524,7 @@ export function renderOutputPanel(locale, item, ctx) {
   } else {
     captionBody = [el("p", { class: "sl-drawer-caption-preview" }, [ctx.highlighted || item.caption || t(locale, "drawerCaptionNone")])];
   }
-  const captionSection = el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-output-caption-title" }, [
+  const captionSection = el("section", { class: "sl-drawer-section sl-output-copy", "aria-labelledby": "sl-output-caption-title" }, [
     el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
     capState === "requested" && unsubmitted
       ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
@@ -549,7 +585,18 @@ export function renderOutputPanel(locale, item, ctx) {
     el("p", { class: "sl-field-note" }, pubHint)
   ]);
 
-  return el("div", { class: "sl-drawer-panel-body" }, [imageSection, captionSection, publicationSection]);
+  return el("div", { class: "sl-drawer-panel-body" }, [
+    el("div", { class: "sl-output-compose" }, [
+      el("div", { class: "sl-output-images" }, [acceptedBlock]),
+      captionSection
+    ]),
+    candidateBlock,
+    altField,
+    imageStatusLine,
+    sourceRow,
+    uploadBlock,
+    publicationSection
+  ]);
 }
 
 function formatLabel(mimeType) {
@@ -582,6 +629,14 @@ export function renderReferencePanel(locale, item, ctx = {}) {
     ]),
     ctx.stage ? el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [ctx.stage.node, ctx.stage.strip]) : null,
     hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
+    ctx.editable
+      ? el("button", {
+          type: "button",
+          class: "sl-primary",
+          disabled: ctx.saving,
+          onclick: () => ctx.onAdoptReference?.()
+        }, t(locale, "drawerUseCandidate"))
+      : null,
     el("p", { class: "sl-field-note" }, t(locale, "drawerSourceCaption")),
     el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
     source.permalink

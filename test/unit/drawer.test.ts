@@ -12,6 +12,7 @@ import {
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
+  renderReferencePanel,
   revisionEntryFor
 } from "../../src/src/client/drawer.js";
 import { classifyReviewSelection } from "../../src/src/client/inbox.js";
@@ -131,9 +132,50 @@ describe("Output section", () => {
     expect(String(textarea.className)).toContain("sl-skel");
   });
 
+  it("lays out a compact thumbnail beside the caption so publish stays on the first screen", () => {
+    const view = output(post({ destinationBindings: ["FB_MAIN"] }));
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-compose"))).toHaveLength(1);
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-thumb")).length).toBeGreaterThan(0);
+    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
+  });
+
+  it("offers Generate, Upload and Use reference as the image sources", async () => {
+    const adopted: string[] = [];
+    const view = output(post(), {
+      onAdoptReference: () => adopted.push("reference")
+    });
+    expect(buttonNamed(view.root, "Generate")).toBeTruthy();
+    expect(buttonNamed(view.root, "Upload")).toBeTruthy();
+    expect(buttonNamed(view.root, "Use reference")).toBeTruthy();
+    await buttonNamed(view.root, "Generate")!.dispatchEvent({ type: "click" });
+    expect(view.parts).toEqual(["image"]);
+    await buttonNamed(view.root, "Use reference")!.dispatchEvent({ type: "click" });
+    expect(adopted).toEqual(["reference"]);
+  });
+
+  it("shows the chosen upload and adopting it calls onAdoptUpload", async () => {
+    const adopted: string[] = [];
+    const view = output(post(), {
+      buffers: { imageSource: "upload" },
+      uploadPreview: { name: "weekend-tray.jpg" },
+      onAdoptUpload: () => adopted.push("upload")
+    });
+    expect(view.root.textContent).toContain("weekend-tray.jpg");
+    await buttonNamed(view.root, "Use this image")!.dispatchEvent({ type: "click" });
+    expect(adopted).toEqual(["upload"]);
+  });
+
+  it("saves Use reference as keep_original, not a generated image", () => {
+    expect(revisionEntryFor(post() as never, { visualMode: "keep_original" })).toEqual({
+      batchItemId: "item-1",
+      expectedRevision: 2,
+      acceptedVisualMode: "keep_original"
+    });
+  });
+
   it("offers Regenerate image and Rewrite caption separately, each naming what it keeps", async () => {
     const view = output(post());
-    const image = buttonNamed(view.root, "Regenerate image")!;
+    const image = buttonNamed(view.root, "Generate")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(image.getAttribute("title")).toContain("Keeps the caption as it is.");
     expect(caption.getAttribute("title")).toContain("Keeps the accepted image.");
@@ -148,7 +190,7 @@ describe("Output section", () => {
     const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }));
     expect(view.root.textContent).not.toContain("waiting for the agent");
     expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
-    const image = buttonNamed(view.root, "Regenerate image")!;
+    const image = buttonNamed(view.root, "Generate")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(image.disabled).toBe(false);
     expect(image.getAttribute("data-requested")).toBe("true");
@@ -187,7 +229,9 @@ describe("Output section", () => {
 
   it("renders the zh-HK labels", () => {
     const root = renderOutputPanel("zh-HK", post() as never, { editable: true, buffers: {} } as never);
-    expect(root.textContent).toContain("重新生成圖片");
+    expect(root.textContent).toContain("生成");
+    expect(root.textContent).toContain("上載");
+    expect(root.textContent).toContain("採用來源");
     expect(root.textContent).toContain("重新撰寫文案");
     expect(root.textContent).toContain("立即發佈");
     expect(root.textContent).toContain("排程發佈");
@@ -262,6 +306,21 @@ describe("unsaved changes and footer reasons", () => {
       expectedRevision: 2,
       publicationIntent: { publishMode: "publish_now" }
     });
+  });
+});
+
+describe("Reference section", () => {
+  it("lets the owner use the source image on this post", async () => {
+    const adopted: string[] = [];
+    const root = renderReferencePanel("en", post({
+      sourceItem: { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] }
+    }) as never, {
+      editable: true,
+      onAdoptReference: () => adopted.push("reference")
+    } as never);
+    expect(root.textContent).toContain("Reference only");
+    await buttonNamed(root, "Use this image")!.dispatchEvent({ type: "click" });
+    expect(adopted).toEqual(["reference"]);
   });
 });
 
