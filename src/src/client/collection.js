@@ -12,135 +12,74 @@
 import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, glyphKeyFor, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
+import {
+  createCollectionState as createSharedCollectionState,
+  setNotice,
+  clearNotice,
+  setItems,
+  setLoading,
+  setSearch,
+  setSourceFilter,
+  applySelection,
+  clearSelection,
+  markSeenLocally,
+  mergeScanResult,
+  setLastCheckedAt,
+  selectedIds,
+  selectedCount,
+  newCount,
+  findItem,
+  setFilter as setSharedFilter,
+  visibleItems as visibleSharedItems
+} from "@agenticos-dev/bot-shell/client/collection.js";
 
 // ---------------------------------------------------------------------------
 // Pure state — filters, selection, search; independent of each other by
 // construction (REQ-006: the checkbox and the card body change different
-// things, and nothing here couples them).
+// things, and nothing here couples them). The reducers are the shared
+// package's; what stays local is this canvas's filter vocabulary and what a
+// card is searchable by.
 // ---------------------------------------------------------------------------
 
+const FILTERS = ["new", "all"];
+
 export function createCollectionState() {
-  return {
-    items: [], // SourceItem & { seen, selected, duplicateOf? }, as returned by listItems()
-    filter: "new", // "new" | "all"
-    search: "",
-    sourceFilter: null, // a sourceBinding, or null for every granted source
-    nextCursor: null,
-    loading: false,
-    lastCheckedAt: null,
-    // A refusal the collection's own action came back with, rendered above
-    // the tray. Generic on purpose (PAT-003): any "watch, notify, act"
-    // collection can have its Continue refused, and the only thing this
-    // module knows about one is that it has a message and may offer the
-    // caller a single way forward.
-    notice: null // { message, actionLabel? } — `handlers.onNoticeAction` runs the way forward
-  };
-}
-
-/** Shows a refusal (or any one-line message) above the tray, with an optional single action. */
-export function setNotice(state, notice) {
-  if (!notice || typeof notice.message !== "string" || !notice.message) return { ...state, notice: null };
-  return {
-    ...state,
-    notice: { message: notice.message, actionLabel: typeof notice.actionLabel === "string" ? notice.actionLabel : null }
-  };
-}
-
-export function clearNotice(state) {
-  return state.notice ? { ...state, notice: null } : state;
-}
-
-/** Replaces (or appends, for pagination) the item list after a listItems() fetch. */
-export function setItems(state, { items, nextCursor = null, append = false }) {
-  return {
-    ...state,
-    items: append ? state.items.concat(items) : items.slice(),
-    nextCursor,
-    loading: false
-  };
-}
-
-export function setLoading(state, loading) {
-  return { ...state, loading };
+  // items: SourceItem & { seen, selected, duplicateOf? }, as returned by listItems();
+  // filter: "new" | "all"; sourceFilter: a sourceBinding, or null for every
+  // granted source. `notice` is { message, actionLabel? } — a refusal the
+  // collection's own action came back with, rendered above the tray;
+  // `handlers.onNoticeAction` runs the way forward.
+  return createSharedCollectionState();
 }
 
 export function setFilter(state, filter) {
-  return filter === "all" || filter === "new" ? { ...state, filter } : state;
-}
-
-export function setSearch(state, search) {
-  return { ...state, search: typeof search === "string" ? search : "" };
-}
-
-/** Clicking an already-active chip clears the filter — same toggle behaviour as the mockup's provider chips. */
-export function setSourceFilter(state, sourceBinding) {
-  return { ...state, sourceFilter: state.sourceFilter === sourceBinding ? null : sourceBinding };
-}
-
-/** The checkbox alone changes selection (REQ-006) — never coupled to opening the preview. */
-export function applySelection(state, id, selected) {
-  return { ...state, items: state.items.map((item) => (item.id === id ? { ...item, selected } : item)) };
-}
-
-export function clearSelection(state) {
-  return { ...state, items: state.items.map((item) => (item.selected ? { ...item, selected: false } : item)) };
-}
-
-export function markSeenLocally(state, ids) {
-  const seen = new Set(ids);
-  return { ...state, items: state.items.map((item) => (seen.has(item.id) ? { ...item, seen: true } : item)) };
-}
-
-/**
- * Merges a fresh page of items — typically a refetch after a live
- * `operation({type:"scan"})` event — into the current list, WITHOUT losing
- * an in-flight local selection. The server is authoritative for `selected`
- * at initial load; after that, a `setSelection()` call may be racing ahead
- * of a slower scan refetch, so an item already known locally keeps its local
- * flag rather than being clobbered back to whatever the scan snapshot says.
- */
-export function mergeScanResult(state, items) {
-  const localSelection = new Map(state.items.map((item) => [item.id, item.selected]));
-  const merged = items.map((item) =>
-    localSelection.has(item.id) ? { ...item, selected: localSelection.get(item.id) } : item
-  );
-  return { ...state, items: merged, loading: false };
-}
-
-export function setLastCheckedAt(state, iso) {
-  return { ...state, lastCheckedAt: iso };
-}
-
-export function selectedIds(state) {
-  return state.items.filter((item) => item.selected).map((item) => item.id);
-}
-
-export function selectedCount(state) {
-  return state.items.reduce((count, item) => count + (item.selected ? 1 : 0), 0);
-}
-
-/** REQ-014's "N new posts" count — unseen items, independent of the active filter/search. */
-export function newCount(state) {
-  return state.items.reduce((count, item) => count + (item.seen ? 0 : 1), 0);
-}
-
-export function findItem(state, id) {
-  return state.items.find((item) => item.id === id) || null;
+  return setSharedFilter(state, filter, FILTERS);
 }
 
 /** The filter/search/chip-narrowed list a card grid actually renders. */
 export function visibleItems(state) {
-  let items = state.filter === "new" ? state.items.filter((item) => !item.seen) : state.items;
-  if (state.sourceFilter) items = items.filter((item) => item.sourceBinding === state.sourceFilter);
-  const query = state.search.trim().toLowerCase();
-  if (query) {
-    items = items.filter((item) => {
-      const haystack = `${item.text || ""} ${item.sourceLabel || ""} ${item.authorHandle || ""}`.toLowerCase();
-      return haystack.includes(query);
-    });
-  }
-  return items;
+  return visibleSharedItems(state, {
+    searchable: (item) => `${item.text || ""} ${item.sourceLabel || ""} ${item.authorHandle || ""}`
+  });
 }
+
+export {
+  setNotice,
+  clearNotice,
+  setItems,
+  setLoading,
+  setSearch,
+  setSourceFilter,
+  applySelection,
+  clearSelection,
+  markSeenLocally,
+  mergeScanResult,
+  setLastCheckedAt,
+  selectedIds,
+  selectedCount,
+  newCount,
+  findItem
+};
 
 // ---------------------------------------------------------------------------
 // Rendering — imperative DOM, using the host's closed theme tokens
