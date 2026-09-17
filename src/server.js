@@ -3865,7 +3865,11 @@ export class Gadget extends DurableObject {
       id: batch.id,
       createdAt: batch.created_at,
       status: batch.status,
-      items: this.storage.listBatchItems(batch.id)
+      items: this.storage.listBatchItems(batch.id).map((item) => ({
+        ...item,
+        generation: exportableGenerationMark(item.generation),
+        lastGeneration: exportableGenerationMark(item.lastGeneration)
+      }))
     }));
     const revisions = this.storage.listRecentRevisions(exportBounds.revisions);
     const bounded = boundExport(
@@ -4359,6 +4363,30 @@ function truncationNotice(dropped) {
   return dropped > 0
     ? `<p>${escapeHtml(`${dropped} older batch${dropped === 1 ? "" : "es"} were not included in this export.`)}</p>`
     : "";
+}
+
+/**
+ * A generation mark fit to leave the workspace. The export keeps the mark's
+ * audit shape — what was asked, when, under which instruction layers — but a
+ * reference's `url` is the fetch path the connector minted for it, not the
+ * owner's content. Like `media` on an item row (id and kind only), the
+ * exported reference keeps the media id and drops the URL, so no internal
+ * fetch address leaves the export.
+ */
+function exportableGenerationMark(mark) {
+  if (typeof mark !== "string" || !mark.startsWith("{")) return mark;
+  let parsed;
+  try {
+    parsed = JSON.parse(mark);
+  } catch {
+    return mark;
+  }
+  const references = parsed?.imageBrief?.references;
+  if (!Array.isArray(references)) return mark;
+  parsed.imageBrief.references = references.flatMap((ref) =>
+    typeof ref?.id === "string" && ref.id ? [{ id: ref.id }] : []
+  );
+  return JSON.stringify(parsed);
 }
 
 function escapeHtml(value) {
