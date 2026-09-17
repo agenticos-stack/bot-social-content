@@ -165,7 +165,7 @@ describe("Content thumbnails", () => {
   it("shows accepted output, an explicit no-output placeholder, and reference imagery only when labelled", async () => {
     const { document } = installMinimalDom() as unknown as { document: { createElement(tag: string): any } };
     const root = document.createElement("div");
-    const base = { itemId: "src1", coverMediaId: "m1", caption: "Localized caption", revision: 2, state: "drafting", provider: "instagram", sourceBinding: "IG" };
+    const base = { itemId: "src1", coverMediaId: "m1", caption: "Drafted caption", revision: 2, state: "drafting", provider: "instagram", sourceBinding: "IG" };
     const state = setInboxSummaries(createInboxState(), {
       batches: [{
         id: "b1",

@@ -40,7 +40,7 @@ test('mints with the key as a bearer, and asks for this gadget', async () => {
   const result = await mintGadgetDevSession({
     apiOrigin: ORIGIN,
     developerKey: KEY,
-    gadgetKey: 'social_localization',
+    gadgetKey: 'social_content',
     title: 'Social Content',
     fetcher: async (url, init) => {
       seen = { url, init };
@@ -51,7 +51,7 @@ test('mints with the key as a bearer, and asks for this gadget', async () => {
   assert.equal(seen.url, ORIGIN + '/v2/gadget-dev/sessions');
   assert.equal(seen.init.method, 'POST');
   assert.equal(seen.init.headers.authorization, 'Bearer ' + KEY);
-  assert.deepEqual(JSON.parse(seen.init.body), { gadgetKey: 'social_localization', title: 'Social Content' });
+  assert.deepEqual(JSON.parse(seen.init.body), { gadgetKey: 'social_content', title: 'Social Content' });
   assert.deepEqual(result, {
     devToken: 'gadget-dev-token',
     workspaceId: 'chat_dev_1',
@@ -63,7 +63,7 @@ test('reports the API message and status, without echoing the key', async () => 
   const failure = await mintGadgetDevSession({
     apiOrigin: ORIGIN,
     developerKey: KEY,
-    gadgetKey: 'social_localization',
+    gadgetKey: 'social_content',
     fetcher: async () => ({
       ok: false,
       status: 403,
@@ -80,7 +80,7 @@ test('treats a 200 with no token as a failure', async () => {
   const failure = await mintGadgetDevSession({
     apiOrigin: ORIGIN,
     developerKey: KEY,
-    gadgetKey: 'social_localization',
+    gadgetKey: 'social_content',
     fetcher: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) })
   }).catch((error) => error);
 

@@ -1,5 +1,5 @@
 // Card-first inbox projections. This module deliberately keeps source rows
-// and localization batches separate: one source may have many historical
+// and draft batches separate: one source may have many historical
 // batches, and inspecting a batch must never create another one.
 //
 // Post-audit §9: the Content card IS a post (one batch item). Its chip,

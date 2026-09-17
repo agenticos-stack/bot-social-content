@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { FIXED_DOOR_KEYS, FETCH_DOOR_KEY } from "../../src/doors.js";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../../definition.ts";
 
 /**
  * A door the gadget reads but never declares is a door the platform is never
@@ -18,7 +18,7 @@ import { SOCIAL_LOCALIZATION_DEFINITION } from "../../definition.ts";
  * gadget's invented key, so they asserted the bug rather than the contract.
  */
 describe("the doors this gadget reads are doors it declares", () => {
-  const declared = new Set(SOCIAL_LOCALIZATION_DEFINITION.requirements.map(r => r.requirementKey));
+  const declared = new Set(SOCIAL_CONTENT_DEFINITION.requirements.map(r => r.requirementKey));
 
   it("declares every fixed door key", () => {
     for (const key of FIXED_DOOR_KEYS) {

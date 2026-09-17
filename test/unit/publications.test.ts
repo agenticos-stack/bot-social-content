@@ -150,7 +150,7 @@ describe("TEST-001: drafting needs no destination and no publishing door", () =>
   });
 });
 
-describe("TEST-002: one active localization per post while it is drafting", () => {
+describe("TEST-002: one active draft per post while it is drafting", () => {
   it("a second Continue refuses duplicate_active, and createNewVersion supersedes it", async () => {
     const gadget = gadgetWith({ workspace: { notify: async () => {} } });
     const first = await draft(gadget);
@@ -213,7 +213,7 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
   });
 
-  it("files one publication per binding, and the same pair on another localization refuses", async () => {
+  it("files one publication per binding, and the same pair on another draft refuses", async () => {
     const created: unknown[] = [];
     const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     const first = await draft(gadget);
@@ -234,7 +234,7 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     // connector resource binding id `describe()` resolved, not the env name.
     expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "crb_fb_main" }]);
 
-    // The owner's new version leaves the filed localization active — REQ-017's
+    // The owner's new version leaves the filed draft active — REQ-017's
     // pair, not the item, is now what a second draft would collide with.
     const second = await draft(gadget, ["instagram:IG_MAIN:p1"], { createNewVersion: true });
     expect(second.ok).not.toBe(false);

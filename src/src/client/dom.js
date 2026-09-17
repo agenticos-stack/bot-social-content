@@ -1,4 +1,4 @@
-// Social Localization client — tiny DOM helpers shared by every view module.
+// Social Content client — tiny DOM helpers shared by every view module.
 //
 // Nothing here talks to the gadget RPC or holds state; it exists so
 // collection.js, steps.js and client.js build markup the same way instead of

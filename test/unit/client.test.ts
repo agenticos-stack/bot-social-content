@@ -1,4 +1,4 @@
-// TASK-203 / TEST-001-adjacent: node tests for the Social Localization
+// TASK-203 / TEST-001-adjacent: node tests for the Social Content
 // client. The pure parts (collection.js, steps.js, poster.js, i18n.js) are
 // plain-object logic and are tested directly; the bundled client.js is
 // smoke-loaded into a hand-rolled DOM (see tests/_helpers/minimal-dom.ts —
@@ -73,8 +73,8 @@ it("keeps the product name in both interface locales", () => {
 /**
  * Spoken-form particles that must never appear in this blueprint's own
  * zh-HK product copy (GUD-002) — the same list model.js's
- * `validateLocalization` rejects a draft for, and the one
- * `tests/social-localization-model.test.ts` already scans model.js's own
+ * `validateDraft` rejects a draft for, and the one
+ * `tests/social-content-model.test.ts` already scans model.js's own
  * `messages` with. Kept here rather than imported so this test does not
  * depend on model.js or i18n.js re-exporting an internal list.
  */
@@ -192,7 +192,7 @@ describe("collection.js state", () => {
     expect(state.notice).toBeNull();
 
     state = setNotice(state, {
-      message: "instagram:IG_MAIN:p1 already has an active localization for FB_MAIN in batch batch_1 (item bi_1).",
+      message: "instagram:IG_MAIN:p1 already has an active draft for FB_MAIN in batch batch_1 (item bi_1).",
       actionLabel: "Create a new version"
     });
     expect(state.notice?.message).toContain("batch_1");
@@ -212,7 +212,7 @@ describe("collection.js state", () => {
  * With no destination configured, Continue was enabled; pressing it refused
  * with `batch_needs_destinations`, and that refusal went to `console.log` and
  * nowhere else. On screen: nothing at all. Reproduced against the live gadget
- * on 2026-09-10 — "[social-localization] Refresh failed: createBatch needs at
+ * on 2026-09-10 — "[social-content] Refresh failed: createBatch needs at
  * least one destination binding."
  */
 describe("the selection tray, when nothing is set up to publish to", () => {
@@ -424,7 +424,7 @@ describe("suggestProtectedTerms", () => {
 });
 
 // ---------------------------------------------------------------------------
-// steps.js — Continue -> Localize, block issues gate Submit, expired approval
+// steps.js — Continue -> Draft, block issues gate Submit, expired approval
 // ---------------------------------------------------------------------------
 
 describe("steps.js transitions", () => {
@@ -1106,12 +1106,12 @@ describe("bundled client.js smoke test", () => {
     expect(card).toBeTruthy();
     expect(card.textContent).toContain(item.text.split("\n")[0].slice(0, 90));
     expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("Awaiting approval");
-    // The wizard's Localize step never opened.
+    // The wizard's Draft step never opened.
     expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------
-  // Finding C (design-plans/evidence/social-localization-gadget-1/
+  // Finding C (design-plans/evidence/social-content-gadget-1/
   // verification.md): the local end-to-end browser walk showed the first-run
   // form's submit never persisting config — `summary().configured` stayed
   // `false` after clicking "開始監察來源" twice, and the identical payload

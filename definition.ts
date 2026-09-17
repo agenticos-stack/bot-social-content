@@ -1,7 +1,7 @@
 /**
- * The Social Localization gadget's definition (TASK-205).
+ * The Social Content gadget's definition (TASK-205).
  *
- * design-plans/feature-social-localization-gadget-1.md, REQ-029 (governing):
+ * design-plans/feature-social-content-gadget-1.md, REQ-029 (governing):
  * "all blueprint-specific logic and domain data live in the blueprint archive
  * and the gadget's own facet storage… the API MUST NOT gain any table,
  * migration, route, service, event type, agent tool, or seeder branch whose
@@ -14,7 +14,7 @@
  * a `source` sourceSnapshot, `review_state`/`proposals`/`outputs` collections,
  * and a generic "Send" action bound to the `workflow-run` catalog entry — the
  * shape of a document an owner revises and eventually sends. Social
- * Localization is not that: it has no source document, its review loop is the
+ * Social Content is not that: it has no source document, its review loop is the
  * Social Hub door's own approval surface (REQ-009/REQ-010), and declaring a
  * second "Send" here would be exactly the second post/dispatch lifecycle
  * REQ-009 forbids. So `actions` is empty and the declarative fields below are
@@ -26,7 +26,7 @@
  * `FORMAT_DASHBOARD_DEFINITION` in `formats.ts` — a single `richText` body a
  * declarative reader sees when code is unavailable, plus the capability
  * requirements a setup screen needs to walk. Everything that makes this a
- * localization tool — sources, batches, drafts, revisions, posters — lives in
+ * content-drafting tool — sources, batches, drafts, revisions, posters — lives in
  * the archive's own storage and is never expressed as declarative `fields`.
  *
  * NOT AN OUTPUT FORMAT (REQ-024, TASK-205). This definition is deliberately
@@ -34,13 +34,13 @@
  * entry in `format-blueprints.ts`'s `DEFINITION_NOUNS`. Both are the
  * classification that makes a definition an "Outputs" grouping offer — a
  * blueprint an org's own document can join by producing the same generic
- * `output.id`. Social Localization produces nothing of that shape; it is a
+ * `output.id`. Social Content produces nothing of that shape; it is a
  * standing tool an owner sets up once, not a document type. Its own
  * presentation lives in `definition-presentation.ts` instead (REQ-024), which
  * is a different, unconditional join every definition gets, format or not.
  *
  * DOOR REQUIREMENTS, AND THE FAMILY EXTENSION THEY NEEDED (REQ-002). A door
- * requirement has always named exactly one binding. Social Localization needs
+ * requirement has always named exactly one binding. Social Content needs
  * 1 to 20 source connector bindings and 1 to 20 destination connector
  * bindings — a fixed slot per account does not represent a set an owner grows
  * over time, and the platform will not invent `source_1`..`source_20`. TASK-205
@@ -55,9 +55,9 @@
 
 import { GADGET_DEFINITION_SCHEMA } from "@agenticos-dev/bot-contract";
 
-export const SOCIAL_LOCALIZATION_DEFINITION = {
+export const SOCIAL_CONTENT_DEFINITION = {
   schemaVersion: GADGET_DEFINITION_SCHEMA,
-  key: "social_localization",
+  key: "social_content",
   version: 1,
   title: "Social Content",
   runtimeTier: "declarative",
@@ -87,7 +87,7 @@ export const SOCIAL_LOCALIZATION_DEFINITION = {
 
   views: [
     {
-      key: "localization",
+      key: "content",
       label: "Social Content",
       layout: "full",
       widgets: [

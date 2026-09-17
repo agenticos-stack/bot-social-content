@@ -1,4 +1,4 @@
-// Social Localization client — the generic "watch, notify, act" collection
+// Social Content client — the generic "watch, notify, act" collection
 // (PAT-003). Cards, filters, provider/account chips, search, the sticky
 // selection tray, empty/loading states and the New badge live here as a
 // single module so the next blueprint of this shape packs the same file
@@ -6,7 +6,7 @@
 //
 // State is plain, immutable-update data — no DOM, no RPC — so the reducer
 // half of this module is unit-testable in node (see
-// tests/social-localization-client.test.ts). The render half below it is
+// tests/social-content-client.test.ts). The render half below it is
 // imperative DOM building that a smoke test exercises with a fake `gadget`.
 
 import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";

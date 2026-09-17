@@ -1,10 +1,10 @@
-// Social Localization blueprint — server.js (TASK-202).
+// Social Content blueprint — server.js (TASK-202).
 //
 // The facet class: storage (REQ-031), the scan hook (REQ-012/013), and the
 // batch/revision/publish surface the client and the agent call through
 // `readGadget` / `callGadgetMethod` (CON-010). Everything specific to this
 // blueprint lives here and in its sibling files — nothing in `workers/api/src`
-// names Social Localization (REQ-029).
+// names Social Content (REQ-029).
 //
 // FILE SHAPE (PAT-002): `model.js` is pure normalization/validation, shared
 // unchanged by client and server. `storage.js` is the one seam onto
@@ -28,7 +28,7 @@
 // `workerd/api/actor-state.c++:1187: failed: broken.outputGateBroken`).
 // This class runs as a `ctx.facets` target — the same mechanism
 // `WorkspaceRoom.gadgetFacet()` uses in production, proven in
-// `tests/v2-social-localization-server.workers.test.ts` via
+// `tests/v2-social-content-server.workers.test.ts` via
 // `test-worker/gadget-facet-harness.ts`'s generic facet host — and every
 // method call crosses a real Durable Object RPC boundary to reach it, not a
 // plain function call. workerd logs "uncaught exception" for ANY exception
@@ -622,7 +622,7 @@ export class Gadget extends DurableObject {
       // it as a submission rather than completing inline, so a rejection or
       // an absent door must not fail setup outright. `summary().schedule`
       // shows "unarmed" until it is granted/approved.
-      console.warn("social-localization: could not arm the scan schedule:", errorMessage(error));
+      console.warn("social-content: could not arm the scan schedule:", errorMessage(error));
     }
   }
 
@@ -953,7 +953,7 @@ export class Gadget extends DurableObject {
     try {
       const opened = this.openBatch({ itemIds });
       // By value, never a throw (PAT-007). A refusal here — these items
-      // already have an active localization — is not a scan failure and is
+      // already have an active draft — is not a scan failure and is
       // not something to ask an owner about.
       if (!opened || opened.ok === false || !opened.items?.length) return null;
 
@@ -1501,11 +1501,11 @@ export class Gadget extends DurableObject {
    * publication, the item alone is the key (`findDuplicates`); once it has
    * been sent, `submitForReview` tests the pair.
    *
-   * REFUSES, IT DOES NOT REPARENT. A second active localization for a post
+   * REFUSES, IT DOES NOT REPARENT. A second active draft for a post
    * that already has one comes back as `{ ok: false, code:
    * "duplicate_active" }` naming the batch and item that hold it (PAT-007 —
    * by value, never a throw). This used to move the existing row into the new
-   * batch instead, silently: an approved localization would change batch
+   * batch instead, silently: an approved draft would change batch
    * under the owner with no record that it happened, and the reviewer of the
    * new batch would find work they never approved sitting in it.
    *
@@ -1562,7 +1562,7 @@ export class Gadget extends DurableObject {
 
     /*
      * A DESTINATION IS A SEND TARGET, NOT A PRECONDITION (TASK-001). Drafting
-     * a localized caption is `generate` — nothing about it needs a `send`
+     * a draft caption is `generate` — nothing about it needs a `send`
      * target, so an absent or empty `destinationBindings` is a batch like any
      * other and `batch_needs_destinations` is no longer answered here. The
      * code stays in the vocabulary for `submitForReview`, where it is true.
@@ -1606,7 +1606,7 @@ export class Gadget extends DurableObject {
   }
 
   /**
-   * Every source item in `itemIds` that already has an active localization
+   * Every source item in `itemIds` that already has an active draft
    * which never went anywhere — the item-key half of REQ-017 while drafting
    * (TASK-002). An item with a FILED publication does not block a second
    * draft here; the pair rule at submit owns that case (`submitForReview`).
@@ -1727,7 +1727,7 @@ export class Gadget extends DurableObject {
    * - `already_in_batch` — the source already has an ACTIVE row in this batch.
    *   (A superseded one does not block: remove, then re-add is a real flow.)
    * - `duplicate_active` — REQ-017's item-key rule: another batch holds an
-   *   active, never-filed localization of the same source.
+   *   active, never-filed draft of the same source.
    */
   addBatchItem(input) {
     return this.enqueueMutation(() => {
@@ -1826,7 +1826,7 @@ export class Gadget extends DurableObject {
    * `{ id, sourceItem, destinationBindings, revision, caption, posterLayout,
    * confirmedClaims, approval }` — the exact shape
    * `src/client/steps.js` (`draftFor`, `renderReview`) reads off
-   * `getBatch()` / `createBatch()`'s items (`cc/social-localization-client`,
+   * `getBatch()` / `createBatch()`'s items (`cc/social-content-client`,
    * PR #1483). `state` rides along as extra, harmless information.
    *
    * `approval` is non-null once a submission was actually made (`version` —
@@ -3597,7 +3597,7 @@ export class Gadget extends DurableObject {
 
     /*
      * REQ-017's pair rule, where the send happens (TASK-012): an active
-     * publication on ANOTHER localization of this source post claims the
+     * publication on ANOTHER draft of this source post claims the
      * pair — `bound` included, because a recorded claim is still a claim.
      * Checked for every binding BEFORE the first door call, so a refusal
      * files nothing. The owner's `createNewVersion` opt-in retires the
@@ -3764,7 +3764,7 @@ export class Gadget extends DurableObject {
 
       // Retire what this filing replaces: this item's older/bound row for
       // the pair, and — only under the explicit opt-in — the conflicting
-      // row on another localization. Failed filings supersede nothing.
+      // row on another draft. Failed filings supersede nothing.
       const replaceIds = [mine, ...(conflictsByBinding.get(binding) ?? [])]
         .filter(Boolean)
         .map((publication) => publication.id);
@@ -4006,7 +4006,7 @@ export class Gadget extends DurableObject {
       }
     );
     return {
-      filename: "social-localization-export.json",
+      filename: "social-content-export.json",
       contentType: "application/json",
       body: bounded.body,
       encoding: "utf8"
@@ -4047,7 +4047,7 @@ export class Gadget extends DurableObject {
       return `<h2>Batch ${escapeHtml(batch.id)}</h2><table><thead><tr><th>Destination</th><th>State</th><th>Caption</th></tr></thead><tbody>${rows}</tbody></table>`;
     });
     return {
-      filename: "social-localization-export.html",
+      filename: "social-content-export.html",
       contentType: "text/html",
       body:
         `<!doctype html><html><body><h1>Social Content export</h1>` +
@@ -4189,7 +4189,7 @@ function generateId(prefix) {
 
 /**
  * REQ-017's refusal. Names the batch and the item that already hold the pair,
- * because "this is already localized" without saying WHERE is a dead end for
+ * because "this is already drafted" without saying WHERE is a dead end for
  * whoever reads it — and says what the owner can do instead, which is the
  * `createNewVersion` opt-in.
  */
@@ -4215,7 +4215,7 @@ function duplicateRefusal(duplicates) {
 /**
  * REQ-017's refusal at submit — the pair rule, applied per destination
  * (TASK-012). `conflictsByBinding` maps each requested binding to the active
- * publication rows on OTHER localizations of the same source post that
+ * publication rows on OTHER drafts of the same source post that
  * already claim it; the refusal names the batch and item holding the first
  * conflict and lists every claimed pair.
  */

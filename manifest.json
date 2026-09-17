@@ -1,6 +1,6 @@
 {
-  "blueprintKey": "social_localization",
-  "legacyBlueprintId": "social.localization",
+  "blueprintKey": "social_content",
+  "legacyBlueprintId": "social.content",
   "artifact": "social-content.gadget",
   "metadata": {
     "title": "Social Content",

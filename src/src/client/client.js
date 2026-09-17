@@ -1,6 +1,6 @@
-// Social Localization client — the sandboxed gadget entry point (TASK-203).
+// Social Content client — the sandboxed gadget entry point (TASK-203).
 //
-// Bundled by scripts/pack-social-localization-client.mjs into the single
+// Bundled by scripts/pack-social-content-client.mjs into the single
 // `client.js` the archive ships (PAT-002). Runs inside the sandbox iframe
 // gadget-sandbox-html.ts composes: opaque origin, `connect-src 'none'`
 // (SEC-002), `globalThis.gadget` is the capnweb stub to this instance's
@@ -953,7 +953,7 @@ function postedLabel(locale, item) {
  * This was one line — "Format: Video post · Engagement: 3" — where
  * "engagement" was `metrics.likes` alone and nothing else on the record
  * reached the screen. The posting time, the comment count and the number of
- * frames all bear on whether this is the post to localize. Anything the
+ * frames all bear on whether this is the post to draft. Anything the
  * record does not carry is left out rather than rendered as zero (GUD-003).
  */
 function drawerFacts(locale, item, frameCount) {
@@ -1235,7 +1235,7 @@ function App() {
   }
 
   function announce(title, body, action) {
-    console.log(`[social-localization] ${title}: ${body || ""}`);
+    console.log(`[social-content] ${title}: ${body || ""}`);
     if (announceTimer) clearTimeout(announceTimer);
     replace(announceRegion, [
       el("div", { class: "sl-announce-card" }, [
@@ -1391,7 +1391,7 @@ function App() {
    * The Saved drawer is ONE post. `{ id, itemId }` arrives from the clicked
    * card: `id` is the containing batch (fetched for provenance and sibling
    * navigation), `itemId` the batch item that is the drawer's actual
-   * subject. Generated output — the poster image and the localized caption
+   * subject. Generated output — the poster image and the draft caption
    * — is the primary content; the source post sits in a labelled reference
    * section below it. Every save/regenerate/review action scopes to the
    * viewed item: an action taken on one post never writes a sibling.
@@ -2189,7 +2189,7 @@ function App() {
           result = await send(true);
         }
         if (result && result.ok === false) {
-          // The fail-closed refusal is localized, never the raw code: the
+          // The fail-closed refusal is translated, never the raw code: the
           // owner picked "the post's image" and the honest answer is that it
           // cannot be used — with the two ways forward.
           announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
@@ -3487,7 +3487,7 @@ function App() {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
       // createBatch answers an expected refusal (no items, an existing
-      // active localization) as a value, not a throw — see server.js's
+      // active draft) as a value, not a throw — see server.js's
       // header note.
       if (isRefusal(batch)) {
         if (batch.code === "duplicate_active") {

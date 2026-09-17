@@ -35,7 +35,7 @@ const LEGACY_GENERATION = JSON.stringify({
   scope: { caption: true, image: true },
   needs: { caption: true, image: true },
   at: "2026-09-15T03:24:05.276Z",
-  instructions: { image: "Localize into Traditional Chinese", caption: "Translate the caption" }
+  instructions: { image: "Draft in Traditional Chinese", caption: "Translate the caption" }
 });
 
 function batchSummaries() {

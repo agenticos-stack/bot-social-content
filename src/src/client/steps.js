@@ -1,7 +1,7 @@
-// Social Localization client — the Localize / Publish / Result steps
+// Social Content client — the Draft / Publish / Result steps
 // (TASK-203), plus the first-run setup screen this gadget owns (TASK-302).
 // Pure state/selectors are exported separately from the render functions so
-// tests/social-localization-client.test.ts can assert step transitions and
+// tests/social-content-client.test.ts can assert step transitions and
 // validation gating without a DOM.
 //
 // Publish used to be preceded by a separate Review step that repeated what
@@ -93,7 +93,7 @@ function draftFor(item) {
   };
 }
 
-/** Continue (step 1 -> 2): a batch with no items never advances — REQ-006/REQ-013 leave nothing to localize. */
+/** Continue (step 1 -> 2): a batch with no items never advances — REQ-006/REQ-013 leave nothing to draft. */
 export function setBatch(state, batch) {
   if (!batch || !Array.isArray(batch.items) || !batch.items.length) return state;
   const drafts = {};
@@ -247,7 +247,7 @@ export function publishBindings(state, batchItemId) {
 }
 
 /**
- * Localize -> Review. Drafting needs no destination and needs no send —
+ * Draft -> Review. Drafting needs no destination and needs no send —
  * only that nothing is mid-save or unsaved, so the review the owner reads
  * is the draft that is actually stored.
  */
@@ -294,7 +294,7 @@ export function submitItemEnabled(state, batchItemId, policy, destinations = [])
 // Pure validation/gating selectors
 // ---------------------------------------------------------------------------
 
-/** Runs the same validator saveRevision() selects from the brief (localization vs grounded). */
+/** Runs the same validator saveRevision() selects from the brief (draft vs grounded). */
 export function computeIssues(item, draft, policy) {
   return validateRevisionDraft({
     source: { text: item.sourceItem?.text ?? "", id: item.sourceItem?.id ?? "" },

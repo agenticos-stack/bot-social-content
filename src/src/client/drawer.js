@@ -1,4 +1,4 @@
-// The single-post "Saved localization" drawer — its four sections as pure
+// The single-post "Saved draft" drawer — its four sections as pure
 // renderers over one projected batch item.
 //
 // `client.js` owns the session (rpc, buffers, dialog, focus); this module

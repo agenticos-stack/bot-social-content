@@ -1,4 +1,4 @@
-// Social Localization blueprint — pure model.
+// Social Content blueprint — pure model.
 //
 // No imports beyond the platform (crypto.subtle for SHA-256 hashing). This
 // file has no I/O beyond reading the system clock and the platform crypto
@@ -46,7 +46,7 @@ const VISUAL_MODES = ["keep_original", "text_poster", "ai_refinement"];
 /**
  * Written zh-HK product copy must never contain these — see AGENTS.md and
  * studio/scripts/i18n-diff.mjs, whose register list this mirrors. Also used
- * by validateLocalization() to block a draft written in spoken Cantonese.
+ * by validateDraft() to block a draft written in spoken Cantonese.
  */
 const SPOKEN_FORM_TOKENS = ["嘅", "咗", "唔", "呢個", "邊個", "幾多", "睇", "喺", "嗰"];
 
@@ -593,7 +593,7 @@ export async function contentHash(item) {
 /**
  * SHA-256 hex over any JSON-serializable value. General-purpose sibling of
  * `contentHash()` (which is specifically the SourceItem field set) — used by
- * `server.js` to hash a localized VERSION (caption, poster layout,
+ * `server.js` to hash a drafted VERSION (caption, poster layout,
  * destination, origin reference) for SEC-005's "exact ... content hash is the
  * single input to approval preview, decision record, dispatcher, receipt and
  * audit".
@@ -756,7 +756,7 @@ function housePolicyIssues(trimmed, policy, limits) {
 }
 
 /**
- * Localization when the brief allows no copy changes and is not ai_refinement.
+ * Draft validation when the brief allows no copy changes and is not ai_refinement.
  * `ai_refinement` or any allowedChanges selects the grounding ledger path.
  */
 export function usesGroundedValidation(brief) {
@@ -1043,16 +1043,16 @@ export function validateGrounded({ source = {}, draft, ledger, policy = {}, limi
   return { ok: !issues.some((entry) => entry.severity === "block"), issues };
 }
 
-/** REQ-003: localization stays the no-allowed-changes path; derivation uses the ledger. */
+/** REQ-003: the plain draft stays the no-allowed-changes path; derivation uses the ledger. */
 export function validateRevisionDraft({ brief, ...rest } = {}) {
-  return usesGroundedValidation(brief) ? validateGrounded(rest) : validateLocalization(rest);
+  return usesGroundedValidation(brief) ? validateGrounded(rest) : validateDraft(rest);
 }
 
 /**
- * Validates a localized draft against the source item, the org's protection
+ * Validates a drafted post against the source item, the org's protection
  * policy and destination limits. Never rewrites the draft — only reports.
  */
-export function validateLocalization({ source = {}, draft, policy = {}, limits = {} } = {}) {
+export function validateDraft({ source = {}, draft, policy = {}, limits = {} } = {}) {
   const issues = [];
   const trimmed = typeof draft === "string" ? draft.trim() : "";
 
@@ -1817,7 +1817,7 @@ function encodedLength(value) {
  * rather than the absence of one. TRUNCATION IS ALWAYS EXPLICIT: a reader who
  * does not check `truncated` still gets a correct export of what it holds,
  * and one who does can tell a complete export from a partial one — which is
- * the difference between "this organisation localized 40 posts" and "we
+ * the difference between "this organisation drafted 40 posts" and "we
  * showed you 40 of them".
  *
  * SHED ORDER IS REVISIONS, THEN BATCHES, THEN ITEMS. Revisions carry the text
@@ -1922,7 +1922,7 @@ export async function normalizeOpenInstagramPosts(page, source) {
      * Storing it produces an undated, imageless card an owner cannot act on
      * and cannot explain, and it would count as a "new item" on every scan
      * report. Anything carrying neither a time nor a single piece of media is
-     * not a post this gadget can localize.
+     * not a post this gadget can draft.
      *
      * Dropped WITH A REASON, not silently: `dropped` is what tells an owner
      * their scan saw twelve things and kept eleven.

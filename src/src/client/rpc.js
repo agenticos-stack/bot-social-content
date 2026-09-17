@@ -1,7 +1,7 @@
-// Social Localization client — the one file that calls the gadget's server.
+// Social Content client — the one file that calls the gadget's server.
 //
 // Every RPC this UI makes goes through here, so a contract change on the
-// server side (`format-blueprints/social-localization/server.js`, owned by a
+// server side (`format-blueprints/social-content/server.js`, owned by a
 // sibling task) touches this one file rather than every view module that
 // happens to need a post. Each export is a thin pass-through to
 // `globalThis.gadget.<method>` — nothing here decides anything; that is

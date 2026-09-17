@@ -1,5 +1,5 @@
 // A hand-rolled DOM, just large enough to smoke-load the Social
-// Localization client's bundled client.js in plain node.
+// Social Content client's bundled client.js in plain node.
 //
 // Neither jsdom, happy-dom nor linkedom is a dependency anywhere in this
 // workspace (checked with `pnpm why` before writing this — none resolve).

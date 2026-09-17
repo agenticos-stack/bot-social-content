@@ -219,7 +219,7 @@ describe("what a scan asks for", () => {
     expect(gadget.workRequestFor(unknown, gadget.storage.getConfig())).toBeNull();
   });
 
-  it("asks for nothing when those items already have an active localization", () => {
+  it("asks for nothing when those items already have an active draft", () => {
     // The second scan of the same finding is not a second piece of work.
     const { gadget } = gadgetWith("on_new");
     expect(gadget.workRequestFor(found, gadget.storage.getConfig())).not.toBeNull();

@@ -13,7 +13,7 @@ import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
 import { SOCIAL_DOOR_METHODS } from './local-rpc-contract.mjs';
 import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
-import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
+import { SOCIAL_CONTENT_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
 import { createDoorRuntime } from './door-runtime.mjs';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
@@ -102,8 +102,8 @@ if (remote) {
     const minted = await mintGadgetDevSession({
       apiOrigin,
       developerKey,
-      gadgetKey: SOCIAL_LOCALIZATION_DEFINITION.key,
-      title: SOCIAL_LOCALIZATION_DEFINITION.title
+      gadgetKey: SOCIAL_CONTENT_DEFINITION.key,
+      title: SOCIAL_CONTENT_DEFINITION.title
     });
     devToken = minted.devToken;
     devWorkspaceId = minted.workspaceId;
@@ -141,7 +141,7 @@ function doorMethodsByEnvKey() {
 }
 
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
-const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
+const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_CONTENT_DEFINITION.key,origin:frontendOrigin,
   async authenticate(request){
     if (remote) return {userId:'gadget-dev',orgId:devWorkspaceId,devToken};
     const headers={cookie:request.headers.get('cookie') || '',accept:'application/json'};
@@ -250,7 +250,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           }
         }
       };
-      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_CONTENT_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
@@ -361,7 +361,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           await previousReady;            // let in-flight calls finish on the old isolate
           await previous.dispose();       // releases the state lock; data stays
           local=await startRuntime(files);
-          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:files['server.js']});
+          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:files['server.js']});
           lastHash=nextHash;
           archive={files};
           console.log(`reloaded ${nextHash.slice(0,12)} — ${Object.keys(files).length} files`);

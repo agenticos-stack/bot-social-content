@@ -1,9 +1,9 @@
-// Social Localization client — interface strings.
+// Social Content client — interface strings.
 //
 // English and written Hong Kong Chinese (zh-HK, 書面語) only — GUD-002. No
 // spoken Cantonese particle (嘅 咗 唔 呢個 邊個 幾多 睇 喺 嗰) belongs in
-// product copy; `tests/social-localization-client.test.ts` scans this file
-// for them the same way `model.js`'s `validateLocalization` rejects them in
+// product copy; `tests/social-content-client.test.ts` scans this file
+// for them the same way `model.js`'s `validateDraft` rejects them in
 // a draft. Chinese punctuation is full-width by convention (。， rather than
 // . ,), matching the source posts the model normalizes.
 //
@@ -522,7 +522,7 @@ export const STRINGS = Object.freeze({
     scheduleGrantAction: "Grant scan cadence",
     drawerSelectedNotice: "Added to your selection",
 
-    // --- Localize (step 2) --------------------------------------------------
+    // --- Draft (step 2) --------------------------------------------------
     reviewed: "Reviewed",
     posterTitle: "Poster editor",
     posterBackground: "Background colour",

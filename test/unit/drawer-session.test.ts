@@ -1139,7 +1139,7 @@ describe("the image brief on the Instructions tab", () => {
     }]]);
   });
 
-  it("announces the localized refusal when the server reports reference_unavailable", async () => {
+  it("announces the translated refusal when the server reports reference_unavailable", async () => {
     const r = rig();
     r.responses.requestGeneration = [{ ok: false, code: "reference_unavailable", message: "raw server wording" }];
     await r.open({ id: "b", itemId: "a" });

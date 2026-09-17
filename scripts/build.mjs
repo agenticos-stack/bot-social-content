@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { writeBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { validateGadgetDefinition } from "@agenticos-dev/bot-contract";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { buildClient } from "./client.mjs";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
@@ -62,7 +62,7 @@ export function assertPackedImports(files) {
 export async function buildPackage({ outputDir = new URL("dist/", packageRoot), maxBytes } = {}) {
   const manifestText = await readFile(new URL("manifest.json", packageRoot), "utf8");
   const manifest = JSON.parse(manifestText);
-  const checked = validateGadgetDefinition(SOCIAL_LOCALIZATION_DEFINITION);
+  const checked = validateGadgetDefinition(SOCIAL_CONTENT_DEFINITION);
   if (!checked.ok || checked.definition?.key !== manifest.blueprintKey) throw new Error("Package definition is invalid or conflicts with the manifest key.");
   if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) throw new Error("maxBytes must be a positive integer.");
   assertStorageSchemaDeclaration(manifest);

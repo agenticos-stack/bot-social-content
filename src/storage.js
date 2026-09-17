@@ -1,4 +1,4 @@
-// Social Localization blueprint — the storage adapter (REQ-031, CON-009).
+// Social Content blueprint — the storage adapter (REQ-031, CON-009).
 //
 // The single seam onto `ctx.storage.sql`. `server.js` never touches
 // `this.ctx.storage` directly; every read and write goes through a `Storage`
@@ -105,13 +105,13 @@ const MIGRATIONS = {
       status TEXT NOT NULL
     )`);
 
-    // REQ-017: only one ACTIVE localization per `(sourceItem,
+    // REQ-017: only one ACTIVE draft per `(sourceItem,
     // destinationBinding)` pair. A row covers a SET of destinations, so the
     // pair test is an overlap between this row's `destination_bindings_json`
     // and the destinations a new batch asks for — see `activeBatchItemsFor`.
     // Keying on the source item alone would refuse a second destination the
     // owner is entitled to add, and reparenting instead of refusing would
-    // move an approved localization under a batch nobody reviewed it in. A
+    // move an approved draft under a batch nobody reviewed it in. A
     // superseded row (the owner explicitly created a new version) sets
     // active = 0.
     sql.exec(`CREATE TABLE IF NOT EXISTS batch_items (
@@ -614,7 +614,7 @@ export class Storage {
     this.ctx.storage.transactionSync(() => {
       for (let version = current + 1; version <= CURRENT_SCHEMA_VERSION; version += 1) {
         const migration = MIGRATIONS[version];
-        if (!migration) throw new Error(`social-localization: no migration registered for schema version ${version}`);
+        if (!migration) throw new Error(`social-content: no migration registered for schema version ${version}`);
         migration(this.sql);
         this.sql.exec(
           "INSERT INTO schema_version (id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version",
@@ -816,7 +816,7 @@ export class Storage {
    *
    * A destination whose door reported no limit contributes nothing — it is
    * unknown, not unlimited and not zero (GUD-003). When none of them reported
-   * one, `captionMax` is null and `validateLocalization` skips the check
+   * one, `captionMax` is null and `validateDraft` skips the check
    * rather than inventing a bound.
    */
   limitsForDestinations(bindings) {
@@ -1660,7 +1660,7 @@ export class Storage {
    * PLURAL, and the caller intersects `destinationBindings`, because the pair
    * the requirement names is `(sourceItem, destinationBinding)` — not the
    * source item on its own. One item legitimately holds several active rows
-   * once an owner localizes it for one destination today and a different one
+   * once an owner drafts it for one destination today and a different one
    * next week, and only a row that OVERLAPS the destinations being asked for
    * is the duplicate the requirement rejects.
    */
@@ -1672,7 +1672,7 @@ export class Storage {
 
   /**
    * Retires a batch item: the owner explicitly created a new version, so this
-   * row stops being the active localization of its pair (REQ-017). The row
+   * row stops being the active draft of its pair (REQ-017). The row
    * itself is kept — its revisions and approval history are
    * the audit trail of what was published before.
    */
@@ -1771,7 +1771,7 @@ export class Storage {
 
   /**
    * REQ-017's pair rule at submit: every publication claiming
-   * (sourceItem, destinationBinding) across every ACTIVE localization of the
+   * (sourceItem, destinationBinding) across every ACTIVE draft of the
    * item — `bound` included, because a recorded claim is still a claim, and
    * the owner transfers it only by the explicit `createNewVersion` opt-in.
    * `superseded`/`failed` rows block nothing.
@@ -1792,7 +1792,7 @@ export class Storage {
   /**
    * Was this item ever actually SENT anywhere? `bound` rows are recorded
    * defaults, not sends — the item-key duplicate rule ("one active
-   * localization per post while it is still drafting") applies only until a
+   * draft per post while it is still drafting") applies only until a
    * filing exists.
    */
   hasFiledPublication(batchItemId) {

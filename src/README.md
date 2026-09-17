@@ -19,12 +19,12 @@ imports between these files resolved by the runtime itself.
 
 | File | What it is |
 | --- | --- |
-| `client.js` | The sandboxed UI — collection, preview drawer, localization editor, poster editor, review state. Bundled from `src/client/*` (not shipped; see the client PR). |
+| `client.js` | The sandboxed UI — collection, preview drawer, draft editor, poster editor, review state. Bundled from `src/client/*` (not shipped; see the client PR). |
 | `server.js` | The facet class: storage schema and migrations, the scan hook, and every method the client and the agent call. |
 | `storage.js` | The SQLite adapter `server.js` uses for all persistence — the one place table names and columns are named. |
 | `config.js` | Instance configuration: cadence, timezone, rights policy, notification policy, protected-literal lists. |
 | `doors.js` | Every door call in one place — a contract change on a door touches this file, not every method that happens to use it. |
-| `model.js` | Pure functions with no I/O: per-provider normalization, content hashing, localization validation, poster layout validation. Unit-testable outside the runtime. |
+| `model.js` | Pure functions with no I/O: per-provider normalization, content hashing, draft validation, poster layout validation. Unit-testable outside the runtime. |
 | `agent.md` | Working instructions for the agent that drafts and edits captions here. |
 | `README.md` | This file. |
 
@@ -66,7 +66,7 @@ Granted by the owner during setup, never assumed:
   authorized accounts this instance watches (Instagram Business/Creator,
   Facebook Pages).
 - **Connector, destination role** (1 to 20 bindings) — the channels a
-  localized post can be published to.
+  drafted post can be published to.
 - **Social** — the Social Hub door: creates a draft with its origin
   reference, and (from the owner's own action in the UI) submits a version
   for review.
