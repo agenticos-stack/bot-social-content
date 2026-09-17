@@ -27,7 +27,7 @@
   "devDependencies": {
     "@agenticos-dev/bot-archive-tools": "0.1.0",
     "@agenticos-dev/bot-sdk": "0.1.0",
-    "@agenticos-dev/bot-shell": "0.1.0",
+    "@agenticos-dev/bot-shell": "0.2.1",
     "@fontsource-variable/geist": "5.2.9",
     "@fontsource-variable/plus-jakarta-sans": "5.2.8",
     "capnweb": "0.12.0",
