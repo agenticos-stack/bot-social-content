@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: agenticos-stack/agenticos-bot-sdk
-          ref: 9f03e629faf48d08a5d725878302a7e16e10191c
+          ref: ae1742ee04b3a795ca87a535e948c0d821ffd803
           path: bot-sdk
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
