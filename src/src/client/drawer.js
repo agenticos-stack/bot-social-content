@@ -307,7 +307,7 @@ export function renderOutputPanel(locale, item, ctx) {
       });
     } else if (generated) {
       frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, labelKey === "drawerImageAccepted" ? "drawerImageArriving" : "drawerCandidatePending")));
-    } else {
+    } else if (!String(extraClass).includes("sl-output-frame-skel")) {
       frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageNone")));
     }
     if (String(extraClass).includes("sl-output-frame-skel")) {
@@ -325,21 +325,25 @@ export function renderOutputPanel(locale, item, ctx) {
   };
 
   // The accepted image — what publish files. Never the reference photo.
-  // Generating overlays this same frame. A ready candidate still sits beside
-  // it. With nothing accepted and no ready candidate there is nothing to
-  // frame: a compact note keeps the next action visible instead of an
-  // enormous empty region (including while a first image is still requested).
-  const acceptedSkel = accepted && imageBusy ? " sl-output-frame-skel" : "";
-  const acceptedBlock = !accepted && !showCandidate
+  // Generating overlays this same frame, including an empty first slot.
+  // A ready candidate still sits beside it. Idle or never-submitted stays
+  // a compact note so the next action stays visible.
+  const unsubmitted = ctx.unsubmitted === true;
+  const liveOverlay = imageBusy && unsubmitted !== true;
+  const compactEmpty = !accepted && !showCandidate && !liveOverlay;
+  const acceptedSkel = accepted && liveOverlay ? " sl-output-frame-skel" : "";
+  const acceptedBlock = compactEmpty
     ? el("p", { class: "sl-field-note sl-output-empty", role: "status" }, t(locale, "drawerImageNone"))
     : el("div", { class: "sl-output-accepted" }, [
-    el("div", { class: "sl-output-label" }, [
-      el("strong", null, t(locale, "drawerImageAccepted")),
-      staged ? el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag")) : null
-    ]),
+    accepted || showCandidate
+      ? el("div", { class: "sl-output-label" }, [
+          el("strong", null, t(locale, "drawerImageAccepted")),
+          staged ? el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag")) : null
+        ])
+      : null,
     accepted
       ? figure(accepted, "drawerImageAccepted", `sl-output-frame-accepted${acceptedSkel}`)
-      : figure(null, "drawerImageAccepted", "sl-output-frame-empty"),
+      : figure(null, "drawerImageAccepted", liveOverlay ? "sl-output-frame-skel" : "sl-output-frame-empty"),
     facts(accepted),
     // The server cannot vouch for which image this revision accepted: say so
     // and let the owner accept it again explicitly (a new revision).
@@ -378,12 +382,12 @@ export function renderOutputPanel(locale, item, ctx) {
     : null;
 
   // A part the platform confirmed was never submitted is not "waiting for the
-  // agent": the footer says saved-but-not-submitted, and these lines agree
+  // agent": the footer says saved-but-not-submitted, and this line agrees
   // with it rather than implying a queue this request cannot establish.
-  const unsubmitted = ctx.unsubmitted === true;
+  // In-flight generation is the overlay, not a second homework line.
   const imageStatusLine =
-    imgState === "requested"
-      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, unsubmitted ? "drawerRequestNotSubmitted" : "drawerImageRequested"))
+    imgState === "requested" && unsubmitted
+      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
       : null;
 
   // One request at a time per post: while a part is outstanding, the OTHER
@@ -412,8 +416,7 @@ export function renderOutputPanel(locale, item, ctx) {
         disabled: ctx.saving,
         title: note,
         onclick: () => ctx.onRequestPart?.(part)
-      }, t(locale, labelKey)),
-      el("span", { class: "sl-field-note" }, note)
+      }, t(locale, labelKey))
     ]);
   };
 
@@ -487,8 +490,8 @@ export function renderOutputPanel(locale, item, ctx) {
   }
   const captionSection = el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-output-caption-title" }, [
     el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
-    capState === "requested"
-      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, unsubmitted ? "drawerRequestNotSubmitted" : ((item.revision ?? 0) > 0 ? "drawerCaptionRequestedKeep" : "drawerCaptionRequested")))
+    capState === "requested" && unsubmitted
+      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
       : null,
     ...captionBody,
     partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested")

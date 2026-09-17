@@ -94,16 +94,34 @@ describe("Output section", () => {
     expect(imageState(post({ generatedCandidate: { id: "gm_b", ready: false } }) as never)).toBe("generating");
   });
 
-  it("keeps the empty image region compact while a first image is requested", () => {
+  it("overlays generating on the empty slot instead of a compact note", () => {
     const view = output(post({
       generatedImage: null,
       acceptedVisualMode: null,
       generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
     }));
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-empty"))).toHaveLength(0);
+    const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
+    expect(frames.some((e) => String(e.className).includes("sl-output-frame-skel"))).toBe(true);
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
+    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
+    expect(view.loads).toEqual([]);
+  });
+
+  it("keeps the idle empty image region compact", () => {
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: null }));
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
     expect(view.root.textContent).toContain("No generated image yet.");
-    expect(view.loads).toEqual([]);
+  });
+
+  it("does not overlay when the request was never submitted", () => {
+    const view = output(post({
+      generatedImage: null,
+      acceptedVisualMode: null,
+      generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
+    }), { unsubmitted: true });
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
   });
 
   it("rewrites the caption in the same field", () => {
@@ -115,26 +133,29 @@ describe("Output section", () => {
 
   it("offers Regenerate image and Rewrite caption separately, each naming what it keeps", async () => {
     const view = output(post());
-    expect(view.root.textContent).toContain("Keeps the caption as it is.");
-    expect(view.root.textContent).toContain("Keeps the accepted image.");
-    await buttonNamed(view.root, "Regenerate image")!.dispatchEvent({ type: "click" });
-    await buttonNamed(view.root, "Rewrite caption")!.dispatchEvent({ type: "click" });
+    const image = buttonNamed(view.root, "Regenerate image")!;
+    const caption = buttonNamed(view.root, "Rewrite caption")!;
+    expect(image.getAttribute("title")).toContain("Keeps the caption as it is.");
+    expect(caption.getAttribute("title")).toContain("Keeps the accepted image.");
+    expect(view.root.textContent).not.toContain("Keeps the caption as it is.");
+    expect(view.root.textContent).not.toContain("Keeps the accepted image.");
+    await image.dispatchEvent({ type: "click" });
+    await caption.dispatchEvent({ type: "click" });
     expect(view.parts).toEqual(["image", "caption"]);
   });
 
   it("marks only the requested part as waiting, and neither button replaces it silently", () => {
     const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }));
-    expect(view.root.textContent).toContain("New image requested — waiting for the agent.");
-    // Both stay pressable: pressing asks before replacing the pending request
-    // (a new post starts with one), and each says what is pending.
+    expect(view.root.textContent).not.toContain("waiting for the agent");
+    expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
     const image = buttonNamed(view.root, "Regenerate image")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(image.disabled).toBe(false);
     expect(image.getAttribute("data-requested")).toBe("true");
+    expect(image.getAttribute("title")).toContain("Already requested");
     expect(caption.disabled).toBe(false);
     expect(caption.getAttribute("data-pending")).toBe("image");
-    expect(view.root.textContent).toContain("An image request is still pending for this post.");
-    // The accepted image is still drawn while the new one is requested.
+    expect(caption.getAttribute("title")).toContain("image request is still pending");
     expect(view.loads).toEqual(["gm_a"]);
   });
 
