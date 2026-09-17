@@ -14,7 +14,7 @@
 // Destinations can be chosen after drafting, so the need is computed from the
 // Review picker's current choice, not from the item's bindings at drawer open.
 
-const JPEG_ONLY_PROVIDERS = new Set(["instagram"]);
+export const JPEG_ONLY_PROVIDERS = new Set(["instagram"]);
 
 /** True when this post files a PNG generated image to at least one chosen JPEG-only destination. */
 export function needsJpegCopy(item, { bindings = [], destinations = [], visualMode } = {}) {

@@ -57,7 +57,16 @@ async function type(field: any, value: string) {
 const caption = (r: AnyRec) => byId(r.dialog(), "sl-drawer-caption-input");
 const alt = (r: AnyRec) => byId(r.dialog(), "sl-drawer-alt-text");
 const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraft"));
-const PUBLISH = t("en", "drawerPublishPost");
+// The primary names what it files: the picked destination subset.
+const PUBLISH = t("en", "drawerPublishToOne", { who: "FB_MAIN" });
+/** The ＋ menu's Generate row — a bare press sends the staged brief. */
+async function startGenerate(r: AnyRec) {
+  await click(r.dialog(), "＋");
+  const item = buttons(r.dialog()).find((b) => String(b.textContent ?? "").startsWith(t("en", "drawerAddGenerate")));
+  const done = item.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+  return { done };
+}
 
 function ready(overrides: AnyRec = {}) {
   return post("a", {
@@ -368,7 +377,7 @@ describe("F01: Save instructions and generate", () => {
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-image"), "Image A");
     await click(r.dialog(), t("en", "drawerTabOutput"));
-    const { done } = await start_(r.dialog(), t("en", "drawerRegenerateImage"));
+    const { done } = await startGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-image"), "Image B");

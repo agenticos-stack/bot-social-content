@@ -113,6 +113,28 @@ both. Do only the parts that are `true`:
   register or accept a different image; a correlated save that changes the
   accepted visual is refused the same way. The accepted image stays.
 
+A regeneration is a conversation, not a blind retry. When the owner asks for
+a new image against an existing one, the mark can carry two extra fields
+describing what that run asked for:
+
+- `generation.imageBrief` — `{ aspectRatio, references? }`. `aspectRatio` is
+  always present on marks written after the brief existed and is the ratio
+  the owner picked; produce the image at that ratio. `references` PRESENT —
+  even as an empty array — means the owner asked for the post's own image to
+  be the basis: call the edit path (`workspace.editImage`) with those
+  reference images, never a fresh text-to-image. `references` ABSENT means a
+  plain generate (`workspace.generateImage`) — do not feed the source photo
+  in on your own initiative.
+- `generation.runInstructions` — the one-off correction the owner named for
+  this run ("Too dark", "Bottle is cut off"). It wins over every other
+  instruction layer for this generation only: apply it on top of the
+  effective image instruction, then let it go — it is not the post's saved
+  override and the next run does not inherit it. `instructionSources` names
+  which layer each snapshot came from when you need to explain what applied.
+
+If a regeneration mark has neither field, the request predates the brief —
+treat it as the layered instructions alone and still honor `needs`.
+
 If you ever ARE handed a structured brief, it looks like this:
 
 ```

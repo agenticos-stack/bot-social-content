@@ -139,9 +139,31 @@ function findButton(root: unknown, label: string) {
   if (!found) throw new Error(`Missing button "${label}" in: ${labels(root).join(" | ")}`);
   return found;
 }
+/** A menu row's textContent is its lead + sub; match on the lead. */
+const menuButton = (root: unknown, lead: string) =>
+  buttons(root).find((b) => String(b.textContent ?? "").startsWith(lead));
 async function click(root: unknown, label: string) {
   await findButton(root, label).dispatchEvent({ type: "click" });
   await flushAsyncWork();
+}
+/**
+ * The regenerate conversation end to end: hover Regenerate, name the
+ * correction (a chip), press Generate. Returns the dispatch promise, which
+ * stays pending while a decision dialog waits inside the request.
+ */
+async function startRegen(r: AnyRec, chip = "drawerRegenC1") {
+  await click(r.dialog(), t("en", "drawerHoverRegen"));
+  await click(r.dialog(), t("en", chip));
+  return press(r.dialog(), t("en", "drawerRegenGo"));
+}
+/** The ＋ menu's Generate row: a bare press sends the staged brief, no run layer. */
+async function pressGenerate(r: AnyRec) {
+  await click(r.dialog(), "＋");
+  const item = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
+  if (!item) throw new Error("Generate menu item missing");
+  const done = item.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+  return done;
 }
 /** Presses a button whose handler waits on a decision dialog; returns its settled promise. */
 async function press(root: unknown, label: string) {
@@ -314,12 +336,11 @@ async function editImageInstructions(r: AnyRec, value: string) {
 }
 
 describe("U2: unsaved instructions are decided before a request", () => {
-  it("asks before Regenerate image uses stale instructions, and sends nothing yet", async () => {
+  it("asks before Generate uses stale instructions, and sends nothing yet", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    void press(r.dialog(), t("en", "drawerRegenerateImage"));
-    await flushAsyncWork();
+    const done = await pressGenerate(r);
     expect(labels(r.scope.leaveDialog)).toEqual(["Cancel", "Generate with saved instructions", "Save instructions and generate"]);
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.instructionWrites).toHaveLength(0);
@@ -329,7 +350,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
     await flushAsyncWork();
@@ -344,9 +365,10 @@ describe("U2: unsaved instructions are decided before a request", () => {
     r.responses.saveInstructionOverrides = { ok: false, code: "invalid_argument", message: "Instructions are too long." };
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.announced).toContain("Instructions are too long.");
     await click(r.dialog(), t("en", "drawerTabInstructions"));
@@ -357,9 +379,10 @@ describe("U2: unsaved instructions are decided before a request", () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Cancel");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(findButton(r.dialog(), t("en", "drawerSaveDraft")).disabled).toBe(false);
@@ -369,9 +392,10 @@ describe("U2: unsaved instructions are decided before a request", () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Generate with saved instructions");
     await done;
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
     await click(r.dialog(), t("en", "drawerTabInstructions"));
@@ -385,9 +409,10 @@ describe("U2: unsaved instructions are decided before a request", () => {
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
     await click(r.dialog(), t("en", "drawerTabOutput"));
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Morning light, outdoors" }]);
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     expect(byId(r.dialog(), "sl-instructions-caption").value).toBe("Warmer tone");
@@ -399,7 +424,8 @@ describe("U2: unsaved instructions are decided before a request", () => {
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
     await click(r.dialog(), t("en", "drawerTabOutput"));
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
   });
 });
@@ -412,14 +438,17 @@ describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
     const r = rig({ items: [post("a", { generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    expect(findButton(r.dialog(), t("en", "drawerRegenerateImage")).getAttribute("title")).toContain(
-      "A caption request is still pending for this post."
-    );
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    await click(r.dialog(), "＋");
+    const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
+    // The pending honesty moved to the menu row: it names the other part.
+    expect(generate.getAttribute("title")).toContain("A caption request is still pending for this post.");
+    const done = generate.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
     expect(labels(r.scope.leaveDialog)).toContain("Replace the pending caption request");
     expect(r.calls.requests).toHaveLength(0);
     await click(r.scope.leaveDialog, "Replace the pending caption request");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
   });
 
@@ -435,11 +464,15 @@ describe("one outstanding request per post", () => {
   it("a new post's initial request (both parts) is replaced only explicitly", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    const regenerate = findButton(r.dialog(), t("en", "drawerRegenerateImage"));
-    expect(regenerate.disabled).toBe(false);
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    await click(r.dialog(), "＋");
+    const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
+    // The outstanding ask marks the row but never disables it — the press still asks first.
+    expect(generate.disabled).not.toBe(true);
+    const done = generate.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
     await click(r.scope.leaveDialog, "Replace the pending image request");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
   });
 
@@ -956,17 +989,20 @@ describe("R4: a stream reconnect reconciles missed updates", () => {
 // The image brief — what a Generate press asks for
 // ---------------------------------------------------------------------------
 
-const briefBlock = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brief"))[0] as any;
+// The brief lives on the Instructions tab — the settings a Generate ask is
+// made under, beside the instructions it amends.
+const briefBlock = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brieftab"))[0] as any;
 const briefSwitch = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-switch"))[0] as any;
 const briefOnceArea = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brief-once"))[0] as any;
 const briefSave = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-save"))[0] as any;
 
-describe("the image brief under Generate", () => {
-  it("renders the settings block only while Generate is the picked source, and warns when no reference exists", async () => {
+describe("the image brief on the Instructions tab", () => {
+  it("carries the generation settings, and warns when no usable reference exists", async () => {
     // The fixture's media entries carry ids but no fetchable https URL — the
     // same reading the server makes, so the warning must show.
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     const block = briefBlock(r.dialog());
     expect(block).toBeTruthy();
     expect(findAll(block, (e: any) => e.classList?.contains("sl-brief-warn"))).toHaveLength(1);
@@ -976,43 +1012,51 @@ describe("the image brief under Generate", () => {
   it("sends references:none when the owner switches the source image off", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     briefSwitch(r.dialog()).checked = false;
     await briefSwitch(r.dialog()).dispatchEvent({ type: "change" });
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    await pressGenerate(r);
     await flushAsyncWork();
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "none", aspectRatio: "4:5" } }]]);
   });
 
   it("sends the picked ratio and an unsaved one-off as the run layer, then clears it", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     await click(r.dialog(), t("en", "drawerRatioStory"));
     await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
     const area = briefOnceArea(r.dialog());
     area.value = "Bottle facing the camera";
     await area.dispatchEvent({ type: "input" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(r.calls.requests).toEqual([["b", ["a"], {
       needs: { image: true },
       image: { references: "source", aspectRatio: "9:16" },
       instructions: { image: "Bottle facing the camera" }
     }]]);
-    await flushAsyncWork();
     // The consumed one-off does not silently ride the next ask.
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     expect(briefOnceArea(r.dialog())?.value ?? "").toBe("");
   });
 
   it("saves the one-off as the post instruction first when the box is checked", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
     const area = briefOnceArea(r.dialog());
     area.value = "Bottle facing the camera";
     await area.dispatchEvent({ type: "input" });
     briefSave(r.dialog()).checked = true;
     await briefSave(r.dialog()).dispatchEvent({ type: "change" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     // The instruction write precedes the request, and the request carries no
     // run layer — what was saved is what runs.
     expect(r.calls.sequence.slice(0, 2)).toEqual(["instructions", "request"]);
@@ -1023,11 +1067,26 @@ describe("the image brief under Generate", () => {
     }]]);
   });
 
+  it("sends the regenerate conversation's correction as the run layer", async () => {
+    const r = rig();
+    await r.open({ id: "b", itemId: "a" });
+    const done = await startRegen(r); // "Too dark" chip, then Generate
+    await done;
+    await flushAsyncWork();
+    expect(r.calls.instructionWrites).toHaveLength(0);
+    expect(r.calls.requests).toEqual([["b", ["a"], {
+      needs: { image: true },
+      image: { references: "source", aspectRatio: "4:5" },
+      instructions: { image: "Too dark" }
+    }]]);
+  });
+
   it("announces the localized refusal when the server reports reference_unavailable", async () => {
     const r = rig();
     r.responses.requestGeneration = [{ ok: false, code: "reference_unavailable", message: "raw server wording" }];
     await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     expect(r.calls.announced).toContain(t("en", "drawerRefUnavailable"));
     expect(r.calls.announced).not.toContain("raw server wording");
   });

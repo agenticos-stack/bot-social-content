@@ -4,16 +4,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { findAll, installMinimalDom } from "./_helpers/minimal-dom";
 import {
+  destinationBlock,
   dirtyParts,
   footerState,
   imageState,
   instructionPatchFor,
   publicationHint,
+  recordedBindings,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
-  renderPublicationControls,
+  renderPublishControls,
   renderReferencePanel,
   revisionEntryFor
 } from "../../src/src/client/drawer.js";
@@ -65,15 +67,18 @@ function output(item: Record<string, unknown>, extra: Record<string, unknown> = 
 }
 
 function pubsHost(locale: string, item: Record<string, unknown>, extra: Record<string, unknown> = {}) {
-  const patches: Record<string, unknown>[] = [];
+  const toggled: string[] = [];
+  const scheduled: Array<string | null> = [];
   const host = document.createElement("div");
-  for (const node of renderPublicationControls(locale, item as never, {
+  for (const node of renderPublishControls(locale, item as never, {
     editable: true,
     buffers: {},
-    onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch),
+    destinationLabel: (binding: string) => binding,
+    onToggleDestination: (binding: string) => toggled.push(binding),
+    onScheduleChange: (value: string | null) => scheduled.push(value),
     ...extra
   } as never)) host.appendChild(node);
-  return { root: host, patches };
+  return { root: host, toggled, scheduled };
 }
 
 describe("Output section", () => {
@@ -82,9 +87,10 @@ describe("Output section", () => {
     const view = output(item);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-accepted"))).toHaveLength(1);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-candidate"))).toHaveLength(1);
+    // Accepted first, candidate beside it — the strip order is the load order.
     expect(view.loads).toEqual(["gm_a", "gm_b"]);
-    expect(view.root.textContent).toContain("Accepted image");
-    expect(view.root.textContent).toContain("New image ready");
+    expect(view.root.textContent).toContain("Cover");
+    expect(view.root.textContent).toContain("New image");
 
     await buttonNamed(view.root, "Use this image")!.dispatchEvent({ type: "click" });
     expect(view.staged).toEqual(["gm_b"]);
@@ -95,6 +101,25 @@ describe("Output section", () => {
       acceptedVisualMode: "ai_refinement",
       acceptedGeneratedMediaId: "gm_b"
     });
+  });
+
+  it("renders the accepted image as slot 1 named cover, with per-picture hover actions", () => {
+    const view = output(post());
+    const slots = all(view.root, (e) => {
+      const cls = String(e.className).split(" ");
+      return cls.includes("sl-slot") && !cls.includes("sl-slot-candidate");
+    });
+    expect(slots).toHaveLength(1);
+    expect(view.root.textContent).toContain("Cover");
+    // The picture's own actions: regenerate, remove, view — never a blind retry.
+    const hover = all(view.root, (e) => String(e.className).includes("sl-hover-btn"));
+    expect(hover.map((b) => String(b.textContent))).toEqual(["Regenerate", "Remove", "View"]);
+  });
+
+  it("the strip still renders one slot when only a legacy visual exists", () => {
+    const view = output(post({ generatedImage: null, acceptedVisualMode: "keep_original" }));
+    expect(view.root.textContent).toContain("source media");
+    expect(all(view.root, (e) => String(e.className).includes("sl-hover-btn")).length).toBeGreaterThan(0);
   });
 
   it("overlays generating on the accepted image instead of a second empty frame", () => {
@@ -145,28 +170,48 @@ describe("Output section", () => {
     expect(String(textarea.className)).toContain("sl-skel");
   });
 
-  it("lays out a compact thumbnail beside the caption and keeps publish controls in the foot", () => {
+  it("renders the strip beside the caption and keeps publish controls in the foot", () => {
     const item = post({ destinationBindings: ["FB_MAIN"] });
     const view = output(item);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-compose"))).toHaveLength(1);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-thumb")).length).toBeGreaterThan(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-strip"))).toHaveLength(1);
+    expect(all(view.root, (e) => String(e.className).includes("sl-slot")).length).toBeGreaterThan(0);
+    // No timing radios anywhere — the intent is which button was pressed.
     expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(0);
     const pubs = pubsHost("en", item);
-    expect(all(pubs.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
+    expect(all(pubs.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(0);
+    expect(pubs.root.textContent).toContain("Publishes to");
   });
 
-  it("offers Generate, Upload and Use reference as the image sources", async () => {
+  it("the add-image menu offers Generate, Upload and the post's own picture", async () => {
     const adopted: string[] = [];
+    const uploaded: string[] = [];
     const view = output(post(), {
-      onAdoptReference: () => adopted.push("reference")
+      imageRefsAvailable: true,
+      strip: {
+        menuOpen: true,
+        onMenuGenerate: () => view.parts.push("image"),
+        onMenuAdoptSource: () => adopted.push("reference"),
+        onMenuUpload: () => uploaded.push("upload")
+      }
     });
-    expect(buttonNamed(view.root, "Generate")).toBeTruthy();
-    expect(buttonNamed(view.root, "Upload")).toBeTruthy();
-    expect(buttonNamed(view.root, "Use reference")).toBeTruthy();
-    await buttonNamed(view.root, "Generate")!.dispatchEvent({ type: "click" });
+    const generate = buttonNamed(view.root, "Generate a new image")!;
+    expect(generate).toBeTruthy();
+    // The row says the resolved brief it would run under.
+    expect(generate.textContent).toContain("4:5");
+    await generate.dispatchEvent({ type: "click" });
     expect(view.parts).toEqual(["image"]);
-    await buttonNamed(view.root, "Use reference")!.dispatchEvent({ type: "click" });
+    await buttonNamed(view.root, "Upload an image")!.dispatchEvent({ type: "click" });
+    expect(uploaded).toEqual(["upload"]);
+    await buttonNamed(view.root, "Use the post's own picture")!.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
+  });
+
+  it("says so when the post has no usable picture to adopt", () => {
+    const view = output(post(), { imageRefsAvailable: false, strip: { menuOpen: true } });
+    const adopt = buttonNamed(view.root, "Use the post's own picture")!;
+    expect(adopt).toBeTruthy();
+    expect(adopt.disabled).toBe(true);
+    expect(adopt.textContent).toContain("no usable picture");
   });
 
   it("shows the chosen upload and adopting it calls onAdoptUpload", async () => {
@@ -189,24 +234,21 @@ describe("Output section", () => {
     });
   });
 
-  it("offers Regenerate image and Rewrite caption separately, each naming what it keeps", async () => {
-    const view = output(post());
-    const image = buttonNamed(view.root, "Generate")!;
+  it("offers image generation through the menu and Rewrite caption inline, each honest about what it keeps", async () => {
+    const view = output(post(), { strip: { menuOpen: true, onMenuGenerate: () => view.parts.push("image") } });
+    const image = buttonNamed(view.root, "Generate a new image")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
-    expect(image.getAttribute("title")).toContain("Keeps the caption as it is.");
     expect(caption.getAttribute("title")).toContain("Keeps the accepted image.");
-    expect(view.root.textContent).not.toContain("Keeps the caption as it is.");
-    expect(view.root.textContent).not.toContain("Keeps the accepted image.");
     await image.dispatchEvent({ type: "click" });
     await caption.dispatchEvent({ type: "click" });
     expect(view.parts).toEqual(["image", "caption"]);
   });
 
-  it("marks only the requested part as waiting, and neither button replaces it silently", () => {
-    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }));
+  it("marks only the requested part as waiting, and neither control replaces it silently", () => {
+    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }), { strip: { menuOpen: true } });
     expect(view.root.textContent).not.toContain("waiting for the agent");
     expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
-    const image = buttonNamed(view.root, "Generate")!;
+    const image = buttonNamed(view.root, "Generate a new image")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(image.disabled).toBe(false);
     expect(image.getAttribute("data-requested")).toBe("true");
@@ -217,6 +259,29 @@ describe("Output section", () => {
     expect(view.loads).toEqual(["gm_a"]);
   });
 
+  it("regenerate is a conversation: name the change, see plan and price, then generate once", async () => {
+    const submits: number[] = [];
+    const regen = { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: true, sent: false };
+    const view = output(post(), {
+      imageBrief: { useSource: true, ratio: "4:5", oneOff: "", saveOneOff: false },
+      strip: { regen, onRegenSubmit: () => submits.push(1), onRegenChip: () => {}, onRegenCancel: () => {} }
+    });
+    expect(view.root.textContent).toContain("What should change about image 1?");
+    // The plan restates the named correction, the ratio and the spend.
+    expect(view.root.textContent).toContain("Image 1 · Too dark · 4:5");
+    expect(view.root.textContent).toContain("One generation");
+    await buttonNamed(view.root, "Generate")!.dispatchEvent({ type: "click" });
+    expect(submits).toEqual([1]);
+    // Chips not yet pressed → nothing is filed; the ask stands alone.
+    const empty = output(post(), { strip: { regen: { slot: 1, notes: [], other: "", otherOpen: false, sent: false } } });
+    expect(empty.root.textContent).toContain("Name one thing to change before generating.");
+    expect(buttonNamed(empty.root, "Generate")).toBeUndefined();
+    // A sent request reads as running — never a second submit.
+    const sent = output(post(), { strip: { regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: true } } });
+    expect(sent.root.textContent).toContain("Generating image 1.");
+    expect(buttonNamed(sent.root, "Generate")).toBeUndefined();
+  });
+
   it("has no visual-mode radios: no text poster, no source photo as output", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: null }));
     const visual = all(view.root, (e) => e.tagName === "INPUT" && String(e.getAttribute("name") ?? "").includes("visual"));
@@ -225,31 +290,60 @@ describe("Output section", () => {
     expect(view.loads).toEqual([]);
   });
 
-  it("offers keep as draft, publish now, and schedule in the foot", async () => {
-    const view = pubsHost("en", post({ destinationBindings: ["FB_MAIN"] }), {
-      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding)
-    });
-    const radios = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode");
-    expect(radios).toHaveLength(3);
-    expect(view.root.textContent).toContain("Keep as draft");
-    expect(view.root.textContent).toContain("Publish now");
-    expect(view.root.textContent).toContain("Schedule");
+  it("the foot's publish row is a destination multi-select — what is picked is what files", async () => {
+    const destinations = [
+      { binding: "FB_MAIN", label: "Facebook Main", provider: "facebook", providerLabel: "Facebook", granted: true },
+      { binding: "IG_MAIN", label: "Instagram Main", provider: "instagram", providerLabel: "Instagram", granted: true },
+      { binding: "IG_OLD", label: "Instagram Old", provider: "instagram", providerLabel: "Instagram", granted: false }
+    ];
+    const view = pubsHost("en", post({ destinationBindings: ["FB_MAIN"] }), { destinations, picked: ["FB_MAIN", "IG_MAIN"], menuOpen: true });
+    expect(view.root.textContent).toContain("Publishes to");
     expect(view.root.textContent).toContain("Facebook Main");
+    const boxes = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("type") === "checkbox");
+    expect(boxes).toHaveLength(3);
+    // A revoked grant stays visible but cannot be picked, and says why.
+    const revoked = all(view.root, (e) => String(e.textContent).includes("access revoked"));
+    expect(revoked.length).toBeGreaterThan(0);
+    await boxes[1].dispatchEvent({ type: "change" });
+    expect(view.toggled).toEqual(["IG_MAIN"]);
     expect(view.root.textContent).not.toContain("please approve");
     expect(view.root.textContent).not.toContain("Awaiting approval");
-    await radios[1].dispatchEvent({ type: "change" });
-    expect(view.patches[0]).toMatchObject({ publishMode: "publish_now" });
+  });
+
+  it("a recorded binding no destination row describes stays pickable", () => {
+    const item = post({ destinationBindings: ["LEGACY_ACC"] });
+    const view = pubsHost("en", item, { destinations: [], menuOpen: true });
+    expect(view.root.textContent).toContain("LEGACY_ACC");
+    const box = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("type") === "checkbox")[0];
+    expect(box.disabled).toBe(false);
+  });
+
+  it("Schedule… arms the field; a chosen time becomes the schedule intent", async () => {
+    const view = pubsHost("en", post({ destinationBindings: ["FB_MAIN"] }), { picking: true });
+    const when = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("type") === "datetime-local")[0] as Node & { value: string };
+    expect(when).toBeTruthy();
+    when.value = "2026-09-18T11:00";
+    await when.dispatchEvent({ type: "change" });
+    expect(view.scheduled).toEqual(["2026-09-18T11:00"]);
+    expect(publicationHint("en", { scheduledAt: "2026-09-18T11:00" })).toContain("Schedules on confirm");
+    expect(publicationHint("en", {})).toContain("Publishes the accepted image");
   });
 
   it("renders the zh-HK labels", () => {
-    const root = renderOutputPanel("zh-HK", post() as never, { editable: true, buffers: {} } as never);
-    expect(root.textContent).toContain("生成");
-    expect(root.textContent).toContain("上載");
-    expect(root.textContent).toContain("採用來源");
+    const root = renderOutputPanel("zh-HK", post() as never, {
+      editable: true,
+      buffers: {},
+      strip: { menuOpen: true, regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: false } }
+    } as never);
+    expect(root.textContent).toContain("封面");
+    expect(root.textContent).toContain("重新生成");
+    expect(root.textContent).toContain("生成新圖片");
+    expect(root.textContent).toContain("採用原帖圖片");
     expect(root.textContent).toContain("重新撰寫文案");
-    const pubs = pubsHost("zh-HK", post());
-    expect(pubs.root.textContent).toContain("立即發佈");
-    expect(pubs.root.textContent).toContain("排程發佈");
+    expect(root.textContent).toContain("第 1 張要改甚麼？");
+    const pubs = pubsHost("zh-HK", post({ destinationBindings: ["FB_MAIN"] }));
+    expect(pubs.root.textContent).toContain("發佈至");
+    expect(pubs.root.textContent).toContain("FB_MAIN");
   });
 });
 
@@ -283,49 +377,71 @@ describe("unsaved changes and footer reasons", () => {
     }) as never, { buffers: { imageId: "gm_b" } }).review.disabled).toBe(false);
   });
 
-  it("names Publish or Schedule from the sheet radios, and keeps draft as Save only", () => {
+  it("names the destination on the primary, and a chosen time turns it into Schedule", () => {
+    const destinations = [{ binding: "FB_MAIN", label: "Facebook Main", provider: "facebook", granted: true }];
     const ready = post({ destinationBindings: ["FB_MAIN"] });
-    expect(footerState("en", ready as never, {}).primary).toMatchObject({
-      disabled: true,
-      label: "Publish",
-      reason: "This stays a draft until you publish or schedule it."
+    // The recorded bindings are the default pick — the primary names them.
+    expect(footerState("en", ready as never, { destinations }).primary).toMatchObject({
+      disabled: false,
+      label: "Publish to Facebook Main"
     });
-    expect(footerState("en", post({
-      destinationBindings: ["FB_MAIN"],
-      publicationIntent: { publishMode: "publish_now" }
-    }) as never, {}).primary).toMatchObject({ disabled: false, label: "Publish" });
-    expect(footerState("en", post({
-      destinationBindings: ["FB_MAIN"],
-      publicationIntent: { publishMode: "schedule" }
-    }) as never, {}).primary).toMatchObject({
+    // Two picked destinations name the count, not a guess at either.
+    expect(footerState("en", ready as never, { destinations, picked: ["FB_MAIN", "IG_MAIN"] }).primary.label).toBe("Publish to 2 accounts");
+    // An emptied pick is honest — publish to nothing files nothing.
+    expect(footerState("en", ready as never, { destinations, picked: [] }).primary).toMatchObject({
       disabled: true,
-      label: "Schedule",
-      reason: "Choose a date and time to schedule."
+      reason: "Choose a destination account before publishing."
     });
+    // A chosen time is the schedule intent — the press itself carries it.
+    expect(footerState("en", ready as never, { destinations, scheduledAt: "2026-09-18T11:00" }).primary).toMatchObject({
+      disabled: false,
+      label: "Schedule for 2026-09-18 11:00"
+    });
+    // A busy image still blocks the press.
     expect(footerState("en", post({
       destinationBindings: ["FB_MAIN"],
-      publicationIntent: { publishMode: "schedule", publishLocalTime: "2026-09-18T11:00", timezone: "Asia/Hong_Kong" }
-    }) as never, {}).primary).toMatchObject({ disabled: false, label: "Schedule" });
-    expect(footerState("en", post({
-      destinationBindings: ["FB_MAIN"],
-      publicationIntent: { publishMode: "publish_now" },
       generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } }
-    }) as never, {}).primary.reason).toBe("The image is generating in place. Publish when it finishes.");
+    }) as never, { destinations }).primary.reason).toBe("The image is generating in place. Publish when it finishes.");
   });
 
-  it("counts a publication-intent change as unsaved so Save keeps it", () => {
-    const item = post({ publicationIntent: { publishMode: "save_draft" } });
-    expect(dirtyParts(item as never, { publicationIntent: { publishMode: "publish_now" } })).toMatchObject({ publication: true, any: true });
-    expect(revisionEntryFor(item as never, { publicationIntent: { publishMode: "publish_now" } })).toEqual({
+  it("a destination that cannot take the post is named on its own row, and dropped from what files", () => {
+    const destinations = [
+      { binding: "FB_MAIN", label: "Facebook Main", provider: "facebook", granted: true },
+      { binding: "IG_MAIN", label: "Instagram Main", provider: "instagram", granted: false }
+    ];
+    const item = post({ destinationBindings: ["FB_MAIN", "IG_MAIN"] });
+    // The revoked grant blocks its own row…
+    expect(destinationBlock(item as never, {}, destinations as never, "IG_MAIN")).toBe("publishAccessRevoked");
+    expect(destinationBlock(item as never, {}, destinations as never, "FB_MAIN")).toBeNull();
+    // …and cannot silently join what the primary files.
+    expect(footerState("en", item as never, { destinations: destinations as never }).primary.label).toBe("Publish to Facebook Main");
+    // A PNG heading only to Instagram is told why before the press.
+    const png = post({ destinationBindings: ["IG_MAIN"], generatedImage: { id: "gm_a", ready: true, mimeType: "image/png" } });
+    const igOnly = [{ binding: "IG_MAIN", label: "Instagram", provider: "instagram", granted: true }];
+    expect(destinationBlock(png as never, {}, igOnly as never, "IG_MAIN")).toBe("drawerDestNeedsJpeg");
+    expect(footerState("en", png as never, { destinations: igOnly as never }).primary.disabled).toBe(true);
+    // And no image at all cannot go to Instagram either.
+    const bare = post({ destinationBindings: ["IG_MAIN"], generatedImage: null, acceptedVisualMode: null });
+    expect(destinationBlock(bare as never, {}, igOnly as never, "IG_MAIN")).toBe("drawerDestIgNeedsImage");
+  });
+
+  it("a publication pick or a chosen time is never unsaved content", () => {
+    const item = post({ destinationBindings: ["FB_MAIN"] });
+    // Destination picks and the schedule field live in the footer's transient
+    // state — neither is a buffer, so neither counts toward unsaved changes.
+    expect(dirtyParts(item as never, {})).toMatchObject({ any: false });
+    expect(dirtyParts(item as never, {}).publication).toBeUndefined();
+    // Removing the accepted visual IS a revision change — it writes a clear.
+    expect(revisionEntryFor(item as never, { visualMode: null })).toEqual({
       batchItemId: "item-1",
       expectedRevision: 2,
-      publicationIntent: { publishMode: "publish_now" }
+      acceptedVisualMode: null
     });
   });
 });
 
 describe("Reference section", () => {
-  it("is inspection only — adopting the source image lives on the Post tab's source control", async () => {
+  it("is inspection only — adopting the source image lives on the Post tab's add-image menu", async () => {
     const adopted: string[] = [];
     const sourceItem = { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] };
     const root = renderReferencePanel("en", post({ sourceItem }) as never, {
@@ -335,13 +451,14 @@ describe("Reference section", () => {
     expect(root.textContent).toContain("Reference only");
     // No adopt button here at all — even if a stray handler is passed.
     expect(buttonNamed(root, "Use this image")).toBeFalsy();
-    // The Post tab's source segment is the one place the choice is made.
+    // The Post tab's add-image menu is the one place the choice is made.
     const output = renderOutputPanel("en", post({ sourceItem }) as never, {
       editable: true,
       buffers: {},
-      onAdoptReference: () => adopted.push("reference")
+      imageRefsAvailable: true,
+      strip: { menuOpen: true, onMenuAdoptSource: () => adopted.push("reference") }
     } as never);
-    const adopt = all(output, (e) => e.tagName === "BUTTON" && e.getAttribute("data-src") === "reference")[0];
+    const adopt = buttonNamed(output, "Use the post's own picture")!;
     await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
   });
@@ -408,6 +525,34 @@ describe("Instructions section", () => {
     expect(history.textContent).toContain("waiting");
     expect(history.textContent).toContain("Instructions used");
     expect(history.textContent).toContain("Image instruction: Outdoor photo");
+  });
+
+  it("carries the generation brief — price, reference toggle, ratio, this-run instruction", async () => {
+    const patched: Record<string, unknown>[] = [];
+    const root = renderInstructionsPanel("en", post() as never, {
+      editable: true,
+      buffers: {},
+      policy: {},
+      imageBrief: { useSource: true, ratio: "4:5", oneOffOpen: true, oneOff: "Warmer light", saveOneOff: false },
+      imageRefsAvailable: true,
+      onPatchImageBrief: (patch: Record<string, unknown>) => patched.push(patch)
+    } as never);
+    // The price line leads the fields.
+    expect(root.textContent).toContain("priced as an edit");
+    expect(root.textContent).toContain("Start from the post's image");
+    // The ratio chips and the this-run field with its save-as-post offer.
+    const ratios = all(root, (e) => String(e.className).split(" ").includes("sl-brief-ratio"));
+    expect(ratios.map((r) => String(r.textContent))).toEqual(["Match the post (4:5)", "Square (1:1)", "Story (9:16)"]);
+    const once = all(root, (e) => e.getAttribute("id") === "sl-brief-once")[0] as Node & { value: string };
+    expect(once.value).toBe("Warmer light");
+    expect(root.textContent).toContain("Also save as this post's instruction");
+    expect(root.textContent).toContain("In effect:");
+    await ratios[1].dispatchEvent({ type: "click" });
+    expect(patched).toEqual([{ ratio: "1:1" }]);
+    // The Output tab no longer carries the settings panel.
+    const out = renderOutputPanel("en", post() as never, { editable: true, buffers: {} } as never);
+    expect(all(out, (e) => String(e.className).includes("sl-brieftab"))).toHaveLength(0);
+    expect(all(out, (e) => String(e.className).includes("sl-brief-ratio"))).toHaveLength(0);
   });
 });
 

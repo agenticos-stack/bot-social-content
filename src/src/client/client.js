@@ -41,6 +41,7 @@ import {
   DRAWER_FOOTER_HINT_ID,
   captionConflictFor,
   confirmDrawerChoice,
+  destinationBlock,
   dirtyInstructionParts,
   dirtyParts,
   pendingParts,
@@ -50,11 +51,12 @@ import {
   instructionDefaultsOf,
   instructionPatchFor,
   publicationHint,
+  recordedBindings,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
-  renderPublicationControls,
+  renderPublishControls,
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
@@ -292,34 +294,63 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
 .sl-drawer-meta { font-size: 10.5px; color: var(--sl-muted); letter-spacing: .02em; margin-bottom: 3px; }
 .sl-drawer-state { display: block; }
-.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 14px; align-items: start; }
-.sl-output-compose .sl-output-images { display: block; }
-.sl-output-compose .sl-output-frame,
-.sl-output-thumb { width: 128px; max-width: 128px; }
 .sl-output-copy { padding-top: 0; }
 .sl-output-copy h3 { margin-top: 0; }
-/* One joined segmented control, per the accepted mockup: the segment carries
-   the border and radius; the buttons inside share dividers, not chrome. */
-.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-src-btn.sl-src-btn { min-height: 38px; padding: 0 8px; font-size: 12.5px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-2); font-weight: 600; }
-.sl-src-btn:last-child { border-right: 0; }
-.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
-.sl-src-btn:disabled { opacity: .45; }
-.sl-src-btn:focus-visible { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
-/* The image brief: a quiet collapsible that belongs to the Generate source
-   only. Its summary line always names the resolved ask, so the collapsed
-   state is still honest about what a press would send. */
-.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-brief[open] { box-shadow: var(--sl-e-1); }
-.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 0 12px; cursor: pointer; font-size: 12.5px; color: var(--sl-ink-2); }
-.sl-brief > summary::-webkit-details-marker { display: none; }
-.sl-brief-caret { color: var(--sl-ink-4); transition: transform .15s ease; }
-.sl-brief[open] > summary .sl-brief-caret { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .sl-brief-caret { transition: none; } }
-.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sl-brief-chip { flex-shrink: 0; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); background: transparent; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
-.sl-brief-body { padding: 2px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
-.sl-brief-body > * { margin-block: 0; }
+/* THE IMAGE STRIP — one slot per accepted picture (one today; the ordered
+   array is the Phase 2 contract). Fixed thumb, index on the frame, the cap
+   names slot 1 the cover; the candidate joins as a dashed slot and the +
+   tile ends the row. */
+.sl-strip { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.sl-slot { width: 116px; flex: none; display: flex; flex-direction: column; gap: 5px; }
+.sl-slot-media { position: relative; }
+.sl-slot-num { position: absolute; top: 6px; left: 6px; z-index: 2; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: rgba(255,255,255,.92); box-shadow: var(--sl-e-1); font-size: 10.5px; font-weight: 600; color: var(--sl-ink); }
+.sl-slot-cap { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
+.sl-slot-cap b { font-weight: 600; color: var(--sl-ink); }
+.sl-slot-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
+.sl-slot-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.sl-slot-acts .sl-primary, .sl-slot-acts .sl-secondary { min-height: 30px; padding: 0 11px; font-size: 11.5px; }
+/* Per-picture actions live ON the picture: revealed by hover on a fine
+   pointer, by :focus-within for the keyboard, permanently on coarse. */
+.sl-hover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center; padding: 8px; background: rgba(20,20,20,.44); opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+.sl-slot-media:hover .sl-hover, .sl-slot-media:focus-within .sl-hover { opacity: 1; pointer-events: auto; }
+/* Coarse pointers have no hover: the actions stop overlaying and sit under
+   the tile, per the accepted design. */
+@media (hover: none) { .sl-hover { position: static; opacity: 1; pointer-events: auto; margin-top: 4px; flex-direction: row; flex-wrap: wrap; background: transparent; padding: 0; } }
+@media (prefers-reduced-motion: reduce) { .sl-hover { transition: none; } }
+.sl-hover-btn { min-height: 30px; min-width: 86px; padding: 0 10px; border: 0; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.96); color: var(--sl-ink); font-size: 11.5px; font-weight: 600; box-shadow: var(--sl-e-1); cursor: pointer; }
+.sl-hover-btn:disabled { opacity: .5; }
+/* The + tile ends the row; its menu lists every way a picture joins. */
+.sl-addwrap { position: relative; flex: none; }
+.sl-addslot { width: 116px; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); font-size: 22px; font-weight: 300; cursor: pointer; }
+.sl-addslot:hover:not(:disabled) { border-color: var(--sl-ink); color: var(--sl-ink); }
+.sl-addslot:disabled { opacity: .45; }
+.sl-menu { position: absolute; z-index: 6; top: calc(100% + 6px); left: 0; min-width: 230px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
+.sl-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--sl-radius-control); background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--sl-ink); }
+.sl-menu-item:hover:not(:disabled) { background: var(--sl-hover); }
+.sl-menu-item:disabled { opacity: .55; cursor: not-allowed; }
+.sl-menu-lead { font-size: 12.5px; font-weight: 600; }
+.sl-menu-sub { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
+.sl-menu-sep { height: 1px; background: var(--sl-line); margin: 5px 4px; }
+/* The regenerate conversation under the strip: chips name the change, the
+   plan line restates it with the price, and Generate files once — never a
+   blind rerun, never a loop. */
+.sl-regen { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); display: flex; flex-direction: column; gap: 9px; }
+.sl-regen-ask { margin: 0; font-size: 13px; font-weight: 600; color: var(--sl-ink); }
+.sl-regen-sub { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-regen-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.sl-regen-chip { min-height: 30px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-chip); background: transparent; font-size: 11.5px; color: var(--sl-ink-2); cursor: pointer; }
+.sl-regen-chip[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; border-color: var(--sl-ink); }
+.sl-regen-other { min-height: 56px; }
+.sl-regen-plan { border-top: 1px solid var(--sl-line); padding-top: 9px; display: flex; flex-direction: column; gap: 6px; }
+.sl-regen-plan-line { margin: 0; font-size: 12.5px; color: var(--sl-ink); font-weight: 600; }
+.sl-regen-cost { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-regen-acts { display: flex; align-items: center; gap: 9px; }
+.sl-regen-acts .sl-grow, .sl-drawer-footer-actions .sl-grow { flex: 1; }
+/* The image brief on the Instructions tab — a flat block, not a
+   collapsible: price line first, then the fields it prices. */
+.sl-brieftab { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
+.sl-brieftab > * { margin-block: 0; }
+.sl-brief-price { margin: 0; }
 .sl-brief-switch, .sl-brief-save { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; font-weight: 600; color: var(--sl-ink); cursor: pointer; }
 .sl-brief-switch input, .sl-brief-save input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
 .sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
@@ -340,17 +371,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-upload-row { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px 10px; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-upload-row .sl-field-note { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
 .sl-upload-row .sl-primary { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; }
-.sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; padding: 0; position: relative; }
-@media (max-width: 420px) {
-  .sl-output-compose { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
-  .sl-output-compose .sl-output-frame,
-  .sl-output-thumb { width: 96px; max-width: 96px; }
-}
 .sl-output-frame img { width: 100%; height: 100%; object-fit: contain; }
 .sl-output-frame .sl-pc-media-empty { padding: 12px; text-align: center; }
-.sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
 .sl-output-frame-skel::before { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.32); pointer-events: none; }
 .sl-output-frame-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(255,255,255,0) 36%, rgba(255,255,255,.5) 50%, rgba(255,255,255,0) 64%); background-size: 220% 100%; animation: sl-skel-sweep 1.6s linear infinite; pointer-events: none; }
 /* The label wraps inside the frame — a nowrap pill in a 128px frame clipped
@@ -360,18 +384,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
 .sl-drawer-caption.sl-skel { color: transparent; }
-.sl-pub-dest { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
-/* Publish timing is a joined segment like the source group above it: three
-   cells in one bordered strip, the checked one shaded. The radio input stays
-   real but invisible; the cell carries the state. */
-.sl-pub-radios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 38px; margin: 0; padding: 0 8px; font-size: 12.5px; font-weight: 600; color: var(--sl-ink-2); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
-.sl-pub-choice:last-child { border-right: 0; }
-.sl-pub-choice:has(input:checked) { background: var(--sl-surface-2); color: var(--sl-ink); }
-.sl-pub-choice:focus-within { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
-.sl-pub-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.sl-pub-when { display: grid; gap: 4px; font-size: 11.5px; color: var(--sl-ink-2); }
-.sl-pub-when input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
+/* The footer's publish row: "Publishes to" + a picker button whose face is
+   the current selection; the menu opens UPWARD off the foot. A destination
+   that cannot take the post says so on its own row. */
+.sl-dests { margin: 0; font-size: 12px; color: var(--sl-ink-2); display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.sl-destwrap { position: relative; display: inline-block; }
+.sl-destbtn { border: 0; background: transparent; padding: 0 2px; font: inherit; font-weight: 600; color: var(--sl-ink); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.sl-destbtn:hover:not(:disabled) { color: var(--sl-ink); }
+.sl-destbtn:disabled { color: var(--sl-ink-2); text-decoration: none; cursor: not-allowed; }
+.sl-destmenu { position: absolute; z-index: 6; bottom: calc(100% + 6px); left: 0; min-width: 240px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); display: flex; flex-direction: column; }
+.sl-destopt { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border-radius: var(--sl-radius-control); cursor: pointer; }
+.sl-destopt:hover { background: var(--sl-hover); }
+.sl-destopt input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
+.sl-destopt-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 12.5px; color: var(--sl-ink); }
+.sl-dest-sub { font-size: 11px; color: var(--sl-ink-2); }
+.sl-dest-blocked { color: var(--sl-warning); }
+.sl-whenrow { display: flex; align-items: center; gap: 10px; }
+.sl-whenrow input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
 .sl-output-frame-skel .sl-pc-media-empty { display: none; }
 .sl-reference-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: var(--sl-radius-chip); border: 1px solid var(--sl-line); font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-reference-text { color: var(--sl-ink-2); font-size: 12.5px; }
@@ -1354,7 +1383,6 @@ function App() {
     const imageBriefOf = (item) => {
       const stored = bufferOf(item.id).imageBrief ?? {};
       return {
-        open: stored.open === true,
         useSource: stored.useSource ?? policy?.posterReferences !== "none",
         ratio: stored.ratio ?? policy?.posterAspectRatio ?? "4:5",
         oneOffOpen: stored.oneOffOpen === true,
@@ -1362,6 +1390,15 @@ function App() {
         saveOneOff: stored.saveOneOff === true
       };
     };
+    /*
+     * Per-post sheet state that is NOT content and never saved: the add
+     * menu, the regenerate conversation draft, the publish picker's open
+     * state, the transient destination picks, and the schedule field's
+     * chosen local time. Like the buffers, one entry per post.
+     */
+    const drawerUi = new Map(); // batchItemId -> { menuOpen?, regen?, destOpen?, picking?, scheduledAt?, picked?, candidateDismissed? }
+    const uiOf = (id) => drawerUi.get(id) ?? {};
+    const patchUi = (id, patch) => drawerUi.set(id, { ...uiOf(id), ...patch });
     // Every change to a buffered field bumps that field's edit version, so a
     // Save acknowledgment can tell "still what I submitted" from "typed
     // since" — including typing the same text back after changing it.
@@ -1830,11 +1867,25 @@ function App() {
         }
         if (!dirtyItemIds().length) break;
       }
-      const intent = bufferOf(item.id).publicationIntent ?? current.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" };
+      /*
+       * Which button was pressed IS the intent — there is no stored
+       * publication mode. A chosen schedule time makes this a schedule;
+       * otherwise it is publish-now. And what the press files is exactly the
+       * picker's selection minus every destination that explained on its own
+       * row why it cannot take this post — never the recorded set silently.
+       */
+      const scheduledAt = uiOf(item.id).scheduledAt ?? null;
+      const intent = scheduledAt
+        ? { publishMode: "schedule", publishLocalTime: scheduledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, utcOffsetMinutes: null, latePolicy: "hold" }
+        : { publishMode: "publish_now", latePolicy: "hold" };
+      const fileable = (uiOf(item.id).picked ?? recordedBindings(current))
+        .filter((binding) => !destinationBlock(current, bufferOf(item.id), summary?.destinations ?? [], binding));
+      if (!fileable.length) { announce(t(locale, "drawerPublishNeedsDestination"), ""); return; }
       try {
         const result = await rpc.submitForReview({
           batchItemId: current.id,
           expectedRevision: current.revision ?? 0,
+          destinationBindings: fileable,
           intent
         });
         if (!live) return;
@@ -1845,14 +1896,16 @@ function App() {
           announce(message, "");
           return;
         }
-        const dest = (current.destinationBindings ?? []).map((binding) => destinationLabel(binding)).join(" · ");
-        const when = intent.publishLocalTime ? String(intent.publishLocalTime).replace("T", " ") : "";
+        const dest = fileable.map((binding) => destinationLabel(binding)).join(" · ");
+        const when = scheduledAt ? String(scheduledAt).replace("T", " ") : "";
         announce(
           intent.publishMode === "schedule"
             ? t(locale, "drawerScheduleFiled", { when })
             : t(locale, "drawerPublishFiled", { dest }),
           ""
         );
+        // Consumed: a post that comes back editable starts untimed again.
+        patchUi(item.id, { scheduledAt: null, picking: false, destOpen: false });
         if (result?.warnings?.length) announce(result.warnings[0].message, "");
       } catch (error) {
         announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
@@ -1931,8 +1984,14 @@ function App() {
      *   owner explicitly generates with the saved ones (edits kept), or cancels;
      * - rewriting the caption over an unsaved caption edit asks.
      * Unrelated unsaved work is left alone.
+     *
+     * `runInstruction` is the regenerate conversation's named correction: it
+     * is sent as the run layer and nothing else — the staged one-off is left
+     * alone and its save-as-post checkbox does not apply to it. `null` (the
+     * menu's Generate) means the staged brief's own one-off rules apply.
+     * Returns true only when a request was actually filed.
      */
-    const requestPart = async (item, part) => {
+    const requestPart = async (item, part, runInstruction = null) => {
       if (saving) return;
       const parts = [part];
       // Any outstanding part — the other one, the same one, or the request a
@@ -2025,8 +2084,9 @@ function App() {
       if (part === "image") {
         brief = imageBriefOf(item);
         options.image = { references: brief.useSource ? "source" : "none", aspectRatio: brief.ratio };
-        const oneOff = brief.oneOff.trim();
-        if (oneOff && brief.saveOneOff) {
+        const oneOff = runInstruction !== null ? String(runInstruction).trim() : brief.oneOff.trim();
+        const saveOneOff = runInstruction !== null ? false : brief.saveOneOff;
+        if (oneOff && saveOneOff) {
           let savedIns;
           saving = true;
           redrawFooter();
@@ -2077,14 +2137,16 @@ function App() {
       }
       if (!live) return;
       // The one-off named THIS request — a second Generate must not silently
-      // reuse it. The settings (reference, ratio) stay as staged.
-      if (brief) {
+      // reuse it. The settings (reference, ratio) stay as staged. A run-layer
+      // correction consumed nothing staged, so it clears nothing.
+      if (brief && runInstruction === null) {
         patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, oneOff: "", oneOffOpen: false, saveOneOff: false } });
       }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
       try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+      return true;
     };
 
     /**
@@ -2287,25 +2349,17 @@ function App() {
       }
     };
 
-    /*
-     * The one place a publication-intent patch lands. Shared by the footer's
-     * timing controls and kept honest with them: a mode change rebuilds the
-     * whole sheet (the schedule field joins or leaves), any other field only
-     * rebuilds the foot.
-     */
-    const patchPublicationIntent = (entry, patch) => {
-      const before = bufferOf(entry.id).publicationIntent ?? entry.publicationIntent ?? { publishMode: "save_draft" };
-      patchBuffer(entry.id, { publicationIntent: { ...before, ...patch } });
-      if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
-      else redrawFooter();
-    };
-
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
-        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving, defaults: instructionDefaultsOf(policy) });
-        const reason = state.primary.reason || state.save.reason || publicationHint(locale, item, bufferOf(item.id));
+        const ui = uiOf(item.id);
+        const destinations = summary?.destinations ?? [];
+        const buffers = bufferOf(item.id);
+        const picked = ui.picked ?? recordedBindings(item);
+        const scheduledAt = ui.scheduledAt ?? null;
+        const state = footerState(locale, item, { buffers, saving, defaults: instructionDefaultsOf(policy), destinations, picked, scheduledAt });
+        const reason = state.primary.reason || state.save.reason || publicationHint(locale, { scheduledAt });
         /*
          * The truthful pending state. The mark's dispatch says whether the
          * request was FILED; the platform's canonical state, read back by
@@ -2434,14 +2488,27 @@ function App() {
           resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
-          // Publication timing sits in the sheet foot per the accepted
-          // mockup — visible on every tab, above the actions.
-          ...renderPublicationControls(locale, item, {
+          // The publish row sits in the sheet foot per the accepted mockup —
+          // the destination picker visible on every tab, above the actions.
+          // What is picked here IS what submitForReview files.
+          ...renderPublishControls(locale, item, {
             editable: true,
             saving,
-            buffers: bufferOf(item.id),
+            buffers,
+            destinations,
             destinationLabel,
-            onPublicationIntent: (patch) => patchPublicationIntent(item, patch)
+            picked,
+            menuOpen: ui.destOpen === true,
+            picking: ui.picking === true,
+            scheduledAt,
+            onToggleMenu: () => { patchUi(item.id, { destOpen: ui.destOpen !== true }); redrawFooter(); },
+            onToggleDestination: (binding) => {
+              const now = uiOf(item.id).picked ?? recordedBindings(item);
+              patchUi(item.id, { picked: now.includes(binding) ? now.filter((entry) => entry !== binding) : [...now, binding] });
+              redrawFooter();
+            },
+            onScheduleChange: (value) => { patchUi(item.id, { scheduledAt: value || null, picking: false }); redrawFooter(); },
+            onScheduleCancel: () => { patchUi(item.id, { picking: false }); redrawFooter(); }
           }),
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
           el("div", { class: "sl-drawer-footer-actions" }, [
@@ -2513,6 +2580,21 @@ function App() {
                     onclick: () => retryFinal(item)
                   }, t(locale, "drawerRetryStart"))
                 : null,
+            el("span", { class: "sl-grow" }),
+            // 排程… arms the field; a chosen time turns the primary into
+            // "Schedule for …" — the press itself carries the intent.
+            scheduledAt
+              ? el("button", {
+                  type: "button", class: "sl-brief-link",
+                  disabled: saving,
+                  onclick: () => { patchUi(item.id, { scheduledAt: null, picking: false }); redrawFooter(); }
+                }, t(locale, "drawerCancelSchedule"))
+              : el("button", {
+                  type: "button", class: "sl-secondary",
+                  disabled: saving || state.primary.disabled || ui.picking === true,
+                  title: state.primary.reason || null,
+                  onclick: () => { patchUi(item.id, { picking: true }); redrawFooter(); }
+                }, t(locale, "drawerSchedulePick")),
             el("button", {
               type: "button", class: "sl-primary",
               disabled: state.primary.disabled,
@@ -2638,17 +2720,26 @@ function App() {
       let panel;
       if (activeTab === "reference") {
         // Inspection only — adopting the source image is the Post tab's
-        // "Use reference" source control, the one place that choice lives.
+        // add-image menu entry, the one place that choice lives.
         panel = renderReferencePanel(locale, item, {
           stage: item.sourceItem ? stageFor(item) : null,
           editable,
           saving
         });
       } else if (activeTab === "instructions") {
+        // The brief lives here per the accepted mockup: the settings a
+        // Generate ask is made under, beside the instructions it amends.
         panel = renderInstructionsPanel(locale, item, {
           editable,
+          saving,
           buffers: buffer,
           policy,
+          imageBrief: imageBriefOf(item),
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onPatchImageBrief: (patch) => {
+            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
+          },
+          onBriefChanged: () => redraw(),
           onInput: (part, value) => {
             patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: value } });
             redrawFooter();
@@ -2671,6 +2762,12 @@ function App() {
           stateLabel: (outcome) => publicationStateSummary(locale, outcome)
         });
       } else {
+        // A sent conversation's "generating" note clears once the request
+        // resolves — the candidate beside the slot IS the answer.
+        const ui = uiOf(item.id);
+        if (ui.regen?.sent && (!generationMark(item.generation)?.needs.image || item.generatedCandidate)) {
+          patchUi(item.id, { regen: null });
+        }
         panel = renderOutputPanel(locale, item, {
           editable,
           saving,
@@ -2690,7 +2787,6 @@ function App() {
             redrawFooter();
           },
           destinationLabel,
-          onPublicationIntent: (patch) => patchPublicationIntent(item, patch),
           captionConflict: captionConflicts.get(item.id) ?? null,
           onReacceptImage: async (mediaId) => {
             if (saving) return;
@@ -2723,20 +2819,81 @@ function App() {
             redraw();
           },
           imageBrief: imageBriefOf(item),
-          // The toggle's honesty line: whether this post's own image can
+          // The menu's honesty line: whether this post's own image can
           // actually be sent as a reference — decided by the same rule the
           // server applies, so a missing one warns before the refusal.
           imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
-          onPatchImageBrief: (patch) => {
-            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
-          },
-          onBriefChanged: () => redraw(),
-          onShowInstructions: () => selectTab("instructions", { focus: false }),
           onRequestPart: (part) => requestPart(item, part),
           uploadPreview: ownerUploads.has(item.id) ? { name: ownerUploads.get(item.id).name } : null,
-          onPickUpload: (file) => pickOwnerUpload(item, file),
           onAdoptUpload: () => adoptOwnerUpload(item),
-          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
+          /*
+           * The strip's callbacks. Add/menu/regenerate/destinations are
+           * drawerUi — sheet state, never content. Remove is a real revision
+           * change (it clears the accepted visual), so it goes through
+           * applyVisual like any other visual decision; a staged pick is
+           * dropped first so the next Save cannot resurrect it.
+           */
+          strip: {
+            menuOpen: uiOf(item.id).menuOpen === true,
+            regen: uiOf(item.id).regen ?? null,
+            candidateDismissed: uiOf(item.id).candidateDismissed ?? null,
+            onToggleMenu: () => {
+              patchUi(item.id, { menuOpen: uiOf(item.id).menuOpen !== true });
+              redraw();
+              // The menu drops below the strip inside the scroll body: bring it
+              // into the viewport, or a short drawer clips it below the fold.
+              bodyEl.querySelector(".sl-menu")?.scrollIntoView({ block: "nearest" });
+            },
+            onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); void requestPart(item, "image"); },
+            onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); pickOwnerUpload(item); },
+            onMenuAdoptSource: () => { patchUi(item.id, { menuOpen: false }); void applyVisual(item, { acceptedVisualMode: "keep_original" }); },
+            onRegenOpen: (slot) => {
+              patchUi(item.id, { regen: { slot, notes: [], other: "", otherOpen: false, sent: false }, menuOpen: false });
+              redraw();
+            },
+            onRegenChip: (key) => {
+              const regen = uiOf(item.id).regen;
+              if (!regen) return;
+              const notes = regen.notes.includes(key) ? regen.notes.filter((entry) => entry !== key) : [...regen.notes, key];
+              patchUi(item.id, { regen: { ...regen, notes } });
+              redraw();
+            },
+            onRegenToggleOther: () => {
+              const regen = uiOf(item.id).regen;
+              if (regen) patchUi(item.id, { regen: { ...regen, otherOpen: true } });
+              redraw();
+            },
+            onRegenOtherInput: (value) => {
+              const regen = uiOf(item.id).regen;
+              if (regen) patchUi(item.id, { regen: { ...regen, other: value } });
+            },
+            onRegenOtherBlur: () => redraw(),
+            onRegenCancel: () => { patchUi(item.id, { regen: null }); redraw(); },
+            onRegenSubmit: async () => {
+              const regen = uiOf(item.id).regen;
+              if (!regen || regen.sent) return;
+              const correction = [...regen.notes.map((key) => t(locale, key)), ...(regen.other?.trim() ? [regen.other.trim()] : [])].join("; ");
+              if (!correction) return;
+              const sent = await requestPart(item, "image", correction);
+              if (!live) return;
+              // Only a still-open conversation for the same slot is marked
+              // sent; a cancel during the request must not resurrect it.
+              const current = uiOf(item.id).regen;
+              if (current && current.slot === regen.slot && !current.sent) {
+                patchUi(item.id, { regen: sent ? { ...current, sent: true } : current });
+                redraw();
+              }
+            },
+            onRemoveSlot: () => {
+              dropBufferFields(item.id, ["imageId"]);
+              void applyVisual(item, { acceptedVisualMode: null });
+            },
+            onViewSlot: () => { void openPreview(item); },
+            onDismissCandidate: () => {
+              patchUi(item.id, { candidateDismissed: item.generatedCandidate?.id ?? null });
+              redraw();
+            }
+          }
         });
       }
 

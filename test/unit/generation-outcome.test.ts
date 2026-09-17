@@ -660,7 +660,16 @@ describe("a request whose turn ended with work outstanding", () => {
     );
     await openDrawer(document);
     await click(buttonText(document.body, "Check status"));
-    await click(buttonText(document.body, "Generate"));
+    // The image part's control is the strip's add menu: ＋ → Generate row.
+    await click(findAll(document.body, (element) => element.getAttribute?.("aria-label") === "Add image")[0]);
+    await click(
+      findAll(
+        document.body,
+        (element) =>
+          element.getAttribute?.("role") === "menuitem" &&
+          String(element.textContent ?? "").startsWith("Generate a new image")
+      )[0]
+    );
     const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };
     expect(sent?.needs).toMatchObject({ image: true, caption: true });
     expect(sent?.replace).not.toBe(true);

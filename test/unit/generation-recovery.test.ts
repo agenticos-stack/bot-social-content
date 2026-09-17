@@ -185,6 +185,18 @@ const buttonText = (root: unknown, text: string) =>
   findAll(root, (element) => element.tagName === "BUTTON" && String(element.textContent ?? "").trim() === text)[0];
 const partButton = (root: unknown, part: string) =>
   findAll(root, (element) => element.getAttribute?.("data-part") === part)[0];
+// The image part's control is the strip's add menu: the ＋ slot opens it and
+// its Generate row is the pressable action. A pending request marks the row
+// (`data-requested`) without disabling it — a re-ask always asks first.
+const imageAdd = (root: unknown) =>
+  findAll(root, (element) => element.getAttribute?.("aria-label") === "Add image")[0];
+const imageGenerate = (root: unknown) =>
+  findAll(
+    root,
+    (element) =>
+      element.getAttribute?.("role") === "menuitem" &&
+      String(element.textContent ?? "").startsWith("Generate a new image")
+  )[0];
 
 async function click(button: { dispatchEvent: (event: unknown) => unknown } | undefined) {
   await button?.dispatchEvent({ type: "click", preventDefault: () => {} });
@@ -199,8 +211,12 @@ describe("a generation request saved before the handoff", () => {
     installGadget("not_found", calls);
     await openDrawer(document);
 
-    // F2 baseline: the per-part controls start usable.
-    expect(partButton(document.body, "image")?.disabled).toBe(false);
+    // F2 baseline: the per-part controls start usable. The image part's
+    // control is the strip's add menu — the ＋ slot opens it and its Generate
+    // row stays pressable (a pending request is named, not locked out).
+    expect(imageAdd(document.body)?.disabled).toBe(false);
+    await click(imageAdd(document.body));
+    expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
     // The drawer opened on a request the host cannot confirm, so the automatic
@@ -208,8 +224,11 @@ describe("a generation request saved before the handoff", () => {
     expect(calls.status).toBeGreaterThan(0);
 
     // F2: after a manual check settles, the body controls are usable again.
+    // The menu may still be open from the baseline probe — only toggle if not.
     await click(buttonText(document.body, "Check status"));
-    expect(partButton(document.body, "image")?.disabled).toBe(false);
+    expect(imageAdd(document.body)?.disabled).toBe(false);
+    if (!imageGenerate(document.body)) await click(imageAdd(document.body));
+    expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
     // The empty image region stays compact: no framed placeholder under an

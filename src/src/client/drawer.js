@@ -14,6 +14,7 @@
 
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
+import { JPEG_ONLY_PROVIDERS } from "./image-acceptance.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
 import { generationMark } from "../../model.js";
 
@@ -87,8 +88,9 @@ export function dirtyParts(item, buffers = {}, defaults = {}) {
   const visualMode = buffers.visualMode !== undefined && buffers.visualMode !== (item?.acceptedVisualMode ?? null);
   const visual = visualImage || visualMode;
   const instructions = dirtyInstructionParts(item, buffers, ["image", "caption"], defaults).length > 0;
-  const publication = buffers.publicationIntent !== undefined && !intentsEqual(buffers.publicationIntent, item?.publicationIntent);
-  return { caption, altText, visual, instructions, publication, any: caption || altText || visual || instructions || publication };
+  // No `publication`: the footer's destination picks and a chosen schedule
+  // time are transient — the intent is what was pressed, never a saved field.
+  return { caption, altText, visual, instructions, any: caption || altText || visual || instructions };
 }
 
 /** The workspace instruction defaults the fields are prefilled from. */
@@ -141,19 +143,8 @@ function normalizeOverride(value) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function intentOf(item, buffers = {}) {
-  return buffers.publicationIntent ?? item?.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" };
-}
-
-function intentsEqual(a, b) {
-  const left = a ?? {};
-  const right = b ?? {};
-  return (left.publishMode ?? "save_draft") === (right.publishMode ?? "save_draft")
-    && (left.publishLocalTime ?? null) === (right.publishLocalTime ?? null)
-    && (left.timezone ?? null) === (right.timezone ?? null);
-}
-
-function recordedBindings(item) {
+/** The destination bindings recorded on the item — the picker's starting selection. */
+export function recordedBindings(item) {
   return Array.isArray(item?.destinationBindings) ? item.destinationBindings.filter(Boolean) : [];
 }
 
@@ -174,9 +165,10 @@ export function revisionEntryFor(item, buffers = {}) {
     ...(dirty.visual
       ? buffers.visualMode === "keep_original"
         ? { acceptedVisualMode: "keep_original" }
-        : { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId }
-      : {}),
-    ...(dirty.publication ? { publicationIntent: buffers.publicationIntent } : {})
+        : buffers.visualMode === null
+          ? { acceptedVisualMode: null }
+          : { acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: buffers.imageId }
+      : {})
   };
 }
 
@@ -270,7 +262,43 @@ export function captionState(item) {
 // Footer: save / review, each with its specific reason when disabled
 // ---------------------------------------------------------------------------
 
-export function footerState(locale, item, { buffers = {}, saving = false, defaults = {} } = {}) {
+/**
+ * Why one destination cannot take this post, said on its own option: a
+ * revoked grant, a content rule the post does not meet, or a format the
+ * destination cannot take. Returns the i18n key, or null when it can. A
+ * recorded binding the destinations table does not describe is NOT blocked —
+ * an absent row cannot prove the grant is gone, and the server adjudicates.
+ */
+export function destinationBlock(item, buffers, destinations, binding) {
+  const row = (destinations ?? []).find((entry) => (entry.binding ?? entry.destinationBinding) === binding) ?? null;
+  if (!row) return null;
+  if (row.granted === false) return "publishAccessRevoked";
+  const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null) ? buffers.imageId : null;
+  const keepOriginal = buffers.visualMode === "keep_original" || item?.acceptedVisualMode === "keep_original";
+  const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || keepOriginal || item?.posterStored);
+  const hasImage = Boolean(staged) || Boolean(item?.generatedImage && item.generatedImage.ready === true) || legacyVisual;
+  if (row.provider === "instagram" && !hasImage) return "drawerDestIgNeedsImage";
+  // What actually ships: the staged pick once saved, else the accepted image.
+  const shipped = staged
+    ? ((item?.generatedCandidate?.id === staged ? item.generatedCandidate : null)
+      ?? (item?.generatedHistory ?? []).find((media) => media?.id === staged) ?? null)
+    : item?.generatedImage ?? null;
+  const generatedShips = staged ? Boolean(shipped) : (item?.acceptedVisualMode ?? null) === "ai_refinement";
+  if (JPEG_ONLY_PROVIDERS.has(row.provider) && generatedShips && shipped?.mimeType === "image/png") return "drawerDestNeedsJpeg";
+  return null;
+}
+
+/** A destination's display name from the summary table, falling back to the raw binding. */
+function destinationName(destinations, binding) {
+  return (destinations ?? []).find((entry) => (entry.binding ?? entry.destinationBinding) === binding)?.label ?? binding;
+}
+
+/**
+ * `picked` = the picker's current selection (recorded bindings when untouched);
+ * `scheduledAt` = the chosen local time once 排程… has one — its presence IS
+ * the schedule intent, since the press itself carries the mode now.
+ */
+export function footerState(locale, item, { buffers = {}, saving = false, defaults = {}, destinations = [], picked = null, scheduledAt = null } = {}) {
   const dirty = dirtyParts(item, buffers, defaults);
   const save = saving
     ? { disabled: true, reason: t(locale, "saving") }
@@ -282,10 +310,11 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
   const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
   const keepOriginal = buffers.visualMode === "keep_original" || item?.acceptedVisualMode === "keep_original";
   const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || keepOriginal || item?.posterStored);
-  const intent = intentOf(item, buffers);
-  const mode = intent.publishMode === "schedule" ? "schedule" : intent.publishMode === "publish_now" ? "publish_now" : "save_draft";
   const img = imageState(item);
   const cap = captionState(item);
+  // What the primary would actually file: the chosen set minus every option
+  // that explains on its own row why it cannot take this post.
+  const fileable = (picked ?? recordedBindings(item)).filter((binding) => !destinationBlock(item, buffers, destinations, binding));
   let review = { disabled: false, reason: null };
   if (saving) review = { disabled: true, reason: t(locale, "saving") };
   else if ((item?.revision ?? 0) === 0 && !caption) review = { disabled: true, reason: t(locale, "drawerReviewNeedsOutput") };
@@ -294,10 +323,17 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
   else if (!staged && !item?.generatedImage && !legacyVisual) review = { disabled: true, reason: t(locale, "drawerReviewNeedsImage") };
   else if (img === "requested" || img === "generating") review = { disabled: true, reason: t(locale, "drawerPublishBusyImage") };
   else if (cap === "requested") review = { disabled: true, reason: t(locale, "drawerPublishBusyCaption") };
-  else if (!recordedBindings(item).length) review = { disabled: true, reason: t(locale, "drawerPublishNeedsDestination") };
-  else if (mode === "save_draft") review = { disabled: true, reason: t(locale, "drawerPublishKeepDraft") };
-  else if (mode === "schedule" && !(intent.publishLocalTime && intent.timezone)) review = { disabled: true, reason: t(locale, "drawerPublishNeedsTime") };
-  const primary = { ...review, label: t(locale, mode === "schedule" ? "drawerSchedulePost" : "drawerPublishPost") };
+  else if (!fileable.length) review = { disabled: true, reason: t(locale, "drawerPublishNeedsDestination") };
+  const primary = {
+    ...review,
+    label: scheduledAt
+      ? t(locale, "drawerScheduleAt", { when: String(scheduledAt).replace("T", " ") })
+      : fileable.length === 1
+        ? t(locale, "drawerPublishToOne", { who: destinationName(destinations, fileable[0]) })
+        : fileable.length > 1
+          ? t(locale, "drawerPublishToMany", { n: fileable.length })
+          : t(locale, "drawerPublishToOne", { who: "…" })
+  };
   return { save, review, primary };
 }
 
@@ -305,18 +341,41 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
 // 1. Output
 // ---------------------------------------------------------------------------
 
+/*
+ * The ordered accepted set — one element today, because a revision accepts a
+ * single generated image (`revisions.accepted_generated_media_id`). The array
+ * is the Phase 2 contract: the strip renders whatever it holds, each picture
+ * carries its own index, and every action names its own slot. `legacy` marks
+ * a slot whose picture is not a generated image — the source media adopted
+ * as-is, or an earlier text poster the revision kept.
+ */
+function imageSlots(item) {
+  const image = item?.generatedImage ?? null;
+  const legacy = image ? null
+    : item?.acceptedVisualMode === "keep_original" ? "source"
+      : item?.acceptedVisualMode === "text_poster" || (item?.acceptedVisualMode == null && item?.posterStored) ? "poster"
+        : null;
+  return [{ index: 1, image, legacy }];
+}
+
+const REGEN_CHIPS = ["drawerRegenC1", "drawerRegenC2", "drawerRegenC3", "drawerRegenC4", "drawerRegenC5"];
+
 /**
  * ctx: `{ editable, saving, buffers, loadImage(generated, img, onFail), highlighted,
  * noteRef(el), onCaptionInput(value), onAltTextInput(value), onStageImage(id|null),
- * onRequestPart("image"|"caption"), onPickUpload(file?), onAdoptUpload(), onAdoptReference(),
- * imageBrief?: { open, useSource, ratio, oneOffOpen, oneOff, saveOneOff },
- * imageRefsAvailable?: bool, onPatchImageBrief(patch), onBriefChanged(), onShowInstructions(),
- * uploadPreview?: { name }, captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use") }`.
+ * onRequestPart("image"|"caption"), onReacceptImage(id), onAdoptUpload(),
+ * imageBrief?: { useSource, ratio, oneOffOpen, oneOff, saveOneOff },
+ * imageRefsAvailable?: bool, uploadPreview?: { name },
+ * captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use"),
+ * strip?: { menuOpen, regen, candidateDismissed, onToggleMenu(), onMenuGenerate(),
+ *   onMenuUpload(), onMenuAdoptSource(), onRegenOpen(n), onRegenChip(key),
+ *   onRegenOtherInput(value), onRegenOtherBlur(), onRegenToggleOther(),
+ *   onRegenSubmit(), onRegenCancel(), onRemoveSlot(n), onViewSlot(n),
+ *   onDismissCandidate() } }`.
  *
- * `buffers` = `{ caption?, altText?, imageId?, visualMode?, imageSource?, instructions?,
- * publicationIntent?, imageBrief? }` — `imageBrief` stages the NEXT Generate ask
- * (reference toggle, aspect ratio, the one-off instruction); it is not content and
- * is never part of a Save.
+ * `buffers` = `{ caption?, altText?, imageId?, visualMode?, imageSource?,
+ * instructions?, imageBrief? }` — `imageBrief` stages the NEXT Generate ask;
+ * it is not content and is never part of a Save.
  */
 export function renderOutputPanel(locale, item, ctx) {
   const buffers = ctx.buffers ?? {};
@@ -327,10 +386,19 @@ export function renderOutputPanel(locale, item, ctx) {
   const imgState = imageState(item);
   const capState = captionState(item);
   const imageBusy = imgState === "requested" || imgState === "generating";
-  const showCandidate = Boolean(candidate && candidate.ready === true);
+  const unsubmitted = ctx.unsubmitted === true;
+  const overlayBusy = imageBusy && !unsubmitted;
+  const strip = ctx.strip ?? {};
+  const brief = ctx.imageBrief ?? { useSource: true, ratio: "4:5", oneOff: "", saveOneOff: false };
+  const refsAvailable = ctx.imageRefsAvailable === true;
+  const showCandidate = Boolean(candidate && candidate.ready === true && strip.candidateDismissed !== candidate.id);
+  const uploadPreview = ctx.uploadPreview ?? null;
 
-  const figure = (generated, labelKey, extraClass) => {
-    const frame = el("div", { class: `sl-output-frame sl-output-thumb ${extraClass}` });
+  // One request at a time per post: while a part is outstanding, the OTHER
+  // part's affordance says what is pending — never a silent replace.
+  const outstanding = pendingParts(item);
+  const figure = (generated, { extra = "", legacy = null, skel = false } = {}) => {
+    const frame = el("div", { class: ["sl-output-frame", extra || null, skel ? "sl-output-frame-skel" : null].filter(Boolean).join(" ") });
     if (generated?.ready === true) {
       const img = el("img", { class: "sl-pc-canvas", alt: generated.altText || t(locale, "drawerGeneratedImageAlt") });
       frame.appendChild(img);
@@ -338,13 +406,13 @@ export function renderOutputPanel(locale, item, ctx) {
         img.replaceWith(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerGeneratedImageFailed")));
       });
     } else if (generated) {
-      frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, labelKey === "drawerImageAccepted" ? "drawerImageArriving" : "drawerCandidatePending")));
-    } else if (!String(extraClass).includes("sl-output-frame-skel")) {
+      frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerImageArriving")));
+    } else if (legacy) {
+      frame.appendChild(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, legacy === "source" ? "drawerHistoryVisualSource" : "drawerHistoryVisualPoster")));
+    } else if (!skel) {
       frame.appendChild(el("span", { class: "sl-pc-media-empty sl-output-empty", role: "status" }, t(locale, "drawerImageNone")));
     }
-    if (String(extraClass).includes("sl-output-frame-skel")) {
-      frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
-    }
+    if (skel) frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
     return frame;
   };
 
@@ -356,62 +424,177 @@ export function renderOutputPanel(locale, item, ctx) {
     return lines.length ? el("p", { class: "sl-field-note" }, lines.join(" · ")) : null;
   };
 
-  // The accepted image — what publish files. Never the reference photo.
-  // Generating overlays this same frame, including an empty first slot.
-  // A ready candidate still sits beside it. Idle or never-submitted stays
-  // a compact note so the next action stays visible.
-  const unsubmitted = ctx.unsubmitted === true;
-  const liveOverlay = imageBusy && unsubmitted !== true;
-  const compactEmpty = !accepted && !showCandidate && !liveOverlay;
-  const acceptedSkel = accepted && liveOverlay ? " sl-output-frame-skel" : "";
-  const acceptedBlock = compactEmpty
-    ? el("p", { class: "sl-field-note sl-output-empty", role: "status" }, t(locale, "drawerImageNone"))
-    : el("div", { class: "sl-output-accepted" }, [
-    accepted || showCandidate
-      ? el("div", { class: "sl-output-label" }, [
-          el("strong", null, t(locale, "drawerImageAccepted")),
-          staged ? el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag")) : null
-        ])
-      : null,
-    accepted
-      ? figure(accepted, "drawerImageAccepted", `sl-output-frame-accepted${acceptedSkel}`)
-      : figure(null, "drawerImageAccepted", liveOverlay ? "sl-output-frame-skel" : "sl-output-frame-empty"),
-    facts(accepted),
-    // The server cannot vouch for which image this revision accepted: say so
-    // and let the owner accept it again explicitly (a new revision).
-    accepted && item.acceptedGeneratedMediaProvenance === "unknown"
-      ? el("div", { class: "sl-guidance sl-provenance-unknown", role: "note" }, [
-          el("p", null, t(locale, "reviewImageReviewRequired")),
-          editable && accepted.ready === true
-            ? el("button", { type: "button", class: "sl-secondary", "data-action": "reaccept-image", disabled: ctx.saving, onclick: () => ctx.onReacceptImage?.(accepted.id) }, t(locale, "reviewReacceptImage"))
-            : null
-        ])
-      : null,
-    !accepted && item.acceptedVisualMode === "keep_original"
-      ? el("p", { class: "sl-field-note" }, t(locale, "drawerLegacySource"))
-      : !accepted && (item.acceptedVisualMode === "text_poster" || (item.acceptedVisualMode == null && item.posterStored))
-        ? el("p", { class: "sl-field-note" }, t(locale, "drawerLegacyVisual"))
-        : null
-  ]);
+  /*
+   * THE STRIP. One slot per accepted picture — one today. The index sits on
+   * the frame, the cap names slot 1 the cover, and the actions that belong to
+   * THAT picture live on it: hover reveals them on a fine pointer,
+   * :focus-within reveals them for the keyboard, and a coarse pointer sees
+   * them permanently (@media (hover: none)). Generating overlays the slot's
+   * own frame — including an empty first slot — so a request never reads as
+   * a second tile.
+   */
+  const hasPicture = (slot) => Boolean(slot.image) || Boolean(slot.legacy);
+  const slotNode = (slot) => {
+    const media = el("div", { class: "sl-slot-media" });
+    media.appendChild(figure(slot.image, {
+      extra: `sl-slot-frame${slot.image ? " sl-output-frame-accepted" : ""}`,
+      legacy: slot.legacy,
+      skel: overlayBusy
+    }));
+    media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(slot.index)));
+    if (editable && hasPicture(slot) && !overlayBusy) {
+      media.appendChild(el("div", { class: "sl-hover" }, [
+        el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onRegenOpen?.(slot.index) }, t(locale, "drawerHoverRegen")),
+        slot.index === 1 ? null : el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onMakeCover?.(slot.index) }, t(locale, "drawerHoverCover")),
+        el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onRemoveSlot?.(slot.index) }, t(locale, "drawerHoverRemove")),
+        slot.image?.ready === true
+          ? el("button", { type: "button", class: "sl-hover-btn", onclick: () => strip.onViewSlot?.(slot.index) }, t(locale, "drawerHoverView"))
+          : null
+      ].filter(Boolean)));
+    }
+    return el("div", { class: "sl-slot", role: "listitem" }, [
+      media,
+      el("div", { class: "sl-slot-cap" }, [
+        el("b", null, slot.index === 1 ? t(locale, "drawerCover") : t(locale, "drawerSlotN", { n: slot.index })),
+        staged && slot.index === 1 ? [" ", el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag"))] : null
+      ])
+    ]);
+  };
 
-  // A ready candidate sits BESIDE the accepted image — never in its place.
-  // A not-ready candidate is generating: overlay the accepted/empty frame
-  // instead of drawing a second empty tile.
-  const candidateBlock = showCandidate
-    ? el("div", { class: "sl-output-candidate", role: "group", "aria-label": t(locale, "drawerCandidateReady") }, [
-        el("div", { class: "sl-output-label" }, [
-          el("strong", null, t(locale, "drawerCandidateReady"))
+  // Built in strip order: the accepted slot loads before the candidate beside it.
+  const slotNodes = imageSlots(item).map(slotNode);
+
+  // The candidate sits BESIDE the slot it would replace — never in its place.
+  // "Keep current" on an untouched candidate dismisses the proposal (the image
+  // stays in History); on a staged one it unstages, the existing meaning.
+  const candidateSlot = showCandidate
+    ? el("div", { class: "sl-slot sl-slot-candidate", role: "listitem" }, [
+        el("div", { class: "sl-slot-media" }, [
+          figure(candidate, { extra: "sl-slot-frame sl-output-frame-candidate" })
         ]),
-        figure(candidate, "drawerCandidatePending", "sl-output-frame-candidate"),
+        el("div", { class: "sl-slot-cap" }, [
+          el("b", null, t(locale, "drawerImgNew")),
+          ` ${t(locale, staged === candidate.id ? "drawerCandidateStaged" : "drawerImgNewNote")}`
+        ]),
         facts(candidate),
-        el("p", { class: "sl-field-note" }, t(locale, staged === candidate.id ? "drawerCandidateStaged" : candidate.status === "legacy" ? "drawerCandidateLegacy" : "drawerCandidateNote")),
+        candidate.status === "legacy" ? el("p", { class: "sl-field-note" }, t(locale, "drawerCandidateLegacy")) : null,
         editable
-          ? staged === candidate.id
-            ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
-            : el("button", { type: "button", class: "sl-primary sl-use-candidate", disabled: ctx.saving, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate"))
+          ? el("div", { class: "sl-slot-acts" }, [
+              staged === candidate.id
+                ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
+                : el("button", { type: "button", class: "sl-primary sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
+              staged === candidate.id ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.() }, t(locale, "drawerKeepCurrentShort"))
+            ].filter(Boolean))
           : null
       ])
     : null;
+
+  // The add tile: one menu with every way a picture joins the set — generate
+  // under the resolved brief (its row says so), upload, or adopt the post's
+  // own picture where one exists.
+  const menuRow = (title, sub, onclick, disabled = false) =>
+    el("button", { type: "button", role: "menuitem", class: "sl-menu-item", disabled: disabled || null, onclick }, [
+      el("span", { class: "sl-menu-lead" }, title),
+      sub ? el("span", { class: "sl-menu-sub" }, sub) : null
+    ]);
+  // The menu's Generate row carries the same pending honesty the old segment
+  // did: a requested part names itself, another pending part is named too.
+  const generateItem = menuRow(t(locale, "drawerAddGenerate"), t(locale, "drawerAddGenerateSub", {
+    ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
+    ratio: brief.ratio,
+    price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")
+  }), () => strip.onMenuGenerate?.());
+  if (imageBusy) {
+    generateItem.setAttribute("title", unsubmitted ? t(locale, "drawerRequestNotSubmitted") : t(locale, "drawerPartAlreadyRequested"));
+    generateItem.setAttribute("data-requested", "true");
+  } else if (outstanding.includes("caption")) {
+    generateItem.setAttribute("title", t(locale, "drawerPartOtherPendingCaption"));
+    generateItem.setAttribute("data-pending", "caption");
+  }
+  const addSlot = editable
+    ? el("div", { class: "sl-addwrap" }, [
+        el("button", {
+          type: "button",
+          class: "sl-addslot",
+          "aria-label": t(locale, "drawerAddImage"),
+          "aria-haspopup": "menu",
+          "aria-expanded": strip.menuOpen ? "true" : "false",
+          disabled: ctx.saving || null,
+          onclick: () => strip.onToggleMenu?.()
+        }, "＋"),
+        strip.menuOpen
+          ? el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerAddImage") }, [
+              generateItem,
+              el("div", { class: "sl-menu-sep", role: "separator" }),
+              menuRow(t(locale, "drawerAddUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
+              menuRow(
+                t(locale, "drawerAddSource"),
+                refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
+                () => strip.onMenuAdoptSource?.(),
+                !refsAvailable || item.acceptedVisualMode === "keep_original"
+              )
+            ])
+          : null
+      ])
+    : null;
+
+  /*
+   * REGENERATE IS A CONVERSATION, not a blind rerun: name what should change
+   * (a chip or your own words), see the plan and the price it will spend, then
+   * Generate — and it generates once, never on a loop. Nothing is filed until
+   * the owner says what is wrong.
+   */
+  const regen = strip.regen ?? null;
+  const regenPanel = (() => {
+    if (!editable || !regen) return null;
+    if (regen.sent) {
+      return el("div", { class: "sl-regen", role: "status" }, [
+        el("p", { class: "sl-regen-ask" }, t(locale, "drawerRegenRunning", { n: regen.slot })),
+        el("p", { class: "sl-regen-sub" }, t(locale, "drawerRegenRunningSub"))
+      ]);
+    }
+    const named = regen.notes.length > 0 || Boolean(regen.other?.trim());
+    const correction = [...regen.notes.map((key) => t(locale, key)), ...(regen.other?.trim() ? [regen.other.trim()] : [])];
+    const other = regen.otherOpen
+      ? (() => {
+          const area = el("textarea", {
+            id: "sl-regen-other",
+            class: "sl-regen-other",
+            rows: "2",
+            placeholder: t(locale, "drawerRegenOtherPh"),
+            "aria-label": t(locale, "drawerRegenOther")
+          });
+          area.value = regen.other ?? "";
+          area.addEventListener("input", () => strip.onRegenOtherInput?.(area.value));
+          // Re-render on blur: the plan line appears once something is named.
+          area.addEventListener("blur", () => strip.onRegenOtherBlur?.());
+          return area;
+        })()
+      : el("button", { type: "button", class: "sl-brief-link", onclick: () => strip.onRegenToggleOther?.() }, t(locale, "drawerRegenOther"));
+    return el("div", { class: "sl-regen" }, [
+      el("p", { class: "sl-regen-ask" }, t(locale, "drawerRegenAsk", { n: regen.slot })),
+      el("p", { class: "sl-regen-sub" }, t(locale, "drawerRegenSub")),
+      el("div", { class: "sl-regen-chips", role: "group" }, REGEN_CHIPS.map((key) =>
+        el("button", {
+          type: "button",
+          class: "sl-regen-chip",
+          "aria-pressed": regen.notes.includes(key) ? "true" : "false",
+          onclick: () => strip.onRegenChip?.(key)
+        }, t(locale, key)))),
+      other,
+      named
+        ? el("div", { class: "sl-regen-plan" }, [
+            el("p", { class: "sl-regen-plan-line" }, t(locale, "drawerRegenPlan", { n: regen.slot, notes: correction.join(" · "), ratio: brief.ratio })),
+            el("p", { class: "sl-regen-cost" }, t(locale, "drawerRegenCost", { price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew") })),
+            el("div", { class: "sl-regen-acts" }, [
+              el("button", { type: "button", class: "sl-primary sl-regen-go", disabled: ctx.saving || null, onclick: () => strip.onRegenSubmit?.() }, t(locale, "drawerRegenGo")),
+              el("span", { class: "sl-grow" }),
+              el("button", { type: "button", class: "sl-secondary", onclick: () => strip.onRegenCancel?.() }, t(locale, "drawerRegenCancel"))
+            ])
+          ])
+        : el("p", { class: "sl-regen-sub sl-regen-need" }, t(locale, "drawerRegenNeedMore"))
+    ]);
+  })();
 
   // A part the platform confirmed was never submitted is not "waiting for the
   // agent": the footer says saved-but-not-submitted, and this line agrees
@@ -422,10 +605,6 @@ export function renderOutputPanel(locale, item, ctx) {
       ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
       : null;
 
-  // One request at a time per post: while a part is outstanding, the OTHER
-  // part's button stays pressable but says what is pending, and pressing it
-  // asks before anything replaces that request.
-  const outstanding = pendingParts(item);
   const partButton = (part, labelKey, keepsKey, requested, extra = {}) => {
     if (!editable) return null;
     // A pending request (including the one every new post starts with) is
@@ -442,16 +621,25 @@ export function renderOutputPanel(locale, item, ctx) {
       type: "button",
       class: extra.className ?? "sl-secondary",
       "data-part": part,
-      "data-src": extra.src ?? null,
       "data-pending": other && !requested ? other : null,
       "data-requested": requested ? "true" : null,
-      "aria-pressed": extra.pressed ?? null,
       disabled: ctx.saving,
       title: note,
-      onclick: extra.onclick ?? (() => ctx.onRequestPart?.(part))
+      onclick: () => ctx.onRequestPart?.(part)
     }, t(locale, labelKey));
     return extra.bare ? button : el("div", { class: "sl-part-action" }, [button]);
   };
+
+  // The server cannot vouch for which image this revision accepted: say so
+  // under the strip and let the owner accept it again explicitly.
+  const provenance = accepted && item.acceptedGeneratedMediaProvenance === "unknown"
+    ? el("div", { class: "sl-guidance sl-provenance-unknown", role: "note" }, [
+        el("p", null, t(locale, "reviewImageReviewRequired")),
+        editable && accepted.ready === true
+          ? el("button", { type: "button", class: "sl-secondary", "data-action": "reaccept-image", disabled: ctx.saving, onclick: () => ctx.onReacceptImage?.(accepted.id) }, t(locale, "reviewReacceptImage"))
+          : null
+      ])
+    : null;
 
   // Alt text belongs to the revision: edited here, saved with Save, carried to Review.
   let altField = null;
@@ -477,145 +665,7 @@ export function renderOutputPanel(locale, item, ctx) {
     altField = el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: item.altText }));
   }
 
-  const imageSource = buffers.imageSource ?? "generate";
-  const sourceRow = editable
-    ? el("div", { class: "sl-src-seg", role: "group", "aria-label": t(locale, "drawerSrcGroup") }, [
-        partButton("image", "drawerRegenerateImage", "drawerRegenerateImageKeeps", imgState === "requested" || imgState === "generating", {
-          bare: true,
-          className: "sl-secondary sl-src-btn",
-          src: "generate",
-          pressed: imageSource === "generate" ? "true" : "false"
-        }),
-        el("button", {
-          type: "button",
-          class: "sl-secondary sl-src-btn",
-          "data-src": "upload",
-          "aria-pressed": imageSource === "upload" ? "true" : "false",
-          disabled: ctx.saving,
-          onclick: () => ctx.onPickUpload?.()
-        }, t(locale, "drawerSrcUpload")),
-        el("button", {
-          type: "button",
-          class: "sl-secondary sl-src-btn",
-          "data-src": "reference",
-          "aria-pressed": imageSource === "reference" || buffers.visualMode === "keep_original" || item.acceptedVisualMode === "keep_original" ? "true" : "false",
-          disabled: ctx.saving,
-          onclick: () => ctx.onAdoptReference?.()
-        }, t(locale, "drawerSrcReference"))
-      ])
-    : null;
-  // Arrow keys move along the segment — the same roving the tablist uses.
-  sourceRow?.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const buttons = [...sourceRow.querySelectorAll("button")];
-    const index = buttons.indexOf(document.activeElement);
-    if (index < 0) return;
-    event.preventDefault?.();
-    buttons[(index + (event.key === "ArrowRight" ? 1 : buttons.length - 1)) % buttons.length].focus();
-  });
-
-  /*
-   * The image brief — the settings a Generate ask is made under. It hangs
-   * under the source segment and only exists while Generate is the picked
-   * source: "Use reference" adopts the post's picture outright and "Upload"
-   * stages a file, and neither is a generation. The block shows the RESOLVED
-   * brief (the owner's staged choices over the configured defaults), so the
-   * summary line always names exactly what a press of Generate would ask for.
-   */
-  const brief = ctx.imageBrief ?? { open: false, useSource: true, ratio: "4:5", oneOffOpen: false, oneOff: "", saveOneOff: false };
-  const refsAvailable = ctx.imageRefsAvailable === true;
-  let briefBlock = null;
-  if (editable && imageSource === "generate") {
-    const patch = (part) => ctx.onPatchImageBrief?.(part);
-    const changed = () => ctx.onBriefChanged?.();
-    const summaryLine = [
-      brief.useSource ? t(locale, "drawerBriefOn") : t(locale, "drawerBriefOff"),
-      brief.ratio,
-      brief.oneOff.trim() ? t(locale, "drawerBriefOnceLabel") : null
-    ].filter(Boolean).join(" · ");
-
-    const details = el("details", { class: "sl-brief", open: brief.open || null });
-    details.addEventListener("toggle", () => {
-      if (details.open !== brief.open) patch({ open: details.open });
-    });
-    details.appendChild(el("summary", { class: "sl-brief-head" }, [
-      el("span", { class: "sl-brief-caret", "aria-hidden": "true" }, "›"),
-      el("span", { class: "sl-brief-title" }, `${t(locale, "drawerBriefTitle")} — ${summaryLine}`),
-      el("span", { class: "sl-brief-chip" }, t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew"))
-    ]));
-
-    const body = el("div", { class: "sl-brief-body" });
-    body.appendChild(el("label", { class: "sl-brief-switch" }, [
-      el("input", {
-        type: "checkbox",
-        checked: brief.useSource || null,
-        disabled: ctx.saving || null,
-        onchange: (event) => { patch({ useSource: event.currentTarget.checked }); changed(); }
-      }),
-      el("span", { class: "sl-brief-switch-text" }, [
-        el("span", { class: "sl-brief-switch-label" }, t(locale, "drawerBriefRefTitle")),
-        el("span", { class: "sl-field-note" }, t(locale, "drawerBriefRefSub"))
-      ])
-    ]));
-    if (brief.useSource && !refsAvailable) {
-      body.appendChild(el("p", { class: "sl-field-note sl-brief-warn", role: "note" }, t(locale, "drawerBriefRefMissing")));
-    }
-    body.appendChild(el("div", { class: "sl-brief-ratios", role: "group", "aria-label": t(locale, "drawerBriefRatioLead") }, [
-      el("span", { class: "sl-brief-ratios-lead" }, t(locale, "drawerBriefRatioLead")),
-      ...[["4:5", "drawerRatioMatch"], ["1:1", "drawerRatioSquare"], ["9:16", "drawerRatioStory"]].map(([value, key]) =>
-        el("button", {
-          type: "button",
-          class: "sl-brief-ratio",
-          "aria-pressed": brief.ratio === value ? "true" : "false",
-          disabled: ctx.saving || null,
-          onclick: () => { patch({ ratio: value }); changed(); }
-        }, t(locale, key)))
-    ]));
-    if (brief.oneOffOpen || brief.oneOff.trim()) {
-      const area = el("textarea", {
-        class: "sl-drawer-caption sl-brief-once",
-        rows: "2",
-        placeholder: t(locale, "drawerBriefOncePlaceholder"),
-        "aria-label": t(locale, "drawerBriefOnceLabel"),
-        readonly: ctx.saving || null
-      });
-      area.value = brief.oneOff;
-      area.addEventListener("input", () => patch({ oneOff: area.value }));
-      // The summary and in-effect lines re-read the buffer on redraw — a blur
-      // is when a typing pause becomes the stated ask.
-      area.addEventListener("blur", () => changed());
-      body.appendChild(el("div", { class: "sl-brief-once-wrap" }, [
-        area,
-        el("p", { class: "sl-field-note" }, t(locale, "drawerBriefOnceSub")),
-        el("label", { class: "sl-brief-save" }, [
-          el("input", {
-            type: "checkbox",
-            checked: brief.saveOneOff || null,
-            disabled: ctx.saving || null,
-            onchange: (event) => patch({ saveOneOff: event.currentTarget.checked })
-          }),
-          el("span", null, t(locale, "drawerBriefOnceSave"))
-        ])
-      ]));
-    } else {
-      body.appendChild(el("button", {
-        type: "button",
-        class: "sl-brief-link",
-        disabled: ctx.saving || null,
-        onclick: () => { patch({ oneOffOpen: true }); changed(); }
-      }, t(locale, "drawerBriefOnceOpen")));
-    }
-    const liveLayer = brief.oneOff.trim() ? "run" : (item.effectiveInstructions?.image?.source ?? "default");
-    const LAYER_KEYS = { run: "drawerLayerRun", post: "drawerLayerPost", default: "drawerLayerGadget", builtin: "drawerLayerBuiltin" };
-    body.appendChild(el("p", { class: "sl-field-note" }, [
-      `${t(locale, "drawerBriefInEffect")} ${t(locale, LAYER_KEYS[liveLayer] ?? "drawerLayerGadget")} · `,
-      el("button", { type: "button", class: "sl-brief-link", onclick: () => ctx.onShowInstructions?.() }, t(locale, "drawerBriefEditIns"))
-    ]));
-    details.appendChild(body);
-    briefBlock = details;
-  }
-  const uploadPreview = ctx.uploadPreview;
-  const uploadBlock = imageSource === "upload" && uploadPreview
+  const uploadBlock = buffers.imageSource === "upload" && uploadPreview
     ? el("div", { class: "sl-upload-row" }, [
         el("p", { class: "sl-field-note" }, uploadPreview.name),
         el("button", { type: "button", class: "sl-primary", disabled: ctx.saving, onclick: () => ctx.onAdoptUpload?.() }, t(locale, "drawerUseCandidate"))
@@ -658,8 +708,7 @@ export function renderOutputPanel(locale, item, ctx) {
   } else {
     captionBody = [el("p", { class: "sl-drawer-caption-preview" }, [ctx.highlighted || item.caption || t(locale, "drawerCaptionNone")])];
   }
-  // Rewrite caption is a quiet inline action beside the label, not a second
-  // full-width button competing with the source segment below it.
+  // Rewrite caption is a quiet inline action beside the label.
   const captionSection = el("section", { class: "sl-drawer-section sl-output-copy", "aria-labelledby": "sl-output-caption-title" }, [
     el("div", { class: "sl-output-label" }, [
       el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
@@ -671,86 +720,108 @@ export function renderOutputPanel(locale, item, ctx) {
     ...captionBody
   ]);
 
-  // Panel order follows the accepted mockup: compose, status, candidate
-  // actions, source segment, brief, upload. Publication timing lives in the
-  // sheet foot (renderPublicationControls), not the tab body.
+  // Panel order follows the accepted mockup: the image strip, then the
+  // caption. The publish row lives in the sheet foot (renderPublishControls).
   return el("div", { class: "sl-drawer-panel-body" }, [
-    el("div", { class: "sl-output-compose" }, [
-      el("div", { class: "sl-output-images" }, [acceptedBlock]),
-      captionSection
+    el("section", { class: "sl-drawer-section sl-imgstrip", "aria-labelledby": "sl-output-images-title" }, [
+      el("div", { class: "sl-output-label" }, [el("h3", { id: "sl-output-images-title" }, t(locale, "drawerImageSet"))]),
+      el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot, addSlot].filter(Boolean)),
+      provenance,
+      imageStatusLine,
+      regenPanel
     ]),
-    imageStatusLine,
-    candidateBlock,
+    captionSection,
     altField,
-    sourceRow,
-    briefBlock,
     uploadBlock
   ]);
 }
 
 /*
- * The sheet foot's publication controls, per the accepted mockup: the
- * destination line (when destinations are connected), the three-way timing
- * segment, and the schedule field when Schedule is picked. Rendered by the
- * drawer's footer builder so the choice stays visible on every tab; the
- * matching hint sentence comes from publicationHint.
+ * The sheet foot's publish row, per the accepted mockup: 發佈至 and the
+ * destination picker, then the schedule field while a time is being chosen.
+ * The timing radios are gone — which button was pressed IS the intent, so
+ * "publication mode" is never a stored field. A destination that cannot take
+ * the post explains itself on its own option (a revoked grant, a content rule
+ * unmet, a format it cannot take) instead of failing at the server.
+ *
+ * ctx: `{ editable, saving, buffers, destinations, destinationLabel(binding),
+ *        picked, menuOpen, picking, scheduledAt, onToggleMenu(),
+ *        onToggleDestination(binding), onScheduleChange(value),
+ *        onScheduleCancel() }`.
  */
-export function renderPublicationControls(locale, item, ctx = {}) {
-  const intent = intentOf(item, ctx.buffers ?? {});
-  const dests = recordedBindings(item);
-  const destLine = dests.map((binding) => ctx.destinationLabel?.(binding) || binding).join(" · ");
-  return [
-    destLine ? el("p", { class: "sl-pub-dest" }, destLine) : null,
-    el("div", { class: "sl-pub-radios", role: "radiogroup", "aria-label": t(locale, "publicationTiming") },
-      [["save_draft", "publicationDraft"], ["publish_now", "publicationNow"], ["schedule", "publicationSchedule"]].map(([mode, key]) =>
-        el("label", { class: "sl-pub-choice" }, [
-          el("input", {
-            type: "radio",
-            name: "publicationMode",
-            value: mode,
-            checked: (intent.publishMode ?? "save_draft") === mode,
-            disabled: !ctx.editable || ctx.saving,
-            onchange: () => ctx.onPublicationIntent?.({
-              publishMode: mode,
-              publishLocalTime: null,
-              timezone: mode === "schedule" ? Intl.DateTimeFormat().resolvedOptions().timeZone : null,
-              utcOffsetMinutes: null,
-              latePolicy: "hold"
-            })
-          }),
-          t(locale, key)
-        ]))),
-    intent.publishMode === "schedule"
-      ? el("label", { class: "sl-pub-when" }, [
-          el("span", null, t(locale, "publicationLocalTime")),
-          el("input", {
-            type: "datetime-local",
-            id: "sl-drawer-publish-when",
-            value: intent.publishLocalTime || "",
-            disabled: !ctx.editable || ctx.saving,
-            // change, not input: the footer rebuilds on each patch, and an
-            // input listener would rebuild the control mid-edit.
-            onchange: (event) => ctx.onPublicationIntent?.({
-              ...intent,
-              publishMode: "schedule",
-              publishLocalTime: event.currentTarget.value,
-              timezone: intent.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
-            })
-          })
+export function renderPublishControls(locale, item, ctx = {}) {
+  const destinations = Array.isArray(ctx.destinations) ? ctx.destinations : [];
+  const buffers = ctx.buffers ?? {};
+  const recorded = recordedBindings(item);
+  const known = new Set(destinations.map((row) => row.binding ?? row.destinationBinding));
+  const options = [
+    ...destinations.map((row) => ({
+      binding: row.binding ?? row.destinationBinding,
+      label: row.label ?? ctx.destinationLabel?.(row.binding ?? row.destinationBinding) ?? (row.binding ?? row.destinationBinding),
+      row
+    })),
+    // A recorded binding no destination row describes stays pickable — an
+    // absent row cannot prove the grant is gone.
+    ...recorded.filter((binding) => !known.has(binding)).map((binding) => ({ binding, label: ctx.destinationLabel?.(binding) || binding, row: null }))
+  ];
+  const picked = ctx.picked ?? recorded;
+  const face = picked.length ? picked.map((binding) => ctx.destinationLabel?.(binding) || binding).join(" · ") : t(locale, "drawerPubNoDest");
+  const menu = ctx.menuOpen === true && options.length > 0;
+  const dests = el("div", { class: "sl-dests" }, [
+    `${t(locale, "drawerPublishTo")} `,
+    options.length
+      ? el("span", { class: "sl-destwrap" }, [
+          el("button", {
+            type: "button",
+            class: "sl-destbtn",
+            "aria-haspopup": "menu",
+            "aria-expanded": menu ? "true" : "false",
+            "aria-label": t(locale, "drawerDestPick"),
+            disabled: !ctx.editable || ctx.saving || null,
+            onclick: () => ctx.onToggleMenu?.()
+          }, `${face} ▾`),
+          menu
+            ? el("div", { class: "sl-destmenu", role: "menu" }, options.map((entry) => {
+                const blocked = destinationBlock(item, buffers, destinations, entry.binding);
+                return el("label", { class: "sl-destopt" }, [
+                  el("input", {
+                    type: "checkbox",
+                    checked: picked.includes(entry.binding) || null,
+                    disabled: Boolean(blocked) || !ctx.editable || ctx.saving || null,
+                    onchange: () => ctx.onToggleDestination?.(entry.binding)
+                  }),
+                  el("span", { class: "sl-destopt-text" }, [
+                    entry.label,
+                    el("span", { class: blocked ? "sl-dest-sub sl-dest-blocked" : "sl-dest-sub" },
+                      blocked ? t(locale, blocked) : (entry.row?.providerLabel ?? entry.row?.provider ?? ""))
+                  ])
+                ]);
+              }))
+            : null
         ])
-      : null
-  ].filter(Boolean);
+      : el("span", { class: "sl-field-note" }, face)
+  ]);
+  const when = ctx.picking === true && !ctx.scheduledAt
+    ? el("div", { class: "sl-whenrow" }, [
+        el("input", {
+          type: "datetime-local",
+          id: "sl-drawer-publish-when",
+          "aria-label": t(locale, "drawerScheduleField"),
+          disabled: !ctx.editable || ctx.saving || null,
+          // change, not input: the footer rebuilds on each patch, and an
+          // input listener would rebuild the control mid-edit.
+          onchange: (event) => ctx.onScheduleChange?.(event.currentTarget.value)
+        }),
+        el("button", { type: "button", class: "sl-brief-link", onclick: () => ctx.onScheduleCancel?.() }, t(locale, "drawerCancelSchedule"))
+      ])
+    : null;
+  return [dests, when].filter(Boolean);
 }
 
-/* What the picked timing means, in owner words — the footer's note line when
-   no stronger reason (a disabled action's explanation) takes the slot. */
-export function publicationHint(locale, item, buffers = {}) {
-  const intent = intentOf(item, buffers);
-  return intent.publishMode === "schedule"
-    ? t(locale, "drawerPublishHintSchedule")
-    : intent.publishMode === "publish_now"
-      ? t(locale, "drawerPublishHintNow")
-      : t(locale, "drawerPublishHintDraft");
+/* The footer's note line when no stronger reason takes the slot: what the
+   pending press means, in owner words. */
+export function publicationHint(locale, { scheduledAt = null } = {}) {
+  return scheduledAt ? t(locale, "drawerPublishHintSchedule") : t(locale, "drawerPublishHintNow");
 }
 
 function formatLabel(mimeType) {
@@ -797,14 +868,96 @@ export function renderReferencePanel(locale, item, ctx = {}) {
 // 3. Instructions
 // ---------------------------------------------------------------------------
 
+/*
+ * The generation settings a Generate ask is made under — the resolved brief
+ * (the owner's staged choices over the configured defaults) sits on the
+ * Instructions tab with the instructions it amends, per the accepted mockup:
+ * price line first, then the reference toggle, the ratio, and the one-off
+ * instruction the next ask carries once.
+ */
+function renderBriefControls(locale, ctx) {
+  const brief = ctx.imageBrief;
+  const refsAvailable = ctx.imageRefsAvailable === true;
+  const patch = (part) => ctx.onPatchImageBrief?.(part);
+  const changed = () => ctx.onBriefChanged?.();
+  const body = el("div", { class: "sl-brieftab" });
+  body.appendChild(el("p", { class: "sl-field-note sl-brief-price" }, t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")));
+  body.appendChild(el("label", { class: "sl-brief-switch" }, [
+    el("input", {
+      type: "checkbox",
+      checked: brief.useSource || null,
+      disabled: ctx.saving || null,
+      onchange: (event) => { patch({ useSource: event.currentTarget.checked }); changed(); }
+    }),
+    el("span", { class: "sl-brief-switch-text" }, [
+      el("span", { class: "sl-brief-switch-label" }, t(locale, "drawerBriefRefTitle")),
+      el("span", { class: "sl-field-note" }, t(locale, "drawerBriefRefSub"))
+    ])
+  ]));
+  if (brief.useSource && !refsAvailable) {
+    body.appendChild(el("p", { class: "sl-field-note sl-brief-warn", role: "note" }, t(locale, "drawerBriefRefMissing")));
+  }
+  body.appendChild(el("div", { class: "sl-brief-ratios", role: "group", "aria-label": t(locale, "drawerBriefRatioLead") }, [
+    el("span", { class: "sl-brief-ratios-lead" }, t(locale, "drawerBriefRatioLead")),
+    ...[["4:5", "drawerRatioMatch"], ["1:1", "drawerRatioSquare"], ["9:16", "drawerRatioStory"]].map(([value, key]) =>
+      el("button", {
+        type: "button",
+        class: "sl-brief-ratio",
+        "aria-pressed": brief.ratio === value ? "true" : "false",
+        disabled: ctx.saving || null,
+        onclick: () => { patch({ ratio: value }); changed(); }
+      }, t(locale, key)))
+  ]));
+  if (brief.oneOffOpen || brief.oneOff.trim()) {
+    const area = el("textarea", {
+      id: "sl-brief-once",
+      class: "sl-drawer-caption sl-brief-once",
+      rows: "2",
+      placeholder: t(locale, "drawerBriefOncePlaceholder"),
+      "aria-label": t(locale, "drawerBriefOnceLabel"),
+      readonly: ctx.saving || null
+    });
+    area.value = brief.oneOff;
+    area.addEventListener("input", () => patch({ oneOff: area.value }));
+    // The in-effect note re-reads the buffer on redraw — a blur is when a
+    // typing pause becomes the stated ask.
+    area.addEventListener("blur", () => changed());
+    body.appendChild(el("div", { class: "sl-brief-once-wrap" }, [
+      area,
+      el("p", { class: "sl-field-note" }, t(locale, "drawerBriefOnceSub")),
+      el("label", { class: "sl-brief-save" }, [
+        el("input", {
+          type: "checkbox",
+          checked: brief.saveOneOff || null,
+          disabled: ctx.saving || null,
+          onchange: (event) => patch({ saveOneOff: event.currentTarget.checked })
+        }),
+        el("span", null, t(locale, "drawerBriefOnceSave"))
+      ])
+    ]));
+  } else {
+    body.appendChild(el("button", {
+      type: "button",
+      class: "sl-brief-link",
+      disabled: ctx.saving || null,
+      onclick: () => { patch({ oneOffOpen: true }); changed(); }
+    }, t(locale, "drawerBriefOnceOpen")));
+  }
+  const liveLayer = brief.oneOff.trim() ? "run" : (ctx.item?.effectiveInstructions?.image?.source ?? "default");
+  body.appendChild(el("p", { class: "sl-field-note sl-brief-in-effect" },
+    `${t(locale, "drawerBriefInEffect")} ${instructionSourceName(locale, liveLayer)}`));
+  return body;
+}
+
 /**
- * ctx: `{ editable, buffers, policy, onInput(part, value), onReset(part) }`.
+ * ctx: `{ editable, saving, buffers, policy, onInput(part, value), onReset(part),
+ *        imageBrief?, imageRefsAvailable?, onPatchImageBrief?, onBriefChanged? }`.
  *
- * Two prefilled fields, nothing else: each carries the text the next request
- * would actually use — this post's own override when there is one, the
- * workspace default otherwise. The state line under each says which, and
- * Reset clears the post's own so it follows the default again. Typing back
- * the prefilled text writes no override (dirtyInstructionParts compares
+ * The generation brief, then two prefilled fields: each carries the text the
+ * next request would actually use — this post's own override when there is
+ * one, the workspace default otherwise. The state line under each says which,
+ * and Reset clears the post's own so it follows the default again. Typing
+ * back the prefilled text writes no override (dirtyInstructionParts compares
  * against that same prefill). The four-layer resolution, the pending
  * request's snapshot, and what produced the accepted output all live on the
  * History tab.
@@ -864,6 +1017,7 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
     : normalizeOverride(saved.image);
   const legacyWording = LEGACY_POSTER_WORDING.test(pendingImage ?? defaults.image ?? "");
   return el("section", { class: "sl-drawer-section", "aria-label": t(locale, "drawerTabInstructions") }, [
+    ctx.editable && ctx.imageBrief ? renderBriefControls(locale, { ...ctx, item }) : null,
     part("image", "drawerInstructionsImage", "drawerInstructionsImagePlaceholder"),
     part("caption", "drawerInstructionsCaption", "drawerInstructionsContentPlaceholder"),
     legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null
