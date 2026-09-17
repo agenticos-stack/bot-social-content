@@ -236,7 +236,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
 .sl-drawer-section { padding: 12px 0; }
-.sl-drawer-tablist { display: flex; gap: 2px; border-bottom: 1px solid var(--sl-line); overflow-x: auto; scrollbar-width: none; }
+.sl-drawer-tablist { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 .sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 13px; font-weight: 600; box-shadow: none; }
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
 .sl-drawer-meta { font-size: 12px; color: var(--sl-muted); }
@@ -247,9 +247,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-output-thumb { width: 128px; max-width: 128px; }
 .sl-output-copy { padding-top: 0; }
 .sl-output-copy h3 { margin-top: 0; }
-.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0 8px; }
-.sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; }
-.sl-src-btn[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
+/* One joined segmented control, per the accepted mockup: the segment carries
+   the border and radius; the buttons inside share dividers, not chrome. */
+.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 10px 0 8px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
+.sl-src-btn.sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-soft, var(--sl-muted)); font-weight: 600; }
+.sl-src-btn:last-child { border-right: 0; }
+.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 650; }
+.sl-src-btn:focus-visible { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
 /* The image brief: a quiet collapsible that belongs to the Generate source
    only. Its summary line always names the resolved ask, so the collapsed
    state is still honest about what a press would send. */
@@ -299,25 +303,42 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
 .sl-output-frame-skel::before { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.32); pointer-events: none; }
 .sl-output-frame-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(255,255,255,0) 36%, rgba(255,255,255,.5) 50%, rgba(255,255,255,0) 64%); background-size: 220% 100%; animation: sl-skel-sweep 1.6s linear infinite; pointer-events: none; }
-.sl-skel-label { position: absolute; z-index: 2; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; font-weight: 650; padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,.94); color: var(--sl-ink); white-space: nowrap; }
+/* The label wraps inside the frame — a nowrap pill in a 128px frame clipped
+   mid-word. Inset both sides instead of left:50% + translateX so shrink-to-fit
+   measures against the full frame, not the half-width region. */
+.sl-skel-label { position: absolute; z-index: 2; top: 50%; left: 8px; right: 8px; width: fit-content; margin-inline: auto; transform: translateY(-50%); font-size: 11px; font-weight: 650; padding: 4px 8px; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.94); color: var(--sl-ink); max-width: 100%; text-align: center; line-height: 1.35; overflow-wrap: anywhere; }
 @keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
 .sl-drawer-caption.sl-skel { color: transparent; }
 .sl-pub { margin-top: 6px; }
 .sl-pub-dest { margin: 0 0 8px; font-size: 12.5px; color: var(--sl-ink-soft); }
-.sl-pub-radios { display: grid; gap: 6px; }
-.sl-pub-choice { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
-.sl-pub-choice input { accent-color: var(--sl-ink); }
+/* Publish timing is a joined segment like the source group above it: three
+   cells in one bordered strip, the checked one shaded. The radio input stays
+   real but invisible; the cell carries the state. */
+.sl-pub-radios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
+.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; font-weight: 600; color: var(--sl-ink-soft, var(--sl-muted)); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
+.sl-pub-choice:last-child { border-right: 0; }
+.sl-pub-choice:has(input:checked) { background: var(--sl-surface-2); color: var(--sl-ink); }
+.sl-pub-choice:focus-within { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
+.sl-pub-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
 .sl-pub-when { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--sl-muted); }
 .sl-pub-when input { height: var(--sl-h-control); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); }
 .sl-output-frame-skel .sl-pc-media-empty { display: none; }
-.sl-part-action { margin-top: 8px; }
 .sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
 .sl-reference-text { color: var(--sl-muted); }
 .sl-instructions-part { margin: 0 0 18px; }
+.sl-instructions-disclosure { margin-top: 4px; }
+.sl-instructions-disclosure .sl-instructions-part { margin-bottom: 0; }
 .sl-instructions-used { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
-.sl-history-list { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; }
-.sl-history-delivery, .sl-history-earlier { margin-bottom: 10px; }
+/* History is one time-ordered feed: the instant leads, then the event. */
+.sl-history-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.sl-history-event { display: flex; gap: 10px; align-items: baseline; }
+.sl-history-when { flex: 0 0 auto; min-width: 8em; font-size: 10.5px; color: var(--sl-muted); font-variant-numeric: tabular-nums; }
+.sl-history-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sl-history-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; margin: 0; }
+.sl-history-line strong { font-size: 12px; }
+.sl-history-detail { color: var(--sl-muted); font-size: 11px; }
+.sl-history-use-image { flex-shrink: 0; }
 .sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 6px; }
 .sl-drawer-footer-actions { display: flex; gap: 8px; }
 .sl-drawer-footer-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
@@ -531,7 +552,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
 .sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
 .sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
-.sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
+
 .sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
 .sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
 .sl-setup-section .sl-field label { font-size: 13px; }
@@ -539,17 +560,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
 /*
- * SLIM, because the media is tall.
+ * FLOATING PANEL, per the accepted workbench mockup.
  *
- * 640px was a generic drawer width. Nine of the twelve posts a real account
- * produces are portrait -- 1080x1350 or 480x852 -- so a wide sheet spends its
- * width on empty ground beside the picture and its height on the thing that
- * matters. 440 is a 4:5 frame at full bleed with the caption still reading
- * near 60 characters; a 9:16 reel sits inside it without the sheet having to
- * grow. The blurred fill behind the frame went with it: it existed only to
- * cover the gap a too-wide sheet left, and there is no gap now.
+ * The dialog is a rounded card that floats over the page — border, radius and
+ * elevation on all four sides, never an edge dock. The two sheet dialogs
+ * (the source preview and the batch drawer) also carry .sl-drawer: right-
+ * docked, inset 12px, 535px wide, full height minus the inset. The small
+ * confirm dialog keeps this shared chrome with the default centered
+ * placement. An earlier revision argued for a slim edge-docked sheet at
+ * 440px because the media is portrait; the owner chose the workbench
+ * geometry instead — do not "fix" this back.
  */
-.sl-preview-dialog { width: min(440px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/* Doubled class: inside the real shell every preview dialog also carries the
+   SDK's bot-drawer class, whose dialog.bot-drawer rule still describes the
+   old edge dock — the doubled class outranks it so the panel really floats. */
+.sl-preview-dialog.sl-preview-dialog { margin: auto; padding: 0; max-width: calc(100vw - 30px); max-height: calc(100dvh - 30px); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); color: var(--sl-ink); box-shadow: 0 24px 60px -24px rgba(24,24,27,.5); overflow: hidden; translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog.sl-drawer { margin: 12px 12px 12px auto; width: 535px; height: calc(100dvh - 24px); max-height: none; }
 /* The drawer slides in from the edge it is docked to. The display and overlay
    properties have to transition discretely or the closing frames are never
    painted: a dialog leaves the top layer the instant close() runs. The
@@ -558,24 +584,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-dialog:not([open]) { translate: 100% 0; opacity: 0; }
 @starting-style { .sl-preview-dialog[open] { translate: 100% 0; opacity: 0; } }
 /*
- * No dim. The drawer is for looking at one post while the others stay in
- * view; darkening them makes the grid a wall instead of a row you are moving
- * along. The sheet reads as a layer from its own edge and shadow.
- *
- * The backdrop element stays (showModal still traps focus and Escape still
- * closes) but it is transparent, so a click on it is a click on something the
- * owner can plainly see -- and that click now closes the drawer, because a
- * visible grid that swallows clicks is worse than a dimmed one that does.
+ * Dimmed and blurred, per the same mockup. The panel floats, so the page
+ * behind it recedes; the click-to-close on the backdrop still works, and
+ * showModal still traps focus and Escape. An earlier revision kept the
+ * backdrop transparent so the grid stayed fully visible while the owner
+ * moved along it; the owner chose the dimmed treatment.
  */
-.sl-preview-dialog::backdrop { background: transparent; opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog::backdrop { background: #18181b38; backdrop-filter: blur(2px); opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
 .sl-preview-dialog:not([open])::backdrop { opacity: 0; }
 @starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
-.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: -18px 0 40px -16px rgba(24,24,27,.28); }
+/* The elevation lives on the dialog now that it floats — the sheet inside is
+   just the grid that portions it into head / tabs / body / footer. */
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-sheet.sl-sheet-drawer { grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .sl-sheet-drawer .sl-drawer-tabs { padding: 8px 24px 0; display: grid; gap: 8px; }
 .sl-sheet-drawer .sl-drawer-tabs:empty { padding: 0; }
-.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
+/* Inside the floating shell there are no structural rules: spacing separates
+   head, tabs, body and footer; only the selected tab keeps its underline.
+   The zeros are explicit — the host shell's bot-drawer-head/-actions classes
+   still carry their rules, so removing the value is not enough. */
+.sl-preview-head.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
 .sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
 /*
@@ -654,7 +683,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* One footer rule for both drawers -- the single-post preview and the batch
    drawer each carry exactly one action now, so there is no second, opposing
    system to keep in sync with this one. */
-.sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
+.sl-preview-actions.sl-preview-actions { padding: 12px 16px; border-top: 0; display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
@@ -680,7 +709,7 @@ ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-inbox-grid { grid-template-columns: 1fr; }
   .sl-dual { grid-template-columns: 1fr; }
   .sl-poster-grid { grid-template-columns: 1fr; }
-  .sl-preview-dialog { width: 100vw; height: 100dvh; margin: 0; border-left: 0; }
+  .sl-preview-dialog.sl-drawer { margin: 7px; width: calc(100vw - 14px); max-width: none; height: calc(100dvh - 14px); max-height: none; border-radius: 12px; }
   .sl-preview-scroll { padding: 14px; }
   .sl-preview-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .sl-zh-edit, .sl-field input, .sl-field select { font-size: 16px; }
@@ -834,9 +863,13 @@ function App() {
   const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
   const { root: shellRoot, viewHost } = buildShell();
   shellRoot.appendChild(announceRegion);
+  // The two sheets get the right-docked drawer geometry; the confirm dialog
+  // stays a small centered panel (same chrome, no .sl-drawer).
   const previewDialog = buildPreviewDialog(() => closePreview());
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
+  previewDialog.classList.add("sl-drawer");
+  batchDialog.classList.add("sl-drawer");
   /*
    * The drawer dialog is shared across opens, so its listeners register ONCE
    * and delegate to the current session — a per-open `cancel` listener would
@@ -2501,11 +2534,12 @@ function App() {
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
+        // Inspection only — adopting the source image is the Post tab's
+        // "Use reference" source control, the one place that choice lives.
         panel = renderReferencePanel(locale, item, {
           stage: item.sourceItem ? stageFor(item) : null,
           editable,
-          saving,
-          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
+          saving
         });
       } else if (activeTab === "instructions") {
         panel = renderInstructionsPanel(locale, item, {
@@ -2610,16 +2644,8 @@ function App() {
         });
       }
 
-      // Export stays batch-scoped (the archive is one batch).
-      const exportRow = activeTab === "history"
-        ? el("div", { class: "sl-export-row" }, [
-            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
-            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
-          ])
-        : null;
-
       replace(bodyEl, [
-        el("div", { id: drawerPanelId(activeTab), role: "tabpanel", "aria-labelledby": drawerTabId(activeTab), class: "sl-drawer-panel" }, [panel, exportRow])
+        el("div", { id: drawerPanelId(activeTab), role: "tabpanel", "aria-labelledby": drawerTabId(activeTab), class: "sl-drawer-panel" }, [panel])
       ]);
       redrawFooter();
     };
@@ -3251,18 +3277,6 @@ function App() {
         console.error(error);
       }
     },
-    // Relocated into the batch drawer's body (openBatchDrawer, next to
-    // Regenerate) now that the Batch summary screen is gone -- the drawer
-    // is already scoped to one batch, which is what an export is of.
-    // Unchanged: same rpc call, same refusal handling.
-    onExport: async (format) => {
-      try {
-        await rpc.exportAs(format);
-      } catch (error) {
-        console.error(error);
-        announce(t(locale, "exportFailed"), "");
-      }
-    }
   };
 
   async function refreshPublishState() {

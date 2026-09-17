@@ -1260,23 +1260,28 @@ export function builtinImageInstruction(config) {
 /**
  * The source post's own image media, as image-brief references.
  *
- * Only `kind: "image"` entries with an `https://` URL the provider can fetch —
- * a stored id rides along so the work request names WHICH media it meant.
- * Bounded at ten, matching the work-request contract's own cap. An empty
- * result on a "source" request is the fail-closed case: the caller declares
- * the reference anyway and the platform refuses it, rather than silently
- * generating without it.
+ * `image` and `carousel_child` entries count — an album's children are the
+ * post's pictures too (`video` stays out); each still needs an `https://` URL
+ * the provider can fetch. A stored id rides along so the work request names
+ * WHICH media it meant.
+ *
+ * How MANY references a model takes is the platform's fact, not this gadget's:
+ * the API clamps the list to the resolved model's `maxInputImages`. The bound
+ * here is only payload hygiene for the request document — generous enough to
+ * never bite a real post. An empty result on a "source" request is the
+ * fail-closed case: the caller declares the reference anyway and the platform
+ * refuses it, rather than silently generating without it.
  */
 export function sourceImageReferences(item) {
   const media = Array.isArray(item?.media) ? item.media : [];
   const references = [];
   for (const entry of media) {
-    if (entry?.kind !== "image") continue;
+    if (entry?.kind !== "image" && entry?.kind !== "carousel_child") continue;
     const url = typeof entry.url === "string" ? entry.url : "";
     if (!url.startsWith("https://") || url.length > 2048) continue;
     const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
     references.push(id ? { id, url } : { url });
-    if (references.length >= 10) break;
+    if (references.length >= 20) break;
   }
   return references;
 }

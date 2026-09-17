@@ -106,11 +106,31 @@ describe("sourceImageReferences", () => {
     ]);
   });
 
-  it("caps at ten and returns empty for no usable media", () => {
-    const many = {
-      media: Array.from({ length: 12 }, (_, i) => ({ kind: "image", url: `https://cdn.example.com/${i}.jpg` }))
+  it("treats carousel children as the post's images — a video still stays out", () => {
+    const carousel = {
+      media: [
+        { id: "c1", kind: "carousel_child", url: "https://cdn.example.com/c1.jpg" },
+        { id: "c2", kind: "carousel_child", url: "https://cdn.example.com/c2.jpg" },
+        { id: "v", kind: "video", url: "https://cdn.example.com/v.mp4" },
+        { kind: "carousel_child", url: "http://cdn.example.com/plain-http.jpg" }
+      ]
     };
-    expect(sourceImageReferences(many)).toHaveLength(10);
+    expect(sourceImageReferences(carousel)).toEqual([
+      { id: "c1", url: "https://cdn.example.com/c1.jpg" },
+      { id: "c2", url: "https://cdn.example.com/c2.jpg" }
+    ]);
+  });
+
+  it("sends what the post has — the provider's limit is the API's clamp, not this bound", () => {
+    const album = {
+      media: Array.from({ length: 15 }, (_, i) => ({ kind: "carousel_child", url: `https://cdn.example.com/${i}.jpg` }))
+    };
+    expect(sourceImageReferences(album).length).toBeGreaterThan(10);
+    const many = {
+      media: Array.from({ length: 25 }, (_, i) => ({ kind: "image", url: `https://cdn.example.com/${i}.jpg` }))
+    };
+    // Payload hygiene only: well past any real post, not a provider fact.
+    expect(sourceImageReferences(many)).toHaveLength(20);
     expect(sourceImageReferences({ media: [] })).toEqual([]);
     expect(sourceImageReferences(null)).toEqual([]);
     expect(sourceImageReferences({ media: [{ kind: "image", url: "not-a-url" }] })).toEqual([]);

@@ -641,13 +641,17 @@ export function renderOutputPanel(locale, item, ctx) {
   } else {
     captionBody = [el("p", { class: "sl-drawer-caption-preview" }, [ctx.highlighted || item.caption || t(locale, "drawerCaptionNone")])];
   }
+  // Rewrite caption is a quiet inline action beside the label, not a second
+  // full-width button competing with the source segment below it.
   const captionSection = el("section", { class: "sl-drawer-section sl-output-copy", "aria-labelledby": "sl-output-caption-title" }, [
-    el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
+    el("div", { class: "sl-output-label" }, [
+      el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
+      partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested", { bare: true, className: "sl-brief-link" })
+    ]),
     capState === "requested" && unsubmitted
       ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
       : null,
-    ...captionBody,
-    partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested")
+    ...captionBody
   ]);
 
   const intent = intentOf(item, buffers);
@@ -747,14 +751,8 @@ export function renderReferencePanel(locale, item, ctx = {}) {
     ]),
     ctx.stage ? el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [ctx.stage.node, ctx.stage.strip]) : null,
     hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
-    ctx.editable
-      ? el("button", {
-          type: "button",
-          class: "sl-primary",
-          disabled: ctx.saving,
-          onclick: () => ctx.onAdoptReference?.()
-        }, t(locale, "drawerUseCandidate"))
-      : null,
+    // Adopting the source image happens in exactly one place: the Post tab's
+    // "Use reference" source control. This panel is inspection only.
     el("p", { class: "sl-field-note" }, t(locale, "drawerSourceCaption")),
     el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
     source.permalink
@@ -813,8 +811,6 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
    * actually use — the staged one-off first, then this post's override, then
    * the saved default, then the built-in floor.
    */
-  const layerName = (source) =>
-    t(locale, { run: "drawerLayerRun", post: "drawerLayerPost", builtin: "drawerLayerBuiltin", default: "drawerLayerGadget" }[source] ?? "drawerLayerGadget");
   const imageDraft = buffers.instructions?.image !== undefined ? buffers.instructions.image : (saved.image ?? "");
   const layerRows = [
     { key: "builtin", label: "drawerLayerBuiltin", text: ctx.builtinImage ?? "" },
@@ -832,29 +828,15 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
       el("p", { class: `sl-layer-text${row.text ? "" : " sl-layer-none"}` }, row.text || t(locale, "drawerLayerNone"))
     ])
   ));
-  // Three different snapshots, each only when the projection carries it:
-  // what produced the ACCEPTED output (recorded on the accepted asset or its
-  // revision), what the PENDING request was made under, and — when neither
-  // names the accepted output — what the last completed request used. A mark
-  // snapshot also names the layer each text came from and the brief it was
-  // sent with (ratio always explicit; references only when the post's image
-  // was the basis).
-  const snapshot = (instructions, heading, mark) =>
-    el("div", { class: "sl-instructions-used" }, [
-      el("strong", null, heading),
-      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${instructions.image || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.image ? ` · ${layerName(mark.instructionSources.image)}` : ""}`),
-      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${instructions.caption || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.caption ? ` · ${layerName(mark.instructionSources.caption)}` : ""}`),
-      mark?.imageBrief
-        ? el("p", { class: "sl-field-note" }, t(locale, "drawerSnapshotBrief", {
-            ratio: mark.imageBrief.aspectRatio,
-            ref: t(locale, mark.imageBrief.references !== undefined ? "drawerBriefOn" : "drawerBriefOff")
-          }))
-        : null
-    ]);
-  const currentRevision = (Array.isArray(item.revisionHistory) ? item.revisionHistory : []).find((entry) => entry.revision === item.revision);
-  const acceptedUsed = item.generatedImage?.instructions ?? currentRevision?.instructions ?? null;
+  /*
+   * The panel is the layer stack, one image editor, the caption editor behind
+   * a disclosure, and the pending request's snapshot — nothing else. Snapshots
+   * of what produced the accepted output and of the last completed request
+   * are history; they render on the History tab (renderHistoryPanel).
+   */
   const pending = generationMark(item.generation);
-  const last = generationMark(item.lastGeneration);
+  const captionDraft = buffers.instructions?.caption !== undefined ? buffers.instructions.caption : (saved.caption ?? "");
+  const captionOwn = normalizeOverride(captionDraft) !== null;
   // Saved text-poster wording is explained, never rewritten for the owner.
   const legacyWording = [saved.image, defaults.image].some((text) => typeof text === "string" && LEGACY_POSTER_WORDING.test(text));
   return el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-instructions-title" }, [
@@ -863,13 +845,41 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
     legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null,
     layerStack,
     part("image", "drawerInstructionsImage"),
-    part("caption", "drawerInstructionsCaption"),
-    acceptedUsed ? snapshot(acceptedUsed, t(locale, "drawerInstructionsAcceptedUsed")) : null,
+    el("details", { class: "sl-brief sl-instructions-disclosure" }, [
+      el("summary", { class: "sl-brief-head" }, [
+        el("span", { class: "sl-brief-caret", "aria-hidden": "true" }, "›"),
+        el("span", { class: "sl-brief-title" }, t(locale, "drawerInstructionsCaption")),
+        el("span", { class: "sl-dest-tag" }, t(locale, captionOwn ? "drawerInstructionsPost" : "drawerInstructionsDefault"))
+      ]),
+      el("div", { class: "sl-brief-body" }, [part("caption", "drawerInstructionsCaptionEdit")])
+    ]),
     pending?.instructions
-      ? snapshot(pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"), pending)
-      : null,
-    !acceptedUsed && !pending && last?.instructions
-      ? snapshot(last.instructions, last.at ? t(locale, "drawerInstructionsLastUsed", { time: whenLabel(locale, last.at) }) : t(locale, "drawerHistoryInstructions"), last)
+      ? instructionSnapshot(locale, pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"), pending)
+      : null
+  ]);
+}
+
+/** The layer an instruction snapshot's part came from, named for the owner. */
+function instructionSourceName(locale, source) {
+  return t(locale, { run: "drawerLayerRun", post: "drawerLayerPost", builtin: "drawerLayerBuiltin", default: "drawerLayerGadget" }[source] ?? "drawerLayerGadget");
+}
+
+/**
+ * The instructions a request was made under, recorded on its mark — plus the
+ * layer each part came from and the brief it carried (ratio always explicit;
+ * references only when the post's own image was the basis). Shared by the
+ * Instructions pending snapshot and the History feed.
+ */
+function instructionSnapshot(locale, instructions, heading, mark) {
+  return el("div", { class: "sl-instructions-used" }, [
+    el("strong", null, heading),
+    el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${instructions.image || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.image ? ` · ${instructionSourceName(locale, mark.instructionSources.image)}` : ""}`),
+    el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${instructions.caption || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.caption ? ` · ${instructionSourceName(locale, mark.instructionSources.caption)}` : ""}`),
+    mark?.imageBrief
+      ? el("p", { class: "sl-field-note" }, t(locale, "drawerSnapshotBrief", {
+          ratio: mark.imageBrief.aspectRatio,
+          ref: t(locale, mark.imageBrief.references !== undefined ? "drawerBriefOn" : "drawerBriefOff")
+        }))
       : null
   ]);
 }
@@ -918,8 +928,11 @@ const IMAGE_STATUS_KEYS = {
 
 /**
  * ctx: `{ destinationLabel(binding), stateLabel(outcome), editable?, onUseImage?(id) }`.
- * A receipt link appears only when the delivery row carries `receiptUrl`;
- * nothing here builds a permalink.
+ *
+ * ONE reverse-chronological feed — every filing, version, request and image is
+ * a timestamped event in a single list, newest first; an event with no
+ * recorded time trails the dated ones. A delivery's receipt stays inline in
+ * its event line, and a missing receipt simply renders nothing.
  */
 export function renderHistoryPanel(locale, item, ctx = {}) {
   const label = ctx.destinationLabel ?? ((binding) => binding);
@@ -956,7 +969,22 @@ export function renderHistoryPanel(locale, item, ctx = {}) {
     return t(locale, "drawerHistoryApproval", { state: t(locale, "drawerHistoryApprovalSubmitted", { n: delivery.revision }) });
   };
 
-  const deliveryCard = (delivery) => {
+  const events = [];
+  // `at` is the event's own instant; it leads the line. Nodes are the event's
+  // content — title row first, then any notes.
+  const add = (at, nodes) => {
+    const stamp = typeof at === "string" && at && !Number.isNaN(Date.parse(at)) ? Date.parse(at) : null;
+    events.push({
+      stamp,
+      order: events.length,
+      node: el("li", { class: "sl-history-event" }, [
+        el("span", { class: "sl-history-when" }, stamp !== null ? whenLabel(locale, at) : ""),
+        el("div", { class: "sl-history-body" }, nodes.filter(Boolean))
+      ])
+    });
+  };
+
+  for (const delivery of deliveries) {
     const publication = byId.get(delivery.publicationId);
     const intent = publication?.intent;
     const guidance = [delivery.detail && delivery.detail !== delivery.outcome ? delivery.detail : null, delivery.guidance]
@@ -973,96 +1001,117 @@ export function renderHistoryPanel(locale, item, ctx = {}) {
           receipt.providerId ? t(locale, "drawerHistoryReceiptProvider", { id: receipt.providerId }) : null
         ].filter(Boolean).join(" · ")
       : null;
-    return el("div", { class: "sl-target-row sl-history-delivery" }, [
-      el("div", { class: "sl-who" }, [
-        el("strong", null, label(delivery.destinationBinding)),
-        (delivery.revision ?? 0) > 0 ? el("span", null, t(locale, "drawerRevision", { n: delivery.revision })) : null
+    add(checked ?? delivery.filedAt, [
+      el("div", { class: "sl-history-line" }, [
+        el("strong", null, [
+          label(delivery.destinationBinding),
+          (delivery.revision ?? 0) > 0 ? ` · ${t(locale, "drawerRevision", { n: delivery.revision })}` : ""
+        ]),
+        el("span", { class: `sl-state-badge sl-state-${delivery.outcome}` }, stateLabel(delivery.outcome)),
+        receiptUrl
+          ? el("a", { class: "sl-receipt", href: receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
+          : null
       ]),
-      el("span", { class: `sl-state-badge sl-state-${delivery.outcome}` }, stateLabel(delivery.outcome)),
       scheduleLine(intent) ? el("p", { class: "sl-field-note sl-history-schedule" }, scheduleLine(intent)) : null,
       approvalLine(delivery) ? el("p", { class: "sl-field-note" }, approvalLine(delivery)) : null,
-      receiptUrl
-        ? el("a", { class: "sl-receipt", href: receiptUrl, target: "_blank", rel: "noopener noreferrer" }, t(locale, "viewReceipt"))
-        : receiptIds ? null : el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryNoReceipt")),
       receiptIds ? el("p", { class: "sl-field-note sl-history-receipt" }, receiptIds) : null,
-      checked ? el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryChecked", { time: whenLabel(locale, checked) })) : null,
-      !checked && delivery.filedAt ? el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryFiledAt", { time: whenLabel(locale, delivery.filedAt) })) : null,
       guidance || fallbackGuidance ? el("p", { class: "sl-guidance" }, guidance || fallbackGuidance) : null
     ]);
-  };
+  }
 
-  const sections = [];
-  if (deliveries.length || earlier.length) {
-    sections.push(el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-history-deliveries" }, [
-      el("h3", { id: "sl-history-deliveries" }, t(locale, "drawerHistoryDeliveries")),
-      ...deliveries.map(deliveryCard),
-      ...earlier.map((pub) => el("div", { class: "sl-target-row sl-history-earlier" }, [
-        el("div", { class: "sl-who" }, [
-          el("strong", null, label(pub.destinationBinding)),
-          el("span", null, t(locale, "drawerRevision", { n: pub.revision }))
-        ]),
-        el("span", { class: `sl-state-badge sl-state-${pub.state}` }, `${t(locale, "drawerHistoryEarlier")} · ${stateLabel(pub.state)}`),
-        scheduleLine(pub.intent) ? el("p", { class: "sl-field-note sl-history-schedule" }, scheduleLine(pub.intent)) : null,
-        OUTCOME_GUIDANCE_KEYS[pub.state] ? el("p", { class: "sl-guidance" }, t(locale, OUTCOME_GUIDANCE_KEYS[pub.state])) : null
-      ]))
-    ]));
+  for (const pub of earlier) {
+    add(pub.filedAt, [
+      el("div", { class: "sl-history-line" }, [
+        el("strong", null, `${label(pub.destinationBinding)} · ${t(locale, "drawerRevision", { n: pub.revision })}`),
+        el("span", { class: `sl-state-badge sl-state-${pub.state}` }, `${t(locale, "drawerHistoryEarlier")} · ${stateLabel(pub.state)}`)
+      ]),
+      scheduleLine(pub.intent) ? el("p", { class: "sl-field-note sl-history-schedule" }, scheduleLine(pub.intent)) : null,
+      OUTCOME_GUIDANCE_KEYS[pub.state] ? el("p", { class: "sl-guidance" }, t(locale, OUTCOME_GUIDANCE_KEYS[pub.state])) : null
+    ]);
   }
-  if (revisions.length) {
-    sections.push(el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-history-revisions" }, [
-      el("h3", { id: "sl-history-revisions" }, t(locale, "drawerHistoryRevisions")),
-      el("ol", { class: "sl-history-list" }, [...revisions].reverse().map((entry) => el("li", null, [
-        t(locale, "drawerHistoryVersionLine", { n: entry.revision, time: whenLabel(locale, entry.createdAt) }),
-        " · ",
-        t(locale, VISUAL_KEYS[entry.acceptedVisualMode] ?? "drawerHistoryVisualNone"),
-        scheduleLine(entry.publicationIntent) ? ` · ${scheduleLine(entry.publicationIntent)}` : ""
-      ].join(""))))
-    ]));
+
+  if (request?.needs) {
+    const parts = request.needs.image && request.needs.caption ? "drawerHistoryPartBoth" : request.needs.image ? "drawerHistoryPartImage" : "drawerHistoryPartCaption";
+    add(request.at, [
+      el("div", { class: "sl-history-line" }, [
+        el("strong", null, t(locale, "drawerHistoryRequestTitle")),
+        el("span", { class: "sl-history-detail" }, [
+          t(locale, parts),
+          ` · ${t(locale, item.generation ? "drawerHistoryPending" : "drawerHistoryDone")}`,
+          request.imageBrief
+            ? ` · ${t(locale, "drawerSnapshotBrief", {
+                ratio: request.imageBrief.aspectRatio,
+                ref: t(locale, request.imageBrief.references !== undefined ? "drawerBriefOn" : "drawerBriefOff")
+              })}`
+            : ""
+        ])
+      ])
+    ]);
   }
-  if (request || images.length) {
-    const parts = request?.needs
-      ? request.needs.image && request.needs.caption ? "drawerHistoryPartBoth" : request.needs.image ? "drawerHistoryPartImage" : "drawerHistoryPartCaption"
-      : null;
-    sections.push(el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-history-generation" }, [
-      el("h3", { id: "sl-history-generation" }, t(locale, "drawerHistoryGeneration")),
-      request && parts
-        ? el("p", { class: "sl-field-note" }, [
-            t(locale, "drawerHistoryRequest", { parts: t(locale, parts), time: whenLabel(locale, request.at) }),
-            " · ",
-            t(locale, item.generation ? "drawerHistoryPending" : "drawerHistoryDone")
-          ].join(""))
-        : null,
-      images.length
-        ? el("ul", { class: "sl-history-list" }, images.map((image) => {
-            const status = IMAGE_STATUS_KEYS[image.status] ? image.status : image.id === item.generatedImage?.id ? "accepted" : null;
-            // An earlier image stays history; bringing it back is the owner's
-            // explicit choice and becomes a new revision when saved.
-            const reusable = ctx.editable === true && image.ready === true && (image.status === "superseded" || image.status === "legacy") && image.id !== item.generatedImage?.id;
-            return el("li", { "data-image-status": status }, [
-              t(locale, "drawerHistoryImageRow", {
-                time: whenLabel(locale, image.createdAt),
-                state: [
-                  t(locale, image.ready ? "drawerHistoryImageReady" : "drawerHistoryImageWaiting"),
-                  status ? t(locale, IMAGE_STATUS_KEYS[status]) : null,
-                  image.stale ? t(locale, "drawerHistoryImageStale") : null
-                ].filter(Boolean).join(" · ")
-              }),
-              reusable
-                ? el("button", { type: "button", class: "sl-secondary sl-history-use-image", "data-image-id": image.id, onclick: () => ctx.onUseImage?.(image.id) }, t(locale, "drawerHistoryUseImage"))
-                : null
-            ]);
-          }))
-        : null
-    ]));
+
+  for (const image of images) {
+    const status = IMAGE_STATUS_KEYS[image.status] ? image.status : image.id === item.generatedImage?.id ? "accepted" : null;
+    // An earlier image stays history; bringing it back is the owner's
+    // explicit choice and becomes a new revision when saved.
+    const reusable = ctx.editable === true && image.ready === true && (image.status === "superseded" || image.status === "legacy") && image.id !== item.generatedImage?.id;
+    add(image.createdAt, [
+      el("div", { class: "sl-history-line", "data-image-status": status }, [
+        el("strong", null, t(locale, "drawerHistoryImageTitle")),
+        el("span", { class: "sl-history-detail" }, [
+          t(locale, image.ready ? "drawerHistoryImageReady" : "drawerHistoryImageWaiting"),
+          status ? ` · ${t(locale, IMAGE_STATUS_KEYS[status])}` : "",
+          image.stale ? ` · ${t(locale, "drawerHistoryImageStale")}` : ""
+        ].join("")),
+        reusable
+          ? el("button", { type: "button", class: "sl-brief-link sl-history-use-image", "data-image-id": image.id, onclick: () => ctx.onUseImage?.(image.id) }, t(locale, "drawerHistoryUseImage"))
+          : null
+      ])
+    ]);
   }
+
+  for (const entry of revisions) {
+    add(entry.createdAt, [
+      el("div", { class: "sl-history-line" }, [
+        el("strong", null, t(locale, "drawerRevision", { n: entry.revision })),
+        el("span", { class: "sl-history-detail" }, [
+          t(locale, VISUAL_KEYS[entry.acceptedVisualMode] ?? "drawerHistoryVisualNone"),
+          scheduleLine(entry.publicationIntent) ? ` · ${scheduleLine(entry.publicationIntent)}` : ""
+        ].join(""))
+      ])
+    ]);
+  }
+
+  // What produced the accepted output and what the last completed request ran
+  // under are history, not the pending ask — they moved here from
+  // Instructions. Both render only when the projection carries the snapshot.
+  const currentRevision = revisions.find((entry) => entry.revision === item.revision);
+  const acceptedUsed = item.generatedImage?.instructions ?? currentRevision?.instructions ?? null;
+  const pending = generationMark(item.generation);
+  const last = generationMark(item.lastGeneration);
+  if (acceptedUsed) {
+    add(currentRevision?.createdAt ?? item.generatedImage?.deliveredAt ?? null, [
+      instructionSnapshot(locale, acceptedUsed, t(locale, "drawerInstructionsAcceptedUsed"), null)
+    ]);
+  }
+  if (!acceptedUsed && last?.instructions && last.id !== pending?.id) {
+    add(last.at, [
+      instructionSnapshot(locale, last.instructions, t(locale, "drawerHistoryInstructions"), last)
+    ]);
+  }
+
   const legacyPoster = posterCanvas(locale, item);
   if (legacyPoster) {
-    sections.push(el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-history-poster" }, [
-      el("h3", { id: "sl-history-poster" }, t(locale, "drawerHistoryLegacyPoster")),
+    add(null, [
+      el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryLegacyPoster")),
       el("div", { class: "sl-pc-media-slot sl-history-poster" }, [legacyPoster])
-    ]));
+    ]);
   }
-  if (!sections.length) return el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryNone"));
-  return el("div", { class: "sl-drawer-panel-body" }, sections);
+
+  if (!events.length) return el("p", { class: "sl-field-note" }, t(locale, "drawerHistoryNone"));
+  events.sort((a, b) => (b.stamp ?? -Infinity) - (a.stamp ?? -Infinity) || a.order - b.order);
+  return el("div", { class: "sl-drawer-panel-body" }, [
+    el("ul", { class: "sl-history-feed" }, events.map((event) => event.node))
+  ]);
 }
 
 /** A stored text poster, drawn for inspection only — never offered as a new output. */

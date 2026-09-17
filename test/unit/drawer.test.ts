@@ -310,16 +310,24 @@ describe("unsaved changes and footer reasons", () => {
 });
 
 describe("Reference section", () => {
-  it("lets the owner use the source image on this post", async () => {
+  it("is inspection only — adopting the source image lives on the Post tab's source control", async () => {
     const adopted: string[] = [];
-    const root = renderReferencePanel("en", post({
-      sourceItem: { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] }
-    }) as never, {
+    const sourceItem = { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] };
+    const root = renderReferencePanel("en", post({ sourceItem }) as never, {
       editable: true,
       onAdoptReference: () => adopted.push("reference")
     } as never);
     expect(root.textContent).toContain("Reference only");
-    await buttonNamed(root, "Use this image")!.dispatchEvent({ type: "click" });
+    // No adopt button here at all — even if a stray handler is passed.
+    expect(buttonNamed(root, "Use this image")).toBeFalsy();
+    // The Post tab's source segment is the one place the choice is made.
+    const output = renderOutputPanel("en", post({ sourceItem }) as never, {
+      editable: true,
+      buffers: {},
+      onAdoptReference: () => adopted.push("reference")
+    } as never);
+    const adopt = all(output, (e) => e.tagName === "BUTTON" && e.getAttribute("data-src") === "reference")[0];
+    await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
   });
 });
@@ -345,12 +353,19 @@ describe("Instructions section", () => {
     expect(instructionPatchFor(item as never, { instructions: { image: "" } })).toEqual({ batchItemId: "item-1", image: null });
   });
 
-  it("names the instructions the latest request used", () => {
-    const root = renderInstructionsPanel("en", post({
+  it("keeps only the pending request's snapshot — the last completed one is history", () => {
+    const item = post({
+      generation: { id: "gen_2", scope: { image: true, caption: false }, needs: { image: true, caption: false }, at: "2026-09-14T04:00:00.000Z", instructions: { image: "Studio light", caption: "Friendly" } },
       lastGeneration: { id: "gen_1", base: 1, needs: { image: true, caption: false }, at: "2026-09-14T03:00:00.000Z", instructions: { image: "Outdoor photo", caption: "Friendly" } }
-    }) as never, { editable: true, buffers: {}, policy: {} } as never);
-    expect(root.textContent).toContain("Used for the latest request");
-    expect(root.textContent).toContain("Image instructions: Outdoor photo");
+    });
+    const instructions = renderInstructionsPanel("en", item as never, { editable: true, buffers: {}, policy: {} } as never);
+    expect(instructions.textContent).toContain("Instructions on the pending request");
+    expect(instructions.textContent).toContain("Image instructions: Studio light");
+    expect(instructions.textContent).not.toContain("Outdoor photo");
+    // The earlier request's snapshot is a History event now.
+    const history = renderHistoryPanel("en", item as never, {} as never);
+    expect(history.textContent).toContain("Instructions used");
+    expect(history.textContent).toContain("Image instructions: Outdoor photo");
   });
 });
 
@@ -371,7 +386,7 @@ describe("History section", () => {
   it("renders the scheduled time with its timezone, and no receipt link the data does not carry", () => {
     const root = renderHistoryPanel("en", post(scheduled) as never, ctx as never);
     expect(root.textContent).toContain("Scheduled for 2026-09-16 10:30 (Asia/Hong_Kong)");
-    expect(root.textContent).toContain("No provider receipt yet.");
+    // No receipt simply renders nothing — the feed never spends a line on it.
     expect(all(root, (e) => e.tagName === "A")).toHaveLength(0);
     // The failed earlier filing stays visible with an owner-safe explanation
     // that does not claim nothing went out — only failed_safe confirms that.

@@ -33,10 +33,15 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
         // Two posts carry a source image (so the brief can declare a real
         // reference, and the stage can render it from cache); the third has
         // none, which is what makes the missing-reference warning and the
-        // reference_unavailable refusal reachable in the preview.
+        // reference_unavailable refusal reachable in the preview. fixture-1's
+        // media is a carousel_child — an album post, the shape F1 used to
+        // refuse.
         const fixtures = [
           {text: 'A brighter kind of daily', media: [{id: 'fixture-0-img', kind: 'image', url: 'https://media.localhost/fixture-0.jpg', mimeType: 'image/png', width: 480, height: 600}], png: 'rust'},
-          {text: 'Start with morning light', media: [{id: 'fixture-1-img', kind: 'image', url: 'https://media.localhost/fixture-1.jpg', mimeType: 'image/png', width: 480, height: 600}], png: 'sage'},
+          {text: 'Start with morning light', media: [
+            {id: 'fixture-1-img-a', kind: 'carousel_child', url: 'https://media.localhost/fixture-1-a.jpg', mimeType: 'image/png', width: 480, height: 600},
+            {id: 'fixture-1-img-b', kind: 'carousel_child', url: 'https://media.localhost/fixture-1-b.jpg', mimeType: 'image/png', width: 480, height: 600}
+          ], png: 'sage'},
           {text: 'Blend it your way', media: [], png: null}
         ];
         for (const [index, fixture] of fixtures.entries()) {
