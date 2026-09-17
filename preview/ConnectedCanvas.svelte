@@ -4,7 +4,7 @@
   import {canvasGrantPersistToAgent, gadgetGrantResultMessage, parseGadgetActivateDoorMessage, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
   import {grantReceiptOutcome} from '../scripts/grant-receipt.mjs';
   import {attachHostEvents} from '../scripts/host-events.mjs';
-  import {SOCIAL_LOCALIZATION_DEFINITION} from '../definition.ts';
+  import {SOCIAL_CONTENT_DEFINITION} from '../definition.ts';
   let {onDraftRequested = () => {}, onMutation = () => {}, revision = 0} = $props();
   let frame=$state();
   let frameGeneration=$state(0);
@@ -71,7 +71,7 @@
     frame.contentWindow.postMessage(gadgetGrantResultMessage({requestId:request.requestId,requirementKey:request.requirementKey,outcome,message}),'*');
   }
   function declaredRequirement(key){
-    return SOCIAL_LOCALIZATION_DEFINITION.requirements.find(row=>row.requirementKey===key) ?? null;
+    return SOCIAL_CONTENT_DEFINITION.requirements.find(row=>row.requirementKey===key) ?? null;
   }
   async function readResult(response){
     const bodyText=await response.text().catch(()=>'');

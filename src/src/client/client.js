@@ -556,7 +556,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    and shows its state as a dot, and the menu foot hosts the only way the
    batch legitimately grows (another source post). The eyebrow says state
    only; position is said once, on the selector button. */
-.sl-postsel { position: relative; align-self: flex-start; }
+.sl-postsel { align-self: flex-start; }
 .sl-postbtn { min-height: 28px; padding: 0 9px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line-strong); background: transparent; font-size: 11.5px; font-weight: 600; color: var(--sl-ink-2); white-space: nowrap; cursor: pointer; }
 .sl-postbtn:hover { background: var(--sl-hover); color: var(--sl-ink); }
 .sl-postmenu { position: absolute; z-index: 40; right: 0; top: calc(100% + 6px); min-width: 288px; max-width: min(340px, calc(100vw - 40px)); padding: 5px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); display: flex; flex-direction: column; }
@@ -762,7 +762,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    still carry their rules, so removing the value is not enough. */
 .sl-preview-head.sl-preview-head { min-height: 0; padding: 16px 18px 4px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; }
-.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
+.sl-preview-head-actions { position: relative; margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
 .sl-preview-head .sl-icon-action { width: 32px; height: 32px; }
 /*
  * Scoped to the eyebrow, not to every span in the header.
