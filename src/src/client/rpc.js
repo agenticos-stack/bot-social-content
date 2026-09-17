@@ -54,6 +54,9 @@ export function createRpc(gadget) {
     listBatchSummaries: (params) => gadget.listBatchSummaries(params),
     saveRevision: (input) => gadget.saveRevision(input),
     saveRevisions: (input) => gadget.saveRevisions(input),
+    // Owner upload: unattributed registration (no generationRequest) then bytes.
+    saveGeneratedImage: (input) => gadget.saveGeneratedImage(input),
+    deliverGeneratedImage: (input) => gadget.deliverGeneratedImage(input),
     savePoster: (input) => gadget.savePoster(input),
     submitForReview: (input) => gadget.submitForReview(input),
     readPublishState: (batchItemId) => gadget.readPublishState(batchItemId),

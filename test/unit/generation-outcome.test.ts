@@ -660,7 +660,7 @@ describe("a request whose turn ended with work outstanding", () => {
     );
     await openDrawer(document);
     await click(buttonText(document.body, "Check status"));
-    await click(buttonText(document.body, "Regenerate image"));
+    await click(buttonText(document.body, "Generate"));
     const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };
     expect(sent?.needs).toMatchObject({ image: true, caption: true });
     expect(sent?.replace).not.toBe(true);
