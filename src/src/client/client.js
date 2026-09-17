@@ -47,6 +47,7 @@ import {
   drawerPanelId,
   drawerTabId,
   footerState,
+  instructionDefaultsOf,
   instructionPatchFor,
   publicationHint,
   renderDrawerTablist,
@@ -57,7 +58,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { builtinImageInstruction, detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -110,12 +111,48 @@ import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
 
 const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
+/*
+ * Settings — the accepted v2 contract: borderless sections separated by
+ * spacing, a 150px-label fieldrow grid, one monitoring switch, rounded
+ * controls. Structure carries no rules; borders stay on controls and data.
+ */
 .sl-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
-.sl-setup-section { min-width: 0; border: 1px solid var(--sl-line); border-radius: 12px; padding: 20px; margin: 0 0 20px; background: var(--sl-surface); }
-.sl-setup-section legend { font-size: 16px; font-weight: 650; padding: 0 6px; }
-.sl-setup-section .sl-field { margin-block: 16px; }
-.sl-setup-section textarea { width: 100%; min-height: 90px; resize: vertical; font: inherit; }
-.sl-setup-actions { flex-wrap: wrap; gap: 10px; }
+.sl-setup-fields:disabled { opacity: 1; }
+.sl-setup { display: flex; flex-direction: column; gap: 22px; max-width: 640px; }
+.sl-setup-desc { margin: 2px 0 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-setup-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sl-setup-sect-title { margin: 0; font-size: 12.5px; font-weight: 600; }
+.sl-setup-sect-hint { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-setup .sl-field { display: flex; flex-direction: column; gap: 5px; margin: 0; }
+.sl-setup .sl-field label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-setup .sl-field-note { font-size: 11px; }
+.sl-setup-rows { display: flex; flex-direction: column; gap: 6px; }
+.sl-setup-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--sl-ink-2); }
+.sl-setup-dot { width: 6px; height: 6px; border-radius: 100%; background: var(--sl-success); flex: none; }
+.sl-setup-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-setup-row .sl-chip { flex: none; }
+.sl-setup-acts { display: flex; align-items: center; gap: 8px; }
+.sl-fieldrow { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; align-items: center; }
+.sl-fieldrow[hidden] { display: none; }
+.sl-fieldrow-label { font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-fieldrow-ctrl { min-width: 0; }
+.sl-ctl { width: 100%; min-height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 11px; background: var(--sl-surface); font-size: 13.5px; }
+select.sl-ctl { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--sl-ink-4) 50%), linear-gradient(135deg, var(--sl-ink-4) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+textarea.sl-ctl { min-height: 84px; padding: 10px 11px; resize: vertical; line-height: 1.5; }
+input[type="time"].sl-ctl { width: 120px; }
+.sl-switchrow { display: flex; align-items: center; gap: 12px; padding: 2px 0; }
+.sl-switchrow-lab { font-size: 12.5px; font-weight: 600; }
+.sl-switchrow-sub { display: block; font-size: 11.5px; font-weight: 400; color: var(--sl-ink-2); margin-top: 2px; }
+.sl-toggle { position: relative; width: 40px; height: 23px; border-radius: 999px; border: 1px solid var(--sl-line-strong); background: var(--sl-surface-2); flex: none; padding: 0; }
+.sl-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 100%; background: var(--sl-surface); box-shadow: var(--sl-e-1); transition: translate .15s ease; }
+.sl-toggle[aria-checked="true"] { background: var(--sl-ink); border-color: var(--sl-ink); }
+.sl-toggle[aria-checked="true"]::after { translate: 17px 0; }
+.sl-toggle:disabled { opacity: .45; cursor: not-allowed; }
+.sl-quiet { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sl-quiet-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.sl-note { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-note-warn { margin: 0; padding: 6px 9px; font-size: 11.5px; color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 10%, var(--sl-surface)); border-radius: var(--sl-radius-chip); }
+@media (max-width: 560px) { .sl-fieldrow { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
@@ -299,14 +336,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-brief-link { border: 0; background: transparent; padding: 0; color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; min-height: 0; text-align: left; }
 .sl-brief-link:hover:not(:disabled) { color: var(--sl-ink); }
 .sl-brief-link:disabled { color: var(--sl-line-strong); cursor: not-allowed; text-decoration: none; }
-/* The instruction layers: which of the four a Generate ask would use. */
-.sl-layers { display: flex; flex-direction: column; gap: 10px; }
-.sl-layer { padding: 11px 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
-.sl-layer-live { border-color: var(--sl-ink); }
-.sl-layer-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
-.sl-layer-name { font-size: 12.5px; font-weight: 600; }
-.sl-layer-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--sl-ink-2); white-space: pre-wrap; }
-.sl-layer-none { color: var(--sl-ink-4); }
 /* The staged upload row — the mockup's dashed drop slot. */
 .sl-upload-row { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px 10px; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-upload-row .sl-field-note { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
@@ -347,7 +376,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-reference-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: var(--sl-radius-chip); border: 1px solid var(--sl-line); font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-reference-text { color: var(--sl-ink-2); font-size: 12.5px; }
 .sl-field-label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
-.sl-instructions-disclosure .sl-instructions-part { margin-bottom: 0; }
+/* The two prefilled instruction fields: label, textarea, then a state row —
+   which text applies — with Reset docked right. */
+.sl-instructions-part { display: flex; flex-direction: column; gap: 6px; }
+.sl-instructions-foot { display: flex; align-items: center; gap: 10px; }
+.sl-instructions-state { flex: 1; min-width: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 .sl-instructions-used { padding: 11px 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
 .sl-instructions-used > strong { font-size: 12.5px; font-weight: 600; display: block; }
 .sl-instructions-used > * { margin-block: 0; }
@@ -462,11 +495,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .sl-secondary { border: 1px solid var(--sl-line-strong); background: var(--sl-surface); }
 .sl-secondary:hover:not(:disabled) { background: var(--sl-hover); }
-.sl-setup-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sl-open-source-field { display: grid; gap: 6px; }
-.sl-open-source-input { height: 34px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 12px; }
-.sl-open-source-list { display: grid; gap: 4px; }
-.sl-open-source { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); font-size: 12px; }
+.sl-open-source-input { height: 38px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 13.5px; }
+.sl-open-source-list { display: grid; gap: 6px; }
+.sl-open-source { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
@@ -556,8 +588,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-dest-row-revoked:hover { background: none; }
 .sl-dest-row-revoked.sl-dest-row-selected { border-color: var(--sl-line-strong); background: var(--sl-surface-2); }
 .sl-dest-tag { margin-left: auto; display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; }
-/* The live layer's chip reads ok-green, the neutral ones stay outlined. */
-.sl-layer-chip { border-color: transparent; background: var(--sl-success-soft); color: var(--sl-success); }
 /* Pill segments, the active one filled in ink -- not radio dots. The input
    stays for keyboard/screen-reader semantics; it is visually hidden, not
    display:none, so it keeps its place in the tab order. */
@@ -591,11 +621,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-receipt { color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; }
 .sl-receipt:hover { color: var(--sl-ink); }
 
-.sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
-.sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
-.sl-setup-section .sl-field label { font-size: 13px; }
-.sl-setup-section input, .sl-setup-section select { min-height: 42px; }
-.sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
 /*
  * FLOATING PANEL, per the accepted workbench mockup.
@@ -1635,7 +1660,7 @@ function App() {
         .map((idToSave) => items.find((entry) => entry.id === idToSave))
         .filter(Boolean)
         .map((item) => ({ item, snapshot: snapshotBuffer(item.id) }))
-        .map((job) => ({ ...job, entry: revisionEntryFor(job.item, job.snapshot.buffer), patch: instructionPatchFor(job.item, job.snapshot.buffer) }))
+        .map((job) => ({ ...job, entry: revisionEntryFor(job.item, job.snapshot.buffer), patch: instructionPatchFor(job.item, job.snapshot.buffer, ["image", "caption"], instructionDefaultsOf(policy)) }))
         .filter((job) => job.entry || job.patch);
       if (!work.length) return true;
       saving = true;
@@ -1708,7 +1733,7 @@ function App() {
       return allOk;
     };
 
-    const dirtyItemIds = () => items.filter((item) => dirtyParts(item, bufferOf(item.id)).any).map((item) => item.id);
+    const dirtyItemIds = () => items.filter((item) => dirtyParts(item, bufferOf(item.id), instructionDefaultsOf(policy)).any).map((item) => item.id);
 
     /**
      * The one exit guard every drawer dismissal runs — Close, Escape and
@@ -1935,7 +1960,7 @@ function App() {
         if (!(await confirmReplacePending(outstanding))) return;
         supersede = true;
       }
-      const unsavedInstructions = dirtyInstructionParts(item, bufferOf(item.id), parts);
+      const unsavedInstructions = dirtyInstructionParts(item, bufferOf(item.id), parts, instructionDefaultsOf(policy));
       if (unsavedInstructions.length) {
         const choice = await confirmDrawerChoice(leaveDialog, {
           title: t(locale, "drawerInstructionsDecisionTitle"),
@@ -1951,7 +1976,7 @@ function App() {
           // The submitted snapshot: generation runs on exactly what this
           // save acknowledged; instructions typed meanwhile stay dirty.
           const snapshot = snapshotBuffer(item.id);
-          const patch = instructionPatchFor(item, snapshot.buffer, parts);
+          const patch = instructionPatchFor(item, snapshot.buffer, parts, instructionDefaultsOf(policy));
           let saved;
           saving = true;
           redrawFooter();
@@ -2279,7 +2304,7 @@ function App() {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
-        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
+        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving, defaults: instructionDefaultsOf(policy) });
         const reason = state.primary.reason || state.save.reason || publicationHint(locale, item, bufferOf(item.id));
         /*
          * The truthful pending state. The mark's dispatch says whether the
@@ -2624,8 +2649,6 @@ function App() {
           editable,
           buffers: buffer,
           policy,
-          builtinImage: builtinImageInstruction(policy),
-          runInstruction: imageBriefOf(item).oneOff,
           onInput: (part, value) => {
             patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: value } });
             redrawFooter();
@@ -3596,8 +3619,10 @@ function App() {
         errorAction = null;
         notice = null;
         // Do not replace the clicked Save button during the input's blur/change
-        // event: replacement would consume the user's first click.
-        viewHost.querySelector?.("[data-monitor-enable]")?.setAttribute("disabled", "");
+        // event: replacement would consume the user's first click. Only the
+        // off→on direction is gated on a clean draft; pausing stays live.
+        const monitorSwitch = viewHost.querySelector?.("[data-monitor-enable]");
+        if (monitorSwitch && monitorSwitch.getAttribute("aria-checked") !== "true") monitorSwitch.setAttribute("disabled", "");
         const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
         if (savedNotice) savedNotice.textContent = "";
         viewHost.querySelector?.(".sl-setup-error")?.remove();

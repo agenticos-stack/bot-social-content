@@ -84,28 +84,31 @@ describe("accepted image provenance", () => {
 });
 
 describe("Instructions snapshots", () => {
-  it("keeps the pending request's snapshot here and files the accepted output's under History", () => {
+  it("keeps snapshots in History — the editor is two prefilled fields, the request a feed event", () => {
     const item = post({
       generatedImage: { id: "gm_a", ready: true, instructions: { image: "Outdoor photo", caption: "Friendly" } },
       generation: { id: "gen_2", scope: { image: true, caption: false }, needs: { image: true, caption: false }, at: "2026-09-14T03:00:00.000Z", instructions: { image: "Studio light", caption: "Friendly" } }
     });
     const text = renderInstructionsPanel("en", item as never, { editable: true, buffers: {}, policy: {} } as never).textContent;
-    expect(text).toContain("Instructions on the pending request (14 Sept 2026, 03:00 UTC)");
-    expect(text).toContain("Image instructions: Studio light");
-    // The accepted output's snapshot is a History event, not a second block here.
-    expect(text).not.toContain("Instructions used for the accepted output");
+    // The editor holds only the two fields — no snapshot blocks here.
+    expect(text).not.toContain("Studio light");
+    expect(text).not.toContain("Instructions used");
     const history = renderHistoryPanel("en", item as never, {} as never).textContent;
+    // The pending request is a timestamped event, and the accepted output's
+    // snapshot is filed under History with the unified field names.
+    expect(history).toContain("Generation request");
+    expect(history).toContain("waiting");
     expect(history).toContain("Instructions used for the accepted output");
-    expect(history).toContain("Image instructions: Outdoor photo");
+    expect(history).toContain("Image instruction: Outdoor photo");
   });
 
   it("explains, without rewriting, saved image instructions that still describe a text poster", () => {
     const saved = "Make a text poster with the headline in bold";
     const root = renderInstructionsPanel("en", post({ instructionOverrides: { image: saved, caption: null } }) as never, { editable: true, buffers: {}, policy: {} } as never);
-    expect(root.textContent).toContain("New content is never a text poster");
+    expect(root.textContent).toContain("New content is never made as one");
     expect(byId(root, "sl-instructions-image").value).toBe(saved);
     const plain = renderInstructionsPanel("en", post({ instructionOverrides: { image: "Morning light", caption: null } }) as never, { editable: true, buffers: {}, policy: {} } as never);
-    expect(plain.textContent).not.toContain("never a text poster");
+    expect(plain.textContent).not.toContain("never made as one");
   });
 });
 

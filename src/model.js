@@ -32,6 +32,14 @@ const MAX_URL_CHARS = 2_048;
 const MAX_ALT_TEXT_CHARS = 1_000;
 const DEFAULT_MIN_CHINESE_SHARE = 0.3;
 const POSTER_MAX_BYTES = 2_000_000; // SQLite row-size headroom, CON-009.
+/**
+ * Payload hygiene on the image-brief reference list — write and read alike.
+ * The semantic input cap is the resolved model's `limits.maxInputImages`,
+ * applied once API-side where the quote resolves the model; this bound only
+ * keeps the request document and the stored mark from being arbitrarily
+ * large. Generous enough to never bite a real post's media set.
+ */
+const MAX_IMAGE_REFERENCES = 20;
 const REFINEMENT_BRIEF_VERSION = 1;
 const VISUAL_MODES = ["keep_original", "text_poster", "ai_refinement"];
 
@@ -1281,7 +1289,7 @@ export function sourceImageReferences(item) {
     if (!url.startsWith("https://") || url.length > 2048) continue;
     const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
     references.push(id ? { id, url } : { url });
-    if (references.length >= 20) break;
+    if (references.length >= MAX_IMAGE_REFERENCES) break;
   }
   return references;
 }
@@ -1312,7 +1320,7 @@ function generationImageBrief(value) {
   const brief = { aspectRatio };
   if (value.references !== undefined) {
     const list = Array.isArray(value.references) ? value.references : [];
-    brief.references = list.slice(0, 10).flatMap((entry) => {
+    brief.references = list.slice(0, MAX_IMAGE_REFERENCES).flatMap((entry) => {
       const url =
         typeof entry?.url === "string" && entry.url.startsWith("https://") && entry.url.length <= 2048
           ? entry.url

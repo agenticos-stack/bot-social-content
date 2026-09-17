@@ -76,25 +76,42 @@ export function renderDrawerTablist(locale, { active, onSelect }) {
 /**
  * `buffers` = `{ caption?: string, altText?: string, imageId?: string, visualMode?: string, instructions?: { image?, caption? } }`
  * for ONE item. Returns which parts differ from the saved item.
+ * `defaults` is the workspace instruction defaults (`instructionDefaultsOf`),
+ * needed because an instruction field is prefilled with the text that would
+ * be used — a draft equal to that prefill is unchanged, not an override.
  */
-export function dirtyParts(item, buffers = {}) {
+export function dirtyParts(item, buffers = {}, defaults = {}) {
   const caption = buffers.caption !== undefined && buffers.caption !== (item?.caption || "");
   const altText = buffers.altText !== undefined && buffers.altText !== (item?.altText || "");
   const visualImage = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
   const visualMode = buffers.visualMode !== undefined && buffers.visualMode !== (item?.acceptedVisualMode ?? null);
   const visual = visualImage || visualMode;
-  const instructions = dirtyInstructionParts(item, buffers).length > 0;
+  const instructions = dirtyInstructionParts(item, buffers, ["image", "caption"], defaults).length > 0;
   const publication = buffers.publicationIntent !== undefined && !intentsEqual(buffers.publicationIntent, item?.publicationIntent);
   return { caption, altText, visual, instructions, publication, any: caption || altText || visual || instructions || publication };
 }
 
-/** Which instruction parts (of `parts`) carry an unsaved edit. */
-export function dirtyInstructionParts(item, buffers = {}, parts = ["image", "caption"]) {
+/** The workspace instruction defaults the fields are prefilled from. */
+export function instructionDefaultsOf(policy) {
+  return { image: policy?.posterPrompt ?? "", caption: policy?.contentPrompt ?? "" };
+}
+
+/**
+ * Which instruction parts (of `parts`) carry an unsaved edit. A draft is
+ * compared with the text the field was prefilled with — the saved override
+ * when there is one, the workspace default otherwise — so retyping the
+ * prefilled default verbatim is unchanged and writes no override. It must
+ * also differ from the saved override: a cleared draft on a field that was
+ * never overridden normalizes to the same null and is not a change.
+ */
+export function dirtyInstructionParts(item, buffers = {}, parts = ["image", "caption"], defaults = {}) {
   const saved = item?.instructionOverrides ?? {};
   return parts.filter((part) => {
     const draft = buffers.instructions?.[part];
     if (draft === undefined) return false;
-    return normalizeOverride(draft) !== normalizeOverride(saved[part]);
+    const prefilled = saved[part] ?? defaults[part] ?? "";
+    const norm = normalizeOverride(draft);
+    return norm !== normalizeOverride(prefilled) && norm !== normalizeOverride(saved[part]);
   });
 }
 
@@ -168,8 +185,8 @@ export function revisionEntryFor(item, buffers = {}) {
  * edits, or null. `parts` narrows it (generation saves only the parts it is
  * about to use, leaving an unrelated edit unsaved).
  */
-export function instructionPatchFor(item, buffers = {}, parts = ["image", "caption"]) {
-  const dirty = dirtyInstructionParts(item, buffers, parts);
+export function instructionPatchFor(item, buffers = {}, parts = ["image", "caption"], defaults = {}) {
+  const dirty = dirtyInstructionParts(item, buffers, parts, defaults);
   if (!dirty.length) return null;
   const patch = { batchItemId: item.id };
   for (const part of dirty) patch[part] = normalizeOverride(buffers.instructions[part]);
@@ -253,8 +270,8 @@ export function captionState(item) {
 // Footer: save / review, each with its specific reason when disabled
 // ---------------------------------------------------------------------------
 
-export function footerState(locale, item, { buffers = {}, saving = false } = {}) {
-  const dirty = dirtyParts(item, buffers);
+export function footerState(locale, item, { buffers = {}, saving = false, defaults = {} } = {}) {
+  const dirty = dirtyParts(item, buffers, defaults);
   const save = saving
     ? { disabled: true, reason: t(locale, "saving") }
     : !dirty.any
@@ -780,97 +797,76 @@ export function renderReferencePanel(locale, item, ctx = {}) {
 // 3. Instructions
 // ---------------------------------------------------------------------------
 
-/** ctx: `{ editable, buffers, policy, builtinImage?, runInstruction?, onInput(part, value), onReset(part) }`. */
+/**
+ * ctx: `{ editable, buffers, policy, onInput(part, value), onReset(part) }`.
+ *
+ * Two prefilled fields, nothing else: each carries the text the next request
+ * would actually use — this post's own override when there is one, the
+ * workspace default otherwise. The state line under each says which, and
+ * Reset clears the post's own so it follows the default again. Typing back
+ * the prefilled text writes no override (dirtyInstructionParts compares
+ * against that same prefill). The four-layer resolution, the pending
+ * request's snapshot, and what produced the accepted output all live on the
+ * History tab.
+ */
 export function renderInstructionsPanel(locale, item, ctx = {}) {
   const buffers = ctx.buffers ?? {};
   const saved = item.instructionOverrides ?? {};
-  const defaults = { image: ctx.policy?.posterPrompt ?? "", caption: ctx.policy?.contentPrompt ?? "" };
-  const part = (key, labelKey) => {
+  const defaults = instructionDefaultsOf(ctx.policy);
+  const part = (key, labelKey, placeholderKey) => {
+    const prefilled = saved[key] ?? defaults[key];
     const draft = buffers.instructions?.[key];
-    const value = draft !== undefined ? draft : (saved[key] ?? "");
-    const own = normalizeOverride(value) !== null;
+    const differs = draft !== undefined && normalizeOverride(draft) !== normalizeOverride(prefilled);
+    // The override the pending edit lands: a differing draft wins, otherwise
+    // the saved one stands. `own` is therefore true for a live custom edit
+    // too, which is also what enables Reset.
+    const pending = differs ? normalizeOverride(draft) : normalizeOverride(saved[key]);
+    const own = pending !== null;
     const inputId = `sl-instructions-${key}`;
     const textarea = el("textarea", {
       id: inputId,
       class: "sl-drawer-caption sl-instructions-input",
       rows: "4",
-      placeholder: t(locale, "drawerInstructionsPlaceholder"),
+      placeholder: t(locale, placeholderKey),
       readonly: ctx.editable ? null : true
     });
-    textarea.value = value;
-    textarea.addEventListener("input", () => ctx.onInput?.(key, textarea.value));
+    textarea.value = differs && pending !== null ? draft : (pending ?? defaults[key]);
+    const stateLine = el("span", { class: "sl-instructions-state" }, t(locale, own ? "drawerInstructionsPost" : "drawerInstructionsDefault"));
+    const reset = ctx.editable
+      ? el("button", {
+          type: "button",
+          class: "sl-secondary sl-instructions-reset",
+          "data-part": key,
+          disabled: !own,
+          onclick: () => ctx.onReset?.(key)
+        }, t(locale, "drawerInstructionsReset"))
+      : null;
+    // The panel does not redraw while a field is being edited (focus), so the
+    // foot mirrors the live draft: a cleared or default-equal edit still reads
+    // "default", anything else reads "own" — matching the save rule.
+    textarea.addEventListener("input", () => {
+      ctx.onInput?.(key, textarea.value);
+      const live = normalizeOverride(textarea.value);
+      const liveOwn = live !== null && live !== normalizeOverride(defaults[key]);
+      stateLine.textContent = t(locale, liveOwn ? "drawerInstructionsPost" : "drawerInstructionsDefault");
+      if (reset) reset.disabled = !liveOwn;
+    });
     return el("div", { class: "sl-field sl-instructions-part" }, [
-      el("div", { class: "sl-output-label" }, [
-        el("label", { for: inputId }, t(locale, labelKey)),
-        el("span", { class: "sl-dest-tag" }, t(locale, own ? "drawerInstructionsPost" : "drawerInstructionsDefault"))
-      ]),
+      el("label", { class: "sl-field-label", for: inputId }, t(locale, labelKey)),
       textarea,
-      el("p", { class: "sl-field-note" }, defaults[key]
-        ? t(locale, "drawerInstructionsDefaultText", { text: defaults[key] })
-        : t(locale, "drawerInstructionsNoDefault")),
-      ctx.editable
-        ? el("button", {
-            type: "button",
-            class: "sl-secondary sl-instructions-reset",
-            "data-part": key,
-            disabled: !own,
-            onclick: () => ctx.onReset?.(key)
-          }, t(locale, "drawerInstructionsReset"))
-        : null
+      el("div", { class: "sl-instructions-foot" }, [stateLine, reset])
     ]);
   };
-  /*
-   * The image instruction's four layers, made visible. Each row names the
-   * layer and what it currently says ("Not set — the layer above applies");
-   * the "In effect" chip sits on the layer the next Generate ask would
-   * actually use — the staged one-off first, then this post's override, then
-   * the saved default, then the built-in floor.
-   */
-  const imageDraft = buffers.instructions?.image !== undefined ? buffers.instructions.image : (saved.image ?? "");
-  const layerRows = [
-    { key: "builtin", label: "drawerLayerBuiltin", text: ctx.builtinImage ?? "" },
-    { key: "default", label: "drawerLayerGadget", text: defaults.image },
-    { key: "post", label: "drawerLayerPost", text: normalizeOverride(imageDraft) ?? "" },
-    { key: "run", label: "drawerLayerRun", text: typeof ctx.runInstruction === "string" ? ctx.runInstruction.trim() : "" }
-  ];
-  const liveKey = [...layerRows].reverse().find((row) => row.text)?.key ?? "builtin";
-  const layerStack = el("div", { class: "sl-layers", "aria-label": t(locale, "drawerInstructionsImage") }, layerRows.map((row) =>
-    el("div", { class: `sl-layer${row.key === liveKey ? " sl-layer-live" : ""}` }, [
-      el("div", { class: "sl-layer-top" }, [
-        el("span", { class: "sl-layer-name" }, t(locale, row.label)),
-        row.key === liveKey ? el("span", { class: "sl-dest-tag sl-layer-chip" }, t(locale, "drawerLayerInEffect")) : null
-      ]),
-      el("p", { class: `sl-layer-text${row.text ? "" : " sl-layer-none"}` }, row.text || t(locale, "drawerLayerNone"))
-    ])
-  ));
-  /*
-   * The panel is the layer stack, one image editor, the caption editor behind
-   * a disclosure, and the pending request's snapshot — nothing else. Snapshots
-   * of what produced the accepted output and of the last completed request
-   * are history; they render on the History tab (renderHistoryPanel).
-   */
-  const pending = generationMark(item.generation);
-  const captionDraft = buffers.instructions?.caption !== undefined ? buffers.instructions.caption : (saved.caption ?? "");
-  const captionOwn = normalizeOverride(captionDraft) !== null;
-  // Saved text-poster wording is explained, never rewritten for the owner.
-  const legacyWording = [saved.image, defaults.image].some((text) => typeof text === "string" && LEGACY_POSTER_WORDING.test(text));
-  return el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-instructions-title" }, [
-    el("h3", { id: "sl-instructions-title" }, t(locale, "drawerTabInstructions")),
-    el("p", { class: "sl-field-note" }, t(locale, "drawerInstructionsNote")),
-    legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null,
-    layerStack,
-    part("image", "drawerInstructionsImage"),
-    el("details", { class: "sl-brief sl-instructions-disclosure" }, [
-      el("summary", { class: "sl-brief-head" }, [
-        el("span", { class: "sl-brief-caret", "aria-hidden": "true" }, "›"),
-        el("span", { class: "sl-brief-title" }, t(locale, "drawerInstructionsCaption")),
-        el("span", { class: "sl-dest-tag" }, t(locale, captionOwn ? "drawerInstructionsPost" : "drawerInstructionsDefault"))
-      ]),
-      el("div", { class: "sl-brief-body" }, [part("caption", "drawerInstructionsCaptionEdit")])
-    ]),
-    pending?.instructions
-      ? instructionSnapshot(locale, pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"), pending)
-      : null
+  // Saved text-poster wording is explained, never rewritten for the owner —
+  // and only warned about when the text that would be used still asks for one.
+  const pendingImage = buffers.instructions?.image !== undefined
+    ? normalizeOverride(buffers.instructions.image)
+    : normalizeOverride(saved.image);
+  const legacyWording = LEGACY_POSTER_WORDING.test(pendingImage ?? defaults.image ?? "");
+  return el("section", { class: "sl-drawer-section", "aria-label": t(locale, "drawerTabInstructions") }, [
+    part("image", "drawerInstructionsImage", "drawerInstructionsImagePlaceholder"),
+    part("caption", "drawerInstructionsCaption", "drawerInstructionsContentPlaceholder"),
+    legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null
   ]);
 }
 

@@ -348,7 +348,7 @@ describe("Reference section", () => {
 });
 
 describe("Instructions section", () => {
-  it("shows the saved defaults against this post's overrides and resets to default", async () => {
+  it("prefills both fields, marks own-vs-default truthfully, and resets to default", async () => {
     const item = post({ instructionOverrides: { image: "Outdoor photo", caption: null } });
     const resets: string[] = [];
     const root = renderInstructionsPanel("en", item as never, {
@@ -357,30 +357,57 @@ describe("Instructions section", () => {
       policy: { posterPrompt: "Default image text", contentPrompt: "Default caption text" },
       onReset: (part: string) => resets.push(part)
     } as never);
-    expect(root.textContent).toContain("Saved default: Default image text");
-    expect(root.textContent).toContain("This post only");
-    expect(root.textContent).toContain("Nothing is generated now");
-    const reset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "image")[0];
-    expect(reset.disabled).toBe(false);
-    await reset.dispatchEvent({ type: "click" });
+    const fields = all(root, (e) => e.tagName === "TEXTAREA") as Array<Node & { value: string }>;
+    expect(fields).toHaveLength(2);
+    expect(fields[0].value).toBe("Outdoor photo"); // the saved post override wins
+    expect(fields[1].value).toBe("Default caption text"); // the workspace default prefills
+    expect(root.textContent).toContain("This post's own instruction.");
+    expect(root.textContent).toContain("Using the workspace default.");
+    const imageReset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "image")[0];
+    const captionReset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "caption")[0];
+    expect(imageReset.disabled).toBe(false);
+    expect(captionReset.disabled).toBe(true); // no override — nothing to reset
+    await imageReset.dispatchEvent({ type: "click" });
     expect(resets).toEqual(["image"]);
     // Reset is an empty draft, saved as null.
     expect(instructionPatchFor(item as never, { instructions: { image: "" } })).toEqual({ batchItemId: "item-1", image: null });
   });
 
-  it("keeps only the pending request's snapshot — the last completed one is history", () => {
+  it("writes no override when the draft equals the prefilled text, and a plain field follows the workspace default", () => {
+    const item = post(); // no saved overrides
+    const defaults = { image: "Default image text", caption: "Default caption text" };
+    // Retyping the prefilled default verbatim is not an override.
+    expect(instructionPatchFor(item as never, { instructions: { image: "Default image text" } }, ["image", "caption"], defaults)).toBeNull();
+    // Reset on a field that was never overridden clears nothing — the empty
+    // draft normalizes to the same null the store already holds.
+    expect(instructionPatchFor(item as never, { instructions: { image: "" } }, ["image", "caption"], defaults)).toBeNull();
+    // A real difference is.
+    expect(instructionPatchFor(item as never, { instructions: { image: "Studio light" } }, ["image", "caption"], defaults))
+      .toEqual({ batchItemId: "item-1", image: "Studio light" });
+    // And nothing pins the old text — when the workspace default moves, a
+    // field with no override prefills the new one.
+    const after = renderInstructionsPanel("en", item as never, {
+      editable: true, buffers: {}, policy: { posterPrompt: "New workspace text" }
+    } as never);
+    expect((all(after, (e) => e.tagName === "TEXTAREA")[0] as Node & { value: string }).value).toBe("New workspace text");
+  });
+
+  it("keeps request snapshots in History — the editor holds only the two fields", () => {
     const item = post({
       generation: { id: "gen_2", scope: { image: true, caption: false }, needs: { image: true, caption: false }, at: "2026-09-14T04:00:00.000Z", instructions: { image: "Studio light", caption: "Friendly" } },
       lastGeneration: { id: "gen_1", base: 1, needs: { image: true, caption: false }, at: "2026-09-14T03:00:00.000Z", instructions: { image: "Outdoor photo", caption: "Friendly" } }
     });
     const instructions = renderInstructionsPanel("en", item as never, { editable: true, buffers: {}, policy: {} } as never);
-    expect(instructions.textContent).toContain("Instructions on the pending request");
-    expect(instructions.textContent).toContain("Image instructions: Studio light");
+    expect(all(instructions, (e) => e.tagName === "TEXTAREA")).toHaveLength(2);
+    expect(instructions.textContent).not.toContain("Studio light");
     expect(instructions.textContent).not.toContain("Outdoor photo");
-    // The earlier request's snapshot is a History event now.
+    // The pending request is a History event; the completed request's
+    // instruction snapshot follows it under the unified field names.
     const history = renderHistoryPanel("en", item as never, {} as never);
+    expect(history.textContent).toContain("Generation request");
+    expect(history.textContent).toContain("waiting");
     expect(history.textContent).toContain("Instructions used");
-    expect(history.textContent).toContain("Image instructions: Outdoor photo");
+    expect(history.textContent).toContain("Image instruction: Outdoor photo");
   });
 });
 
