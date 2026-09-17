@@ -16,7 +16,7 @@ test('preview SIGTERM releases state lock and fresh process reads saved draft', 
   const port=reservation.address().port;
   await new Promise(r=>reservation.close(r));
   const origin=`http://127.0.0.1:${port}`;
-  let child, exited;
+  let child, exited, errors;
   async function start(){
     child=spawn(process.execPath,['--import','tsx','scripts/preview.mjs'],{
       cwd:fileURLToPath(new URL('../',import.meta.url)),
@@ -24,7 +24,7 @@ test('preview SIGTERM releases state lock and fresh process reads saved draft', 
       stdio:['ignore','pipe','pipe']
     });
     exited=once(child,'exit');
-    let output='', errors='';
+    let output=''; errors='';
     child.stderr.on('data',chunk=>errors+=chunk);
     let timer;
     try {await Promise.race([
@@ -44,7 +44,7 @@ test('preview SIGTERM releases state lock and fresh process reads saved draft', 
     if(!child)return;
     child.kill('SIGTERM');
     const timer=setTimeout(()=>child?.kill('SIGKILL'),5000);
-    try {const [code]=await exited;assert.equal(code,0,'Preview must exit gracefully');}
+    try {const [code]=await exited;assert.equal(code,0,'Preview must exit gracefully; stderr: '+errors);}
     finally {clearTimeout(timer);child=undefined;}
   }
   try {

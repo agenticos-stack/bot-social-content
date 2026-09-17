@@ -59,7 +59,36 @@ export function assertPackedImports(files) {
   if (missing.length) throw new Error(`Archive is missing imported modules; add them to manifest.json: ${missing.join("; ")}.`);
 }
 
-export async function buildPackage({ outputDir = new URL("dist/", packageRoot), maxBytes } = {}) {
+/**
+ * Byte budgets, measured against the host's own limits — a regression trips the
+ * build, and the only way past one is a deliberate bump here, in the diff.
+ *
+ * `CLIENT_JS_BYTE_BUDGET` is the gadget-authoring store's per-file read
+ * ceiling (api `FILE_RESULT_BYTE_BUDGET`, 156,000 bytes): a client.js read
+ * past it comes back without its tail lines, and an `editGadgetFile` composed
+ * against that trim writes a canvas that renders blank. This canvas is
+ * ALREADY over that line — the budget is pinned at the measured size so the
+ * bundle cannot grow silently.
+ *
+ * Pinned at 292,813 — the measured post-adoption floor. Moving the reducers,
+ * RPC/chunk mechanics, drawer choice, toaster and DOM builders to
+ * @agenticos-dev/bot-shell cost +496B over a fresh HEAD build (292,317): the
+ * shared helpers carry the generality both canvases need, and this canvas's
+ * local copies were already the tighter node-side variants. The constants the
+ * package ships for a canvas that uses its default chrome (bot-toast-card,
+ * bot-drawer-sheet) are dead literals here — this canvas re-skins them with
+ * its `sl-*` classes — and the wrappers that preserve those contracts are the
+ * rest of it. Any further growth trips the build and is reviewed in the diff.
+ *
+ * `ARCHIVE_BYTE_BUDGET` freezes today's `.gadget` so feature work cannot grow
+ * the artifact silently. Bump it only when the growth is the change being
+ * reviewed.
+ */
+export const CLIENT_JS_BYTE_BUDGET = 292_813;
+// Post-adoption floor; the compressed delta tracks the same client.js growth.
+export const ARCHIVE_BYTE_BUDGET = 219_329;
+
+export async function buildPackage({ outputDir = new URL("dist/", packageRoot), maxBytes = ARCHIVE_BYTE_BUDGET } = {}) {
   const manifestText = await readFile(new URL("manifest.json", packageRoot), "utf8");
   const manifest = JSON.parse(manifestText);
   const checked = validateGadgetDefinition(SOCIAL_LOCALIZATION_DEFINITION);
@@ -77,12 +106,16 @@ export async function buildPackage({ outputDir = new URL("dist/", packageRoot), 
           : await readFile(new URL(`src/${name}`, packageRoot), "utf8");
   }
   assertPackedImports(files);
+  const clientBytes = Buffer.byteLength(files["client.js"], "utf8");
+  if (clientBytes > CLIENT_JS_BYTE_BUDGET) {
+    throw new Error(`client.js is ${clientBytes} bytes; the authoring read trims at 156,000 and a trimmed canvas renders blank.`);
+  }
   const metadata = { ...manifest.metadata, gadgetDefinition: checked.definition };
   const bytes = Buffer.from(await writeBlueprintArchive({ metadata, files }));
   if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error(`Archive is ${bytes.length} bytes; host limit is ${maxBytes}.`);
   const release = {
     schemaVersion: "ai-agent-package-release.v1", blueprintKey: manifest.blueprintKey,
-    artifact: manifest.artifact, sha256: sha256(bytes), byteSize: bytes.length,
+    artifact: manifest.artifact, sha256: sha256(bytes), byteSize: bytes.length, clientBytes,
     definition: checked.definition,
     files: Object.fromEntries(Object.entries(files).map(([name, text]) => [name, sha256(text)]))
   };
@@ -95,5 +128,7 @@ export async function buildPackage({ outputDir = new URL("dist/", packageRoot), 
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { release } = await buildPackage();
-  console.log(`${release.artifact}: ${release.byteSize} bytes, sha256 ${release.sha256}`);
+  console.log(
+    `${release.artifact}: ${release.byteSize} bytes (client.js ${release.clientBytes} bytes), sha256 ${release.sha256}`
+  );
 }

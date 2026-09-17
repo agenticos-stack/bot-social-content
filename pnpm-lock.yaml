@@ -105,9 +105,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@agenticos-dev/bot-shell@0.1.0': 453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736
-
 importers:
 
   .:
@@ -123,8 +120,8 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@agenticos-dev/bot-shell':
-        specifier: 0.1.0
-        version: 0.1.0(patch_hash=453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736)(svelte@5.56.3)
+        specifier: 0.2.2
+        version: 0.2.2(svelte@5.56.3)
       '@fontsource-variable/geist':
         specifier: 5.2.9
         version: 5.2.9
@@ -160,8 +157,8 @@ packages:
   '@agenticos-dev/bot-sdk@0.1.0':
     resolution: {integrity: sha512-cP/st9UtHwmn9CXtSm13yCwW/cS1kmorC9L6cjRzxOm8cEIhXCoj3UHF6K4nFg80lTs2HC9Czzxiq/IWPzegog==}
 
-  '@agenticos-dev/bot-shell@0.1.0':
-    resolution: {integrity: sha512-8vzdMUD6LcoWgfaRKLBbBupfedX9VFM78W/iq+QYNt8cjw2RFRlY/Vmb/FKpDdp5D1IdMe/bua5TL4QWzjEkmA==}
+  '@agenticos-dev/bot-shell@0.2.2':
+    resolution: {integrity: sha512-89zKCiQgqISWuCrMlyuKSKujKPFr4hngKVhGSbHa8y8aIuc3BjJiUPuHldetmA2tdCSZyWro8uObeUVRKd9CNA==}
     peerDependencies:
       svelte: ^5.56.3
 
@@ -810,7 +807,7 @@ snapshots:
 
   '@agenticos-dev/bot-sdk@0.1.0': {}
 
-  '@agenticos-dev/bot-shell@0.1.0(patch_hash=453528aced445ff3692f6c7a0aa8aa9d369906a55b1eec65e6741c0189238736)(svelte@5.56.3)':
+  '@agenticos-dev/bot-shell@0.2.2(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
 

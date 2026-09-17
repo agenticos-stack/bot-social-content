@@ -17,8 +17,16 @@ import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
 import { isEditableItem } from "./inbox.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
+import {
+  goToStep as goToSharedStep,
+  setMobilePane as setSharedMobilePane
+} from "@agenticos-dev/bot-shell/client/steps.js";
 
 export const STEPS = Object.freeze(["select", "publish"]);
+
+// The narrow-viewport panes this canvas admits — the shared guard takes the
+// caller's vocabulary, and this canvas's is source/draft/preview.
+const MOBILE_PANES = Object.freeze(["source", "draft", "preview"]);
 
 const POSTER_TEMPLATES = Object.freeze(["1080x1350", "1080x1080"]);
 const DEFAULT_BACKGROUND = "#1c1c1e";
@@ -134,7 +142,7 @@ export function resumeBatch(state, batch) {
 }
 
 export function goToStep(state, step) {
-  return STEPS.includes(step) ? { ...state, step } : state;
+  return goToSharedStep(state, step, STEPS);
 }
 
 export function setActiveItem(state, batchItemId) {
@@ -142,7 +150,7 @@ export function setActiveItem(state, batchItemId) {
 }
 
 export function setMobilePane(state, pane) {
-  return ["source", "draft", "preview"].includes(pane) ? { ...state, mobilePane: pane } : state;
+  return setSharedMobilePane(state, pane, MOBILE_PANES);
 }
 
 export function updateDraft(state, batchItemId, patch) {
