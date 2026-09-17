@@ -89,7 +89,8 @@ describe("Output section", () => {
     expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-candidate"))).toHaveLength(1);
     // Accepted first, candidate beside it — the strip order is the load order.
     expect(view.loads).toEqual(["gm_a", "gm_b"]);
-    expect(view.root.textContent).toContain("Cover");
+    // One image is not a set: no Cover caption even with a candidate beside it.
+    expect(view.root.textContent).not.toContain("Cover");
     expect(view.root.textContent).toContain("New image");
 
     await buttonNamed(view.root, "Use this image")!.dispatchEvent({ type: "click" });
@@ -103,17 +104,23 @@ describe("Output section", () => {
     });
   });
 
-  it("renders the accepted image as slot 1 named cover, with per-picture hover actions", () => {
+  it("renders the accepted image with per-picture hover actions and no set furniture", () => {
     const view = output(post());
     const slots = all(view.root, (e) => {
       const cls = String(e.className).split(" ");
       return cls.includes("sl-slot") && !cls.includes("sl-slot-candidate");
     });
     expect(slots).toHaveLength(1);
-    expect(view.root.textContent).toContain("Cover");
+    // A single picture is not a set: no number badge, no "Cover" caption,
+    // and no second empty tile — that furniture names an ordered collection.
+    expect(view.root.textContent).not.toContain("Cover");
+    expect(all(view.root, (e) => String(e.className).includes("sl-slot-num"))).toHaveLength(0);
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addslot"))).toHaveLength(0);
     // The picture's own actions: regenerate, remove, view — never a blind retry.
     const hover = all(view.root, (e) => String(e.className).includes("sl-hover-btn"));
     expect(hover.map((b) => String(b.textContent))).toEqual(["Regenerate", "Remove", "View"]);
+    // Once a picture exists, the quiet add action moves to the column label.
+    expect(all(view.root, (e) => String(e.className).includes("sl-addquiet"))).toHaveLength(1);
   });
 
   it("the strip still renders one slot when only a legacy visual exists", () => {
@@ -146,11 +153,22 @@ describe("Output section", () => {
     expect(view.loads).toEqual([]);
   });
 
-  it("keeps the idle empty image region compact", () => {
-    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: null }));
+  it("the empty image region IS the add control — a dashed placeholder, not a note", async () => {
+    const toggles: string[] = [];
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: null }), {
+      strip: { menuOpen: false, onToggleMenu: () => toggles.push("menu") }
+    });
     expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
-    expect(view.root.textContent).toContain("No generated image yet.");
+    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
+    const place = all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"));
+    expect(place).toHaveLength(1);
+    expect(String(place[0].textContent)).toContain("＋");
+    expect(String(place[0].textContent)).toContain("Add image");
+    expect(String(place[0].textContent)).toContain("Generate, upload, or use the post's picture");
+    await place[0].dispatchEvent({ type: "click" });
+    expect(toggles).toEqual(["menu"]);
+    // No quiet link beside it — that only exists once a picture does.
+    expect(all(view.root, (e) => String(e.className).includes("sl-addquiet"))).toHaveLength(0);
   });
 
   it("does not overlay when the request was never submitted", () => {
@@ -160,7 +178,8 @@ describe("Output section", () => {
       generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
     }), { unsubmitted: true });
     expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty")).length).toBeGreaterThan(0);
+    // Unsubmitted is not "generating": the add placeholder is usable again.
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"))).toHaveLength(1);
   });
 
   it("rewrites the caption in the same field", () => {
@@ -286,7 +305,7 @@ describe("Output section", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: null }));
     const visual = all(view.root, (e) => e.tagName === "INPUT" && String(e.getAttribute("name") ?? "").includes("visual"));
     expect(visual).toHaveLength(0);
-    expect(view.root.textContent).toContain("No generated image yet.");
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"))).toHaveLength(1);
     expect(view.loads).toEqual([]);
   });
 
@@ -335,7 +354,7 @@ describe("Output section", () => {
       buffers: {},
       strip: { menuOpen: true, regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: false } }
     } as never);
-    expect(root.textContent).toContain("封面");
+    expect(root.textContent).toContain("＋ 加入圖片");
     expect(root.textContent).toContain("重新生成");
     expect(root.textContent).toContain("生成新圖片");
     expect(root.textContent).toContain("採用原帖圖片");
@@ -441,26 +460,32 @@ describe("unsaved changes and footer reasons", () => {
 });
 
 describe("Reference section", () => {
-  it("is inspection only — adopting the source image lives on the Post tab's add-image menu", async () => {
+  it("owns its adopt affordance — the same action the Post tab's add menu carries", async () => {
     const adopted: string[] = [];
     const sourceItem = { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] };
     const root = renderReferencePanel("en", post({ sourceItem }) as never, {
       editable: true,
-      onAdoptReference: () => adopted.push("reference")
+      imageRefsAvailable: true,
+      onAdoptSource: () => adopted.push("reference")
     } as never);
-    expect(root.textContent).toContain("Reference only");
-    // No adopt button here at all — even if a stray handler is passed.
-    expect(buttonNamed(root, "Use this image")).toBeFalsy();
-    // The Post tab's add-image menu is the one place the choice is made.
+    expect(root.textContent).toContain("Source image");
+    const adopt = buttonNamed(root, "Use the post's own picture")!;
+    await adopt.dispatchEvent({ type: "click" });
+    expect(adopted).toEqual(["reference"]);
+    // The Post tab's add menu carries the same choice, the same rule.
     const output = renderOutputPanel("en", post({ sourceItem }) as never, {
       editable: true,
       buffers: {},
       imageRefsAvailable: true,
       strip: { menuOpen: true, onMenuAdoptSource: () => adopted.push("reference") }
     } as never);
-    const adopt = buttonNamed(output, "Use the post's own picture")!;
-    await adopt.dispatchEvent({ type: "click" });
-    expect(adopted).toEqual(["reference"]);
+    await buttonNamed(output, "Use the post's own picture")!.dispatchEvent({ type: "click" });
+    expect(adopted).toEqual(["reference", "reference"]);
+    // Already the adopted source, or no usable picture: disabled, not hidden.
+    const adoptedAlready = renderReferencePanel("en", post({ sourceItem, acceptedVisualMode: "keep_original" }) as never, {
+      editable: true, imageRefsAvailable: true, onAdoptSource: () => adopted.push("again")
+    } as never);
+    expect(buttonNamed(adoptedAlready, "Use the post's own picture")!.disabled).toBe(true);
   });
 });
 

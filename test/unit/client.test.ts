@@ -63,11 +63,11 @@ import { LOCALES, STRINGS, t } from "../../src/src/client/i18n.js";
 import { normalizeConfig } from "../../src/config.js";
 import { findAll, flushAsyncWork, hasClass, installMinimalDom } from "./_helpers/minimal-dom";
 
-it("keeps the Social Content product name in both interface locales", () => {
+it("keeps the product name in both interface locales", () => {
   expect(t("en", "appTitle")).toBe("Social Content");
-  expect(t("zh-HK", "appTitle")).toBe("Social Content");
+  expect(t("zh-HK", "appTitle")).toBe("社交內容");
   expect(t("en", "setupTitle")).toBe("Set up Social Content");
-  expect(t("zh-HK", "setupTitle")).toBe("設定 Social Content");
+  expect(t("zh-HK", "setupTitle")).toBe("設定社交內容");
 });
 
 /**

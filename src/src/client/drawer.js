@@ -360,6 +360,19 @@ function imageSlots(item) {
 
 const REGEN_CHIPS = ["drawerRegenC1", "drawerRegenC2", "drawerRegenC3", "drawerRegenC4", "drawerRegenC5"];
 
+/*
+ * ONE SHAPE FOR BOTH TABS. Every column opens with the same label row — the
+ * label on the left, its one quiet action on the right — then its content.
+ * 帖文 and 參考 are then the same panel with different nouns in it, sharing
+ * `.sl-cols`'s media-column width so switching tabs never reflows the sheet.
+ */
+function columnLabel(text, action, id = null) {
+  return el("div", { class: "sl-collabel" }, [
+    el("span", { class: "sl-field-label sl-grow", id }, text),
+    action || null
+  ].filter(Boolean));
+}
+
 /**
  * ctx: `{ editable, saving, buffers, loadImage(generated, img, onFail), highlighted,
  * noteRef(el), onCaptionInput(value), onAltTextInput(value), onStageImage(id|null),
@@ -425,15 +438,21 @@ export function renderOutputPanel(locale, item, ctx) {
   };
 
   /*
-   * THE STRIP. One slot per accepted picture — one today. The index sits on
-   * the frame, the cap names slot 1 the cover, and the actions that belong to
-   * THAT picture live on it: hover reveals them on a fine pointer,
+   * THE STRIP. One slot per accepted picture — one today. The actions that
+   * belong to THAT picture live on it: hover reveals them on a fine pointer,
    * :focus-within reveals them for the keyboard, and a coarse pointer sees
    * them permanently (@media (hover: none)). Generating overlays the slot's
    * own frame — including an empty first slot — so a request never reads as
    * a second tile.
+   *
+   * ONE IMAGE IS NOT A SET. A number badge, a "Cover" caption and a second
+   * empty tile are the furniture of an ordered collection; on a post that has
+   * a single picture they name nothing, so the number and the cap appear only
+   * when there is more than one slot.
    */
   const hasPicture = (slot) => Boolean(slot.image) || Boolean(slot.legacy);
+  const slots = imageSlots(item);
+  const isSet = slots.length > 1;
   const slotNode = (slot) => {
     const media = el("div", { class: "sl-slot-media" });
     media.appendChild(figure(slot.image, {
@@ -441,7 +460,7 @@ export function renderOutputPanel(locale, item, ctx) {
       legacy: slot.legacy,
       skel: overlayBusy
     }));
-    media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(slot.index)));
+    if (isSet) media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(slot.index)));
     if (editable && hasPicture(slot) && !overlayBusy) {
       media.appendChild(el("div", { class: "sl-hover" }, [
         el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onRegenOpen?.(slot.index) }, t(locale, "drawerHoverRegen")),
@@ -454,15 +473,20 @@ export function renderOutputPanel(locale, item, ctx) {
     }
     return el("div", { class: "sl-slot", role: "listitem" }, [
       media,
-      el("div", { class: "sl-slot-cap" }, [
-        el("b", null, slot.index === 1 ? t(locale, "drawerCover") : t(locale, "drawerSlotN", { n: slot.index })),
-        staged && slot.index === 1 ? [" ", el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag"))] : null
-      ])
-    ]);
+      isSet
+        ? el("div", { class: "sl-slot-cap" }, [
+            el("b", null, slot.index === 1 ? t(locale, "drawerCover") : t(locale, "drawerSlotN", { n: slot.index })),
+            staged && slot.index === 1 ? [" ", el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag"))] : null
+          ])
+        : null
+    ].filter(Boolean));
   };
 
-  // Built in strip order: the accepted slot loads before the candidate beside it.
-  const slotNodes = imageSlots(item).map(slotNode);
+  // Built in strip order: the accepted slot loads before the candidate beside
+  // it. An EMPTY slot is not furniture — when the post can still be edited the
+  // dashed `.sl-addplace` placeholder IS the add control, so the slot itself
+  // only renders for a picture, a generating skeleton, or the locked view.
+  const slotNodes = slots.filter((slot) => hasPicture(slot) || overlayBusy || !editable).map(slotNode);
 
   // The candidate sits BESIDE the slot it would replace — never in its place.
   // "Keep current" on an untouched candidate dismisses the proposal (the image
@@ -489,9 +513,11 @@ export function renderOutputPanel(locale, item, ctx) {
       ])
     : null;
 
-  // The add tile: one menu with every way a picture joins the set — generate
-  // under the resolved brief (its row says so), upload, or adopt the post's
-  // own picture where one exists.
+  // One menu holds every way a picture joins the set — generate under the
+  // resolved brief (its row says so), upload, or adopt the post's own picture
+  // where one exists. It renders STATICALLY under the strip, never absolute:
+  // a floating menu clipped inside the drawer's scroll port and could fall
+  // behind the tile that opened it.
   const menuRow = (title, sub, onclick, disabled = false) =>
     el("button", { type: "button", role: "menuitem", class: "sl-menu-item", disabled: disabled || null, onclick }, [
       el("span", { class: "sl-menu-lead" }, title),
@@ -511,31 +537,68 @@ export function renderOutputPanel(locale, item, ctx) {
     generateItem.setAttribute("title", t(locale, "drawerPartOtherPendingCaption"));
     generateItem.setAttribute("data-pending", "caption");
   }
-  const addSlot = editable
-    ? el("div", { class: "sl-addwrap" }, [
-        el("button", {
-          type: "button",
-          class: "sl-addslot",
-          "aria-label": t(locale, "drawerAddImage"),
-          "aria-haspopup": "menu",
-          "aria-expanded": strip.menuOpen ? "true" : "false",
-          disabled: ctx.saving || null,
-          onclick: () => strip.onToggleMenu?.()
-        }, "＋"),
-        strip.menuOpen
-          ? el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerAddImage") }, [
-              generateItem,
-              el("div", { class: "sl-menu-sep", role: "separator" }),
-              menuRow(t(locale, "drawerAddUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
-              menuRow(
-                t(locale, "drawerAddSource"),
-                refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
-                () => strip.onMenuAdoptSource?.(),
-                !refsAvailable || item.acceptedVisualMode === "keep_original"
-              )
-            ])
-          : null
+  const addMenu = editable && strip.menuOpen
+    ? el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerAddImage") }, [
+        generateItem,
+        el("div", { class: "sl-menu-sep", role: "separator" }),
+        menuRow(t(locale, "drawerAddUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
+        menuRow(
+          t(locale, "drawerAddSource"),
+          refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
+          () => strip.onMenuAdoptSource?.(),
+          !refsAvailable || item.acceptedVisualMode === "keep_original"
+        )
       ])
+    : null;
+
+  /*
+   * THE EMPTY SLOT IS THE ADD CONTROL, and it is the size of the picture that
+   * will land in it: a dashed placeholder at the frame's own aspect ratio
+   * carries ＋ / Add image / the three ways one arrives. A text link under a
+   * hollow frame moved everything below it the moment an image arrived; this
+   * box never changes shape. Once a picture exists the quiet ＋ in the column
+   * label takes over; a generating slot keeps its skeleton instead.
+   */
+  const emptyEditable = editable && !slots.some(hasPicture) && !overlayBusy && !showCandidate;
+  const addPlace = emptyEditable
+    ? el("button", {
+        type: "button",
+        class: "sl-addplace",
+        "aria-haspopup": "menu",
+        "aria-expanded": strip.menuOpen ? "true" : "false",
+        disabled: ctx.saving || null,
+        onclick: () => strip.onToggleMenu?.()
+      }, [
+        el("span", { class: "sl-addplace-plus" }, "＋"),
+        el("span", null, t(locale, "drawerAddImage")),
+        el("span", { class: "sl-addplace-hint" }, t(locale, "drawerAddPlaceHint"))
+      ])
+    : null;
+  // The quiet way to add a picture once the placeholder is gone — it stays
+  // on the label while a request generates (the menu rows still carry the
+  // pending honesty), and never doubles as a second tile.
+  const quietAdd = editable && !emptyEditable
+    ? el("button", {
+        type: "button",
+        class: "sl-addquiet",
+        "aria-haspopup": "menu",
+        "aria-expanded": strip.menuOpen ? "true" : "false",
+        disabled: ctx.saving || null,
+        onclick: () => strip.onToggleMenu?.()
+      }, t(locale, "drawerAddFirst"))
+    : null;
+  // A real second tile is the ordered-set affordance — Phase 2 only, never on
+  // a post that holds one picture.
+  const addSlot = editable && isSet && slots.length < 10
+    ? el("button", {
+        type: "button",
+        class: "sl-addslot",
+        "aria-label": t(locale, "drawerAddImage"),
+        "aria-haspopup": "menu",
+        "aria-expanded": strip.menuOpen ? "true" : "false",
+        disabled: ctx.saving || null,
+        onclick: () => strip.onToggleMenu?.()
+      }, "＋")
     : null;
 
   /*
@@ -708,31 +771,37 @@ export function renderOutputPanel(locale, item, ctx) {
   } else {
     captionBody = [el("p", { class: "sl-drawer-caption-preview" }, [ctx.highlighted || item.caption || t(locale, "drawerCaptionNone")])];
   }
-  // Rewrite caption is a quiet inline action beside the label.
-  const captionSection = el("section", { class: "sl-drawer-section sl-output-copy", "aria-labelledby": "sl-output-caption-title" }, [
-    el("div", { class: "sl-output-label" }, [
-      el("h3", { id: "sl-output-caption-title" }, t(locale, "drawerOutputCaption")),
-      partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested", { bare: true, className: "sl-brief-link" })
-    ]),
-    capState === "requested" && unsubmitted
-      ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
-      : null,
-    ...captionBody
-  ]);
+  // Rewrite caption is a quiet action on the shared label row.
+  const rewriteAction = partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested", { bare: true, className: "sl-brief-link" });
 
-  // Panel order follows the accepted mockup: the image strip, then the
-  // caption. The publish row lives in the sheet foot (renderPublishControls).
+  /*
+   * THE COLUMN PAIR BOTH TABS SHARE. Media on the left, words on the right —
+   * `.sl-cols` fixes the media column's width (`--sl-colW`) so switching to
+   * 參考 and back never reflows the sheet under the cursor. The strip stacks
+   * inside the media column; the menu, the regen conversation and the status
+   * lines belong to the column they act on.
+   */
   return el("div", { class: "sl-drawer-panel-body" }, [
-    el("section", { class: "sl-drawer-section sl-imgstrip", "aria-labelledby": "sl-output-images-title" }, [
-      el("div", { class: "sl-output-label" }, [el("h3", { id: "sl-output-images-title" }, t(locale, "drawerImageSet"))]),
-      el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot, addSlot].filter(Boolean)),
-      provenance,
-      imageStatusLine,
-      regenPanel
-    ]),
-    captionSection,
-    altField,
-    uploadBlock
+    el("div", { class: "sl-cols" }, [
+      el("section", { class: "sl-cols-media", "aria-labelledby": "sl-output-images-title" }, [
+        columnLabel(t(locale, "drawerImageSet"), quietAdd, "sl-output-images-title"),
+        addPlace,
+        el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot, addSlot].filter(Boolean)),
+        addMenu,
+        provenance,
+        imageStatusLine,
+        uploadBlock,
+        regenPanel
+      ]),
+      el("section", { class: "sl-cols-side", "aria-labelledby": "sl-output-caption-title" }, [
+        columnLabel(t(locale, "drawerOutputCaption"), rewriteAction, "sl-output-caption-title"),
+        capState === "requested" && unsubmitted
+          ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
+          : null,
+        ...captionBody,
+        altField
+      ])
+    ])
   ]);
 }
 
@@ -833,7 +902,12 @@ function formatLabel(mimeType) {
 // 2. Reference
 // ---------------------------------------------------------------------------
 
-/** ctx: `{ stage: { node, strip } | null }` — the existing carousel stage with its own recovery. */
+/**
+ * ctx: `{ stage: { node, strip } | null, editable, saving,
+ *   imageRefsAvailable, onAdoptSource() }` — the existing carousel stage with
+ *   its own recovery, plus the one adopt action the column carries under the
+ *   source image (the same `onAdoptSource` the Post tab's add menu runs).
+ */
 export function renderReferencePanel(locale, item, ctx = {}) {
   const source = item.sourceItem;
   if (!source) return el("p", { class: "sl-field-note" }, t(locale, "drawerReferenceNoSource"));
@@ -841,26 +915,43 @@ export function renderReferencePanel(locale, item, ctx = {}) {
     ? (source.authorHandle.startsWith("@") ? source.authorHandle : `@${source.authorHandle}`)
     : source.sourceLabel || "";
   const hasVideo = (source.media ?? []).some((media) => media?.kind === "video");
-  return el("section", { class: "sl-drawer-section sl-reference", "aria-labelledby": "sl-reference-title" }, [
-    el("div", { class: "sl-output-label" }, [
-      el("h3", { id: "sl-reference-title" }, t(locale, "drawerSourceReference")),
-      el("span", { class: "sl-reference-badge" }, t(locale, "drawerReferenceOnly"))
-    ]),
-    el("dl", { class: "sl-drawer-facts" }, [
-      el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceAccount")), el("dd", null, handle || t(locale, "stateUnknown"))]),
-      source.sourceLabel && source.sourceLabel !== handle
-        ? el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceWatch")), el("dd", null, source.sourceLabel)])
-        : null
-    ]),
-    ctx.stage ? el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [ctx.stage.node, ctx.stage.strip]) : null,
-    hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
-    // Adopting the source image happens in exactly one place: the Post tab's
-    // "Use reference" source control. This panel is inspection only.
-    el("span", { class: "sl-field-label" }, t(locale, "drawerSourceCaption")),
-    el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
-    source.permalink
-      ? el("a", { href: source.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
-      : null
+  const refsAvailable = ctx.imageRefsAvailable === true;
+  // Adopting the source picture is one action, reachable from two places:
+  // the Post tab's add menu and this column's quiet control under the image.
+  // Both run the same `onAdoptSource`; it is disabled by the same rule.
+  const adoptDisabled = ctx.saving || !refsAvailable || item.acceptedVisualMode === "keep_original";
+  return el("section", { class: "sl-drawer-section sl-reference", "aria-labelledby": "sl-reference-img-title" }, [
+    el("div", { class: "sl-cols" }, [
+      el("div", { class: "sl-cols-media" }, [
+        columnLabel(t(locale, "drawerRefImageLabel"), null, "sl-reference-img-title"),
+        ctx.stage ? el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [ctx.stage.node, ctx.stage.strip]) : null,
+        hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
+        ctx.editable
+          ? el("button", {
+              type: "button",
+              class: "sl-secondary sl-ref-adopt",
+              disabled: adoptDisabled || null,
+              onclick: () => ctx.onAdoptSource?.()
+            }, t(locale, "drawerAddSource"))
+          : null
+      ].filter(Boolean)),
+      el("div", { class: "sl-cols-side" }, [
+        columnLabel(
+          t(locale, "drawerSourceCaption"),
+          source.permalink
+            ? el("a", { href: source.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-brief-link" }, t(locale, "drawerViewOriginal"))
+            : null,
+          "sl-reference-text-title"
+        ),
+        el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
+        el("dl", { class: "sl-drawer-facts" }, [
+          el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceAccount")), el("dd", null, handle || t(locale, "stateUnknown"))]),
+          source.sourceLabel && source.sourceLabel !== handle
+            ? el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceWatch")), el("dd", null, source.sourceLabel)])
+            : null
+        ])
+      ])
+    ])
   ]);
 }
 

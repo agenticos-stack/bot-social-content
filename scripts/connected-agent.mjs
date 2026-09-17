@@ -566,7 +566,7 @@ export function sourceDigest(files) {
 export function socialMethodNames() {
   return [
     'summary', 'setConfig', 'saveSetup', 'setMonitoring', 'refreshGrants', 'addOpenSource', 'removeOpenSource', 'scanRuns', 'refresh', 'listItems',
-    'getItem', 'getMedia', 'createBatch', 'getBatch', 'listBatches', 'listBatchSummaries', 'saveRevision',
+    'getItem', 'getMedia', 'createBatch', 'getBatch', 'addBatchItem', 'removeBatchItem', 'renameBatchItem', 'listBatches', 'listBatchSummaries', 'saveRevision',
     'saveRevisions', 'savePoster', 'saveGeneratedImage', 'deliverGeneratedImage', 'getGeneratedImage', 'pendingGeneratedImages',
     'dismissGenerationAsk', 'requestGeneration', 'saveInstructionOverrides', 'submitForReview', 'readPublishState',
     'exportAs', 'exportJson', 'exportHtml', 'markSeen', 'setSelection', 'clearSelection'

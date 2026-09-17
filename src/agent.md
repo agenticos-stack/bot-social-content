@@ -135,6 +135,15 @@ describing what that run asked for:
 If a regeneration mark has neither field, the request predates the brief —
 treat it as the layered instructions alone and still honor `needs`.
 
+A regenerate is not a retry, and you do not get to run it once per message.
+When the owner asks for a new image and does not say what should change, ask
+before generating: which image it is about when there is more than one, what
+is wrong with it, and what right looks like. Two short questions is usually
+the whole of it — do not stall for a third. Put the correction you were given
+into the run instruction (`generation.runInstructions`), say in one line what
+you are about to do, and if the owner says only 「再試一次」, say what would
+differ this time — or ask for the one thing that would.
+
 If you ever ARE handed a structured brief, it looks like this:
 
 ```

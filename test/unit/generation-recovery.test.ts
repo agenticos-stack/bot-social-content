@@ -185,11 +185,15 @@ const buttonText = (root: unknown, text: string) =>
   findAll(root, (element) => element.tagName === "BUTTON" && String(element.textContent ?? "").trim() === text)[0];
 const partButton = (root: unknown, part: string) =>
   findAll(root, (element) => element.getAttribute?.("data-part") === part)[0];
-// The image part's control is the strip's add menu: the ＋ slot opens it and
-// its Generate row is the pressable action. A pending request marks the row
-// (`data-requested`) without disabling it — a re-ask always asks first.
+// The image part's control is the strip's add menu: the add-place tile (empty
+// slot) or the quiet ＋ Add image link opens it, and its Generate row is the
+// pressable action. A pending request marks the row (`data-requested`)
+// without disabling it — a re-ask always asks first.
 const imageAdd = (root: unknown) =>
-  findAll(root, (element) => element.getAttribute?.("aria-label") === "Add image")[0];
+  findAll(root, (element) => {
+    const cls = String(element.className ?? "").split(" ");
+    return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot") || element.getAttribute?.("aria-label") === "Add image");
+  })[0];
 const imageGenerate = (root: unknown) =>
   findAll(
     root,
@@ -231,15 +235,15 @@ describe("a generation request saved before the handoff", () => {
     expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
-    // The empty image region stays compact: no framed placeholder under an
-    // "accepted image" heading — the next action stays visible.
+    // The empty image region IS the add control: a dashed placeholder its own
+    // size — no framed empty under an "accepted image" heading.
     expect(
       findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
       "giant empty image frame still rendered"
     ).toHaveLength(0);
-    expect(findAll(document.body, (element) => element.classList?.contains("sl-output-empty")).length).toBeGreaterThan(0);
+    expect(findAll(document.body, (element) => element.classList?.contains("sl-addplace")).length).toBeGreaterThan(0);
     expect(String(document.body.textContent)).not.toContain("Accepted image");
-    expect(String(document.body.textContent)).toContain("No generated image yet.");
+    expect(String(document.body.textContent)).toContain("Add image");
 
     // Card, drawer and per-part copy agree: nothing implies an agent queue
     // for a request that was never submitted.
@@ -296,7 +300,7 @@ describe("a generation request saved before the handoff", () => {
     expect(buttonText(document.body, "繼續生成"), "no zh-HK resume action").toBeTruthy();
     expect(text).toContain("未確認已開始");
     expect(text).not.toContain("正在等待代理處理");
-    expect(text).toContain("尚未有生成圖片");
+    expect(text).toContain("加入圖片");
     expect(
       findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
       "giant empty image frame still rendered"

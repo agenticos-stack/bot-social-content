@@ -1708,7 +1708,7 @@ export const PHASE_FILTERS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 export const messages = {
-  emptyDraft: { en: "The localized caption is empty.", "zh-HK": "本地化文案為空。" },
+  emptyDraft: { en: "The post's caption is empty.", "zh-HK": "帖文文案為空。" },
   lowChineseShare: { en: "The draft does not read as written Chinese.", "zh-HK": "文案未見以書面中文撰寫。" },
   spokenFormDetected: {
     en: "The draft contains a spoken Cantonese expression; product copy must be written Chinese.",

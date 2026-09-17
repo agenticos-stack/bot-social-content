@@ -59,9 +59,14 @@ const alt = (r: AnyRec) => byId(r.dialog(), "sl-drawer-alt-text");
 const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraft"));
 // The primary names what it files: the picked destination subset.
 const PUBLISH = t("en", "drawerPublishToOne", { who: "FB_MAIN" });
-/** The ＋ menu's Generate row — a bare press sends the staged brief. */
+/** The add menu's Generate row — a bare press sends the staged brief. The
+ *  trigger is the quiet ＋ Add image link, or the add-place tile when empty. */
 async function startGenerate(r: AnyRec) {
-  await click(r.dialog(), "＋");
+  const trigger = buttons(r.dialog()).find((b: AnyRec) =>
+    String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+  if (!trigger) throw new Error("Add-image trigger missing");
+  await trigger.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
   const item = buttons(r.dialog()).find((b) => String(b.textContent ?? "").startsWith(t("en", "drawerAddGenerate")));
   const done = item.dispatchEvent({ type: "click" });
   await flushAsyncWork();

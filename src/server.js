@@ -1531,8 +1531,8 @@ export class Gadget extends DurableObject {
 
     const postWord = opened.items.length === 1 ? "post" : "posts";
     await notify(this.env, {
-      title: `${opened.items.length} ${postWord} ready to localize`,
-      body: `${opened.items.length} ${postWord} moved to Localize. Drafts start from here.`
+      title: `${opened.items.length} ${postWord} ready to draft`,
+      body: `${opened.items.length} ${postWord} moved to Content. Drafts start from there.`
     });
     // The platform reads this off the method result and files the governed
     // request; the client then records the outcome with
@@ -1636,8 +1636,12 @@ export class Gadget extends DurableObject {
     // stay exactly as they were published (REQ-011, PAT-004).
     // An item that HAS been sent somewhere stays active — its publications
     // are the record, and the pair rule at submit owns them from there.
+    let inheritedTitle = null;
     for (const existing of this.storage.activeBatchItemsFor(item.id)) {
       if (!this.storage.hasFiledPublication(existing.id)) {
+        // The name follows the post, not the draft: a superseding version
+        // inherits the superseded row's title (REVIEW.md, schema 19).
+        if (existing.title) inheritedTitle = existing.title;
         this.storage.supersedeBatchItem(existing.id);
       }
     }
@@ -1647,6 +1651,7 @@ export class Gadget extends DurableObject {
       id: batchItemId,
       batchId,
       itemId: item.id,
+      title: inheritedTitle,
       // TASK-003: the column is read for rows written before migration 8
       // only. What a caller still sends is recorded as `bound` publications
       // instead — a default the submit picker reads, not a send (TASK-005).
@@ -1705,6 +1710,116 @@ export class Gadget extends DurableObject {
       retrievedAt: new Date().toISOString()
     });
     return this.storage.getBatchItem(batchItemId);
+  }
+
+  /**
+   * "Add a post from Sources" — the post selector's footer. Another post means
+   * another SOURCE post joining this batch, so this mints one more batch item
+   * on an existing batch rather than opening a new one.
+   *
+   * The new item is its own ask: a fresh `gen` request id (it is not part of
+   * the batch's original shared request) with the default drafting mark, and
+   * the union of `bound` destination bindings the batch's live items already
+   * carry — the destinations the batch was pointed at, not a send.
+   *
+   * Refuses by value, never by throw (PAT-007):
+   * - `batch_not_found` / `item_not_found` — either id resolves to nothing.
+   * - `already_in_batch` — the source already has an ACTIVE row in this batch.
+   *   (A superseded one does not block: remove, then re-add is a real flow.)
+   * - `duplicate_active` — REQ-017's item-key rule: another batch holds an
+   *   active, never-filed localization of the same source.
+   */
+  addBatchItem(input) {
+    return this.enqueueMutation(() => {
+      const batchId = typeof input?.batchId === "string" ? input.batchId : "";
+      const itemId = typeof input?.itemId === "string" ? input.itemId : "";
+      const batch = batchId ? this.storage.getBatch(batchId) : null;
+      if (!batch) return { ok: false, code: "batch_not_found", message: "This batch is no longer available." };
+      const item = itemId ? this.storage.getItem(itemId) : null;
+      if (!item) return { ok: false, code: "item_not_found", message: "This source post is no longer available." };
+      const siblings = this.storage.listBatchItems(batchId).filter((entry) => entry.active);
+      if (siblings.some((entry) => entry.itemId === itemId)) {
+        return {
+          ok: false,
+          code: "already_in_batch",
+          message: "This source post is already a post in this batch."
+        };
+      }
+      const duplicates = this.findDuplicates([itemId]);
+      if (duplicates.length) return duplicateRefusal(duplicates);
+      // Inherit the destinations the batch's live items are pointed at — the
+      // recorded `bound` defaults, not the legacy column or filed rows.
+      const destinationBindings = [
+        ...new Set(
+          siblings.flatMap((entry) =>
+            this.storage
+              .publicationsFor(entry.id)
+              .filter((publication) => publication.state === "bound")
+              .map((publication) => publication.destinationBinding)
+          )
+        )
+      ];
+      const batchItem = this.createOneBatchItem(batchId, item, destinationBindings, null);
+      return { ok: true, batchId, item: this.projectBatchItem(batchItem) };
+    });
+  }
+
+  /**
+   * The selector's ✕ — remove this post from its batch. Removal is
+   * supersede, never delete: the row, its revisions and its publications stay
+   * as the audit trail (PAT-004), and the source post becomes pickable again.
+   *
+   * Refuses by value: `post_locked` when the item is filed or past drafting
+   * (a sent post's record cannot be made to disappear), and `last_post` when
+   * it is the batch's last active item — an empty batch is not a batch.
+   */
+  removeBatchItem(input) {
+    return this.enqueueMutation(() => {
+      const batchItemId = typeof input?.batchItemId === "string" ? input.batchItemId : "";
+      const item = batchItemId ? this.storage.getBatchItem(batchItemId) : null;
+      if (!item || !item.active) {
+        return { ok: false, code: "post_not_found", message: "This post is no longer in the batch." };
+      }
+      if (!["drafting", "expired"].includes(item.state) || this.storage.hasFiledPublication(item.id)) {
+        return {
+          ok: false,
+          code: "post_locked",
+          message: "This post has been submitted; its record stays as history."
+        };
+      }
+      const siblings = this.storage.listBatchItems(item.batchId).filter((entry) => entry.active);
+      if (siblings.length <= 1) {
+        return {
+          ok: false,
+          code: "last_post",
+          message: "The last post cannot be removed — a batch holds at least one."
+        };
+      }
+      this.storage.supersedeBatchItem(item.id);
+      return { ok: true, batchId: item.batchId, batchItemId: item.id };
+    });
+  }
+
+  /**
+   * The post's name, edited in place in the drawer header. `title` lives on
+   * `batch_items` — navigation metadata, not revision content — so renaming
+   * writes one column and no revision. Empty clears back to NULL (the derived
+   * name shows again); a submitted post keeps its name but cannot be renamed.
+   */
+  renameBatchItem(input) {
+    return this.enqueueMutation(() => {
+      const batchItemId = typeof input?.batchItemId === "string" ? input.batchItemId : "";
+      const item = batchItemId ? this.storage.getBatchItem(batchItemId) : null;
+      if (!item || !item.active) {
+        return { ok: false, code: "post_not_found", message: "This post is no longer in the batch." };
+      }
+      if (!["drafting", "expired"].includes(item.state) || this.storage.hasFiledPublication(item.id)) {
+        return { ok: false, code: "post_locked", message: "This post has been submitted; its name is locked." };
+      }
+      const title = typeof input?.title === "string" ? input.title.trim().slice(0, 200) : "";
+      this.storage.updateBatchItem(item.id, { title: title || null });
+      return { ok: true, batchItemId: item.id, title: title || null };
+    });
   }
 
   /**
@@ -1788,6 +1903,9 @@ export class Gadget extends DurableObject {
       batchId: batchItem.batchId,
       itemId: batchItem.itemId,
       active: batchItem.active,
+      // The owner's name for the post (batch_items.title, schema 19) — NULL
+      // until named; the client derives the display name from the source.
+      title: batchItem.title ?? null,
       sourceItem,
       protectedSpans,
       destinationBindings,
@@ -1892,7 +2010,14 @@ export class Gadget extends DurableObject {
   async getBatch(batchId) {
     const batch = this.storage.getBatch(batchId);
     if (!batch) return null;
-    const items = this.storage.listBatchItems(batchId).map((batchItem) => this.projectBatchItem(batchItem));
+    // A batch is its ACTIVE posts. Superseded rows (a removed post, or an old
+    // version retired by createNewVersion) stay in storage as the audit trail
+    // but are not posts the drawer can switch to — `listBatchSummaries`
+    // already counts only actives for the same reason.
+    const items = this.storage
+      .listBatchItems(batchId)
+      .filter((batchItem) => batchItem.active)
+      .map((batchItem) => this.projectBatchItem(batchItem));
     return { id: batch.id, createdAt: batch.created_at, status: batch.status, generation: batch.generation ?? null, items };
   }
 
@@ -4074,15 +4199,15 @@ function duplicateRefusal(duplicates) {
   const where = `batch ${first.batchId} (item ${first.batchItemId})`;
   const more =
     rest > 0
-      ? ` ${rest} other selected post${rest === 1 ? "" : "s"} ${rest === 1 ? "is" : "are"} already localized too.`
+      ? ` ${rest} other selected post${rest === 1 ? "" : "s"} ${rest === 1 ? "is" : "are"} already drafted too.`
       : "";
   const bound = first.destinationBindings?.length ? ` for ${first.destinationBindings.join(", ")}` : "";
   return {
     ok: false,
     code: "duplicate_active",
     message:
-      `${first.itemId} already has an active localization${bound} in ${where}.${more}` +
-      " Open it, or create a new version to localize it again.",
+      `${first.itemId} already has an active draft${bound} in ${where}.${more}` +
+      " Open it, or create a new version to draft it again.",
     duplicates
   };
 }

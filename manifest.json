@@ -4,7 +4,7 @@
   "artifact": "social-content.gadget",
   "metadata": {
     "title": "Social Content",
-    "description": "Watch authorized source accounts, keep normalized posts, localize approved picks into written Traditional Chinese (zh-HK), and hand the exact approved version to the Social Hub publisher through a door.",
+    "description": "Create social content from source posts: watch authorized source accounts, keep normalized posts, draft approved picks into written Traditional Chinese (zh-HK), and hand the exact approved version to the Social Hub publisher through a door.",
     "author": {
       "type": "user",
       "name": "AgenticOS Platform",
@@ -12,7 +12,7 @@
     },
     "version": 1
   },
-  "storageSchemaVersion": 18,
+  "storageSchemaVersion": 19,
   "files": [
     "client.js",
     "server.js",

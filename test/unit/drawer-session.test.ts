@@ -32,6 +32,8 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
   return {
     id,
     batchId: "b",
+    itemId: `src_${id}`,
+    title: null,
     revision: 1,
     state: "drafting",
     caption: "Saved caption",
@@ -52,7 +54,7 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
 
 const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: false, caption: false, ...needs }, needs: { image: false, caption: false, ...needs }, at: "2026-09-14T03:00:00.000Z" });
 
-function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec } = {}) {
+function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; takenSourceIds?: string[] } = {}) {
   installMinimalDom();
   const db: AnyRec = { id: "b", items: options.items ?? [post()] };
   const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [] };
@@ -73,6 +75,9 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     renderCurrentView() {}, refreshSummary: async () => {},
     mergeScanResult: (state: unknown) => state, setLastCheckedAt: (state: unknown) => state,
     wizardHandlers: {}, refusalMessage: (result: AnyRec) => result?.message ?? null,
+    // REQ-017's pair check, mirrored client-side for the source picker — the
+    // rig reports only what the test marks taken.
+    takenSourceIds: () => new Set(options.takenSourceIds ?? []),
     resumeBatch: (_old: unknown, batch: unknown) => ({ batch }), refreshPublishState: async () => {},
     loadGeneratedImageAsBlobUrl: async (_rpc: unknown, id: string) => ({ url: `blob:${id}`, mime: "image/jpeg" }),
     mediaStageFor: (target: AnyRec) => {
@@ -118,6 +123,34 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     submitForReview: async (input: AnyRec) => {
       calls.submits.push(input);
       return { ok: true, submitted: [] };
+    },
+    // The selector's three mutations — the fake DB answers like the real one:
+    // rename rewrites the row, remove drops it from the projection, add makes
+    // a new item for the picked source.
+    renameBatchItem: async (input: AnyRec) => {
+      calls.renames = (calls.renames ?? []).concat(input);
+      const row = db.items.find((item: AnyRec) => item.id === input.batchItemId);
+      if (!row) return { ok: false, code: "post_not_found" };
+      row.title = input.title || null;
+      return { ok: true, batchItemId: input.batchItemId, title: row.title };
+    },
+    removeBatchItem: async (input: AnyRec) => {
+      calls.removes = (calls.removes ?? []).concat(input);
+      if (db.items.length <= 1) return { ok: false, code: "last_post" };
+      db.items = db.items.filter((item: AnyRec) => item.id !== input.batchItemId);
+      return { ok: true, batchItemId: input.batchItemId };
+    },
+    addBatchItem: async (input: AnyRec) => {
+      calls.adds = (calls.adds ?? []).concat(input);
+      if (db.items.some((item: AnyRec) => item.itemId === input.itemId)) return { ok: false, code: "already_in_batch" };
+      const source = (responses.sources ?? []).find((entry: AnyRec) => entry.id === input.itemId);
+      const added = post(`x${db.items.length}`, { itemId: input.itemId, sourceItem: source ? { id: source.id, text: source.text ?? "", media: [] } : { id: input.itemId, text: "", media: [] } });
+      db.items.push(added);
+      return { ok: true, item: structuredClone(added) };
+    },
+    listItems: async () => {
+      calls.sourceLists = (calls.sourceLists ?? 0) + 1;
+      return { items: responses.sources ?? [] };
     }
   };
   const open = extract("  async function openBatchDrawer(", "\n  function closePreview()", "openBatchDrawer", scope);
@@ -156,9 +189,18 @@ async function startRegen(r: AnyRec, chip = "drawerRegenC1") {
   await click(r.dialog(), t("en", chip));
   return press(r.dialog(), t("en", "drawerRegenGo"));
 }
+/** Opens the add-image menu: the quiet ＋ Add image link once a picture
+ *  exists, or the dashed add-place tile while the slot is still empty. */
+async function openAddMenu(r: AnyRec) {
+  const trigger = buttons(r.dialog()).find((b) =>
+    String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+  if (!trigger) throw new Error("Add-image trigger missing in: " + labels(r.dialog()).join(" | "));
+  await trigger.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+}
 /** The ＋ menu's Generate row: a bare press sends the staged brief, no run layer. */
 async function pressGenerate(r: AnyRec) {
-  await click(r.dialog(), "＋");
+  await openAddMenu(r);
   const item = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
   if (!item) throw new Error("Generate menu item missing");
   const done = item.dispatchEvent({ type: "click" });
@@ -173,6 +215,22 @@ async function press(root: unknown, label: string) {
 }
 const byId = (root: unknown, id: string) => findAll(root as never, (e: any) => e.getAttribute("id") === id || e.id === id)[0] as any;
 const tab = (root: unknown, key: string) => byId(root, `sl-drawer-tab-${key}`);
+/** Switches posts through the selector: open it if closed, pick the post's row (0-based). */
+async function switchPost(r: AnyRec, index: number) {
+  const btn = buttons(r.dialog()).find((b) => String(b.className ?? "").split(" ").includes("sl-postbtn"));
+  if (!btn) throw new Error("Post selector missing in: " + labels(r.dialog()).join(" | "));
+  if (btn.getAttribute("aria-expanded") !== "true") {
+    await btn.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+  }
+  const rows = findAll(r.dialog() as never, (e: any) => {
+    const cls = String(e.className ?? "").split(" ");
+    return cls.includes("sl-pm-row") && !cls.includes("sl-pm-add") && !cls.includes("sl-pm-back");
+  }) as any[];
+  if (!rows[index]) throw new Error(`Post row ${index} missing in: ` + labels(r.dialog()).join(" | "));
+  await rows[index].dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+}
 async function type(field: any, value: string) {
   field.value = value;
   await field.dispatchEvent({ type: "input" });
@@ -242,7 +300,7 @@ describe("U1: the open drawer follows generation completion", () => {
     const pending = r.operation({ type: "revision", batchItemId: "a", revision: 2 });
     await flushAsyncWork();
     expect(r.calls.reads).toBe(2);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 2, total: 2 }));
+    await switchPost(r, 1);
     r.db.items[0].caption = "FRESH";
     r.release({ id: "b", items: [post("a", { caption: "STALE" }), post("b", { caption: "Second post caption" })] });
     await pending;
@@ -250,7 +308,7 @@ describe("U1: the open drawer follows generation completion", () => {
     // The stale answer was dropped and one follow-up read replaced it.
     expect(r.calls.reads).toBe(3);
     expect(captionField(r).value).toBe("Second post caption");
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 1, total: 2 }));
+    await switchPost(r, 0);
     expect(captionField(r).value).toBe("FRESH");
   });
 
@@ -438,7 +496,7 @@ describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
     const r = rig({ items: [post("a", { generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), "＋");
+    await openAddMenu(r);
     const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
     // The pending honesty moved to the menu row: it names the other part.
     expect(generate.getAttribute("title")).toContain("A caption request is still pending for this post.");
@@ -464,7 +522,7 @@ describe("one outstanding request per post", () => {
   it("a new post's initial request (both parts) is replaced only explicitly", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), "＋");
+    await openAddMenu(r);
     const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
     // The outstanding ask marks the row but never disables it — the press still asks first.
     expect(generate.disabled).not.toBe(true);
@@ -818,7 +876,7 @@ describe("R3: typing during a pending Save keeps the newer edit", () => {
     await r.open({ id: "b", itemId: "a" });
     await type(captionField(r), "Caption A");
     const { done: saving } = await startSave(r);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 2, total: 2 }));
+    await switchPost(r, 1);
     await type(captionField(r), "Second post edit");
     await saves.release();
     await saving;
@@ -826,7 +884,7 @@ describe("R3: typing during a pending Save keeps the newer edit", () => {
     expect(r.db.items.map((item: AnyRec) => item.caption)).toEqual(["Caption A", "Second post caption"]);
     expect(captionField(r).value).toBe("Second post edit");
     expect(saveButton(r).disabled).toBe(false);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 1, total: 2 }));
+    await switchPost(r, 0);
     expect(captionField(r).value).toBe("Caption A");
     expect(saveButton(r).disabled).toBe(true);
   });
@@ -1089,5 +1147,167 @@ describe("the image brief on the Instructions tab", () => {
     await flushAsyncWork();
     expect(r.calls.announced).toContain(t("en", "drawerRefUnavailable"));
     expect(r.calls.announced).not.toContain("raw server wording");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The post selector and the post's own name (schema 19: batch_items.title)
+// ---------------------------------------------------------------------------
+
+describe("the post selector and title", () => {
+  /** The selector button says the position once; the menu names every post. */
+  it("names each post with its state, and switches on a row", async () => {
+    const r = rig({ items: [
+      post("a", { title: "週末特輯" }),
+      post("b", { caption: "Second post caption", generation: pendingMark({ caption: true }) })
+    ] });
+    await r.open({ id: "b", itemId: "a" });
+    // The button carries the position; the eyebrow does not.
+    expect(findButton(r.dialog(), "Post 1 of 2 ▾")).toBeTruthy();
+    const meta = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").includes("sl-drawer-meta"))[0];
+    expect(String(meta.textContent)).not.toContain("Post 1");
+
+    await click(r.dialog(), "Post 1 of 2 ▾");
+    const menu = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-postmenu"))[0];
+    expect(menu).toBeTruthy();
+    // Named rows: the stored title and the derived source head, with states.
+    expect(String(menu.textContent)).toContain("週末特輯");
+    expect(String(menu.textContent)).toContain("Reference text");
+    expect(String(menu.textContent)).toContain("Draft");
+    expect(String(menu.textContent)).toContain("Generating");
+    expect(String(menu.textContent)).toContain("Add a post from Sources");
+
+    // The row switches the drawer — same contract the old pills had.
+    await switchPost(r, 1);
+    expect(captionField(r).value).toBe("Second post caption");
+    expect(findButton(r.dialog(), "Post 2 of 2 ▾")).toBeTruthy();
+  });
+
+  it("commits the title on blur, trims it, and announces the save", async () => {
+    const r = rig({ items: [post("a")] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field).toBeTruthy();
+    expect(field.getAttribute("aria-label")).toBe(t("en", "drawerTitleAria"));
+    await field.dispatchEvent({ type: "focus" });
+    field.value = "  Weekend tray  ";
+    await field.dispatchEvent({ type: "blur" });
+    await flushAsyncWork();
+    expect(r.calls.renames).toEqual([{ batchItemId: "a", title: "Weekend tray" }]);
+    expect(r.calls.announced).toContain(t("en", "drawerTitleSaved"));
+    expect(r.db.items[0].title).toBe("Weekend tray");
+  });
+
+  it("Escape restores the pre-edit value and sends nothing", async () => {
+    const r = rig({ items: [post("a", { title: "Kept name" })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field.value).toBe("Kept name");
+    await field.dispatchEvent({ type: "focus" });
+    field.value = "Typed over";
+    await field.dispatchEvent({ type: "keydown", key: "Escape", preventDefault: () => {} });
+    await flushAsyncWork();
+    expect(field.value).toBe("Kept name");
+    expect(r.calls.renames ?? []).toHaveLength(0);
+  });
+
+  it("an unchanged blur sends nothing", async () => {
+    const r = rig({ items: [post("a", { title: "Same" })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    await field.dispatchEvent({ type: "focus" });
+    await field.dispatchEvent({ type: "blur" });
+    await flushAsyncWork();
+    expect(r.calls.renames ?? []).toHaveLength(0);
+  });
+
+  it("the title is read-only on a submitted post", async () => {
+    const r = rig({ items: [post("a", {
+      title: "Sent one",
+      state: "submitted",
+      publications: [{ id: "pub_1", destinationBinding: "FB_MAIN", state: "review_requested" }]
+    })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field.value).toBe("Sent one");
+    expect(field.readOnly).toBe(true);
+  });
+
+  it("removes a post after an in-place confirm that names it", async () => {
+    const r = rig({ items: [post("a", { title: "First post" }), post("b", { title: "Second post" })] });
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), "Post 1 of 2 ▾");
+    // The ✕ lives on the row it removes.
+    const xs = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-rowx")) as any[];
+    expect(xs).toHaveLength(2);
+    await xs[0].dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    // The question replaces the row and keeps the post's name.
+    expect(String(r.dialog().textContent)).toContain('Remove “First post”?');
+    await click(r.dialog(), t("en", "drawerHoverRemove"));
+    await flushAsyncWork();
+    expect(r.calls.removes).toEqual([{ batchItemId: "a" }]);
+    expect(r.calls.announced).toContain(t("en", "drawerRemovedPost"));
+    expect(r.db.items.map((item: AnyRec) => item.id)).toEqual(["b"]);
+    // The drawer now sits on the surviving post.
+    expect(captionField(r).value).toBe("Saved caption");
+    expect(findButton(r.dialog(), "Post 1 of 1 ▾")).toBeTruthy();
+  });
+
+  it("Cancel keeps the post and re-asks cleanly", async () => {
+    const r = rig({ items: [post("a"), post("b")] });
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), "Post 1 of 2 ▾");
+    const xs = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-rowx")) as any[];
+    await xs[1].dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    await click(r.dialog(), "Cancel");
+    await flushAsyncWork();
+    expect(r.calls.removes ?? []).toHaveLength(0);
+    expect(String(r.dialog().textContent)).not.toContain("Remove “");
+    // Both rows are back.
+    const rows = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-pm-row")) as any[];
+    expect(rows.length).toBeGreaterThanOrEqual(3); // two posts + the add row
+  });
+
+  it("the last post's ✕ is disabled and named", async () => {
+    const r = rig({ items: [post("a")] });
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), "Post 1 of 1 ▾");
+    const xs = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-rowx")) as any[];
+    expect(xs).toHaveLength(1);
+    expect(xs[0].disabled).toBe(true);
+    expect(xs[0].getAttribute("title")).toBe(t("en", "drawerRemovePostLast"));
+  });
+
+  it("adds a source post through the picker and lands on it", async () => {
+    const r = rig({ items: [post("a")], takenSourceIds: ["src_taken"] });
+    r.responses.sources = [
+      { id: "src_a", text: "Already in the batch" },
+      { id: "src_new", text: "A fresh source post", authorHandle: "brandhk" },
+      { id: "src_taken", text: "Drafted elsewhere" }
+    ];
+    await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), "Post 1 of 1 ▾");
+    // The add row opens the source list inside the same menu.
+    const addRow = buttons(r.dialog()).find((b) => String(b.className ?? "").split(" ").includes("sl-pm-add"));
+    await addRow.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.sourceLists).toBe(1);
+    const text = String(r.dialog().textContent);
+    expect(text).toContain("A fresh source post");
+    expect(text).toContain("@brandhk");
+    expect(text).toContain(t("en", "drawerSourceInBatch"));
+    // src_a is already in this batch → disabled, with the reason beside it.
+    const inBatchRow = buttons(r.dialog()).find((b) => String(b.textContent).includes("Already in the batch"));
+    expect(inBatchRow.disabled).toBe(true);
+    const takenRow = buttons(r.dialog()).find((b) => String(b.textContent).includes("Drafted elsewhere"));
+    expect(takenRow.disabled).toBe(true);
+    expect(text).toContain(t("en", "drawerSourceHasDraft"));
+    // Picking the fresh source sends addBatchItem and selects the new post.
+    await click(r.dialog(), `A fresh source post@brandhk`);
+    await flushAsyncWork();
+    expect(r.calls.adds).toEqual([{ batchId: "b", itemId: "src_new" }]);
+    expect(findButton(r.dialog(), "Post 2 of 2 ▾")).toBeTruthy();
   });
 });

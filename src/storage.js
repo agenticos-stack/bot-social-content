@@ -28,7 +28,7 @@ import {
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 18;
+export const CURRENT_SCHEMA_VERSION = 19;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -531,6 +531,21 @@ const MIGRATIONS = {
     sql.exec(`UPDATE revisions SET accepted_generated_media_provenance =
         CASE WHEN accepted_generated_media_digest IS NULL THEN 'unknown' ELSE 'recorded' END
       WHERE accepted_generated_media_id IS NOT NULL AND accepted_generated_media_provenance IS NULL`);
+  },
+
+  /*
+   * The post's NAME (design-plans/social-content-image-brief REVIEW.md, "Post
+   * names and batch membership"). The drawer's selector names each post and
+   * the title edits in place; the name is the owner's label for the post in
+   * this batch, so it lives on `batch_items`, not on `revisions` — a revision
+   * is content, the name is navigation metadata that survives every rewrite
+   * of it. NULL means unnamed: the client derives a display name from the
+   * source text, and the column stays NULL until the owner actually names it.
+   * A superseding row inherits the title in `createOneBatchItem`, because the
+   * name follows the source post, not one draft of it.
+   */
+  19(sql) {
+    sql.exec("ALTER TABLE batch_items ADD COLUMN title TEXT");
   }
 };
 
@@ -1668,14 +1683,15 @@ export class Storage {
   createBatchItem(row) {
     this.sql.exec(
       `INSERT INTO batch_items (
-        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, generation, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
+        id, batch_id, item_id, destination_bindings_json, state, current_revision, active, generation, title, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)`,
       row.id,
       row.batchId,
       row.itemId,
       JSON.stringify(row.destinationBindings ?? []),
       row.state,
       row.generation ?? null,
+      row.title ?? null,
       nowIso(),
       nowIso()
     );
@@ -2482,6 +2498,9 @@ function hydrateBatchItem(row) {
     version: row.version ?? null,
     targets: row.targets_json ? JSON.parse(row.targets_json) : null,
     generation: row.generation ?? null,
+    // NULL until the owner names the post — the client derives the display
+    // name from the source text rather than storing a copy of it.
+    title: row.title ?? null,
     instructionOverrides: parseJsonObject(row.instruction_overrides),
     lastGeneration: row.last_generation ?? null,
     createdAt: row.created_at,

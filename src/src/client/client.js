@@ -300,8 +300,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    array is the Phase 2 contract). Fixed thumb, index on the frame, the cap
    names slot 1 the cover; the candidate joins as a dashed slot and the +
    tile ends the row. */
-.sl-strip { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
-.sl-slot { width: 116px; flex: none; display: flex; flex-direction: column; gap: 5px; }
+/* ONE COLUMN PAIR FOR THE WHOLE SHEET. 帖文 and 參考 share the same media
+   column width, so switching tabs does not reflow the panel under the cursor. */
+.sl-cols { display: grid; grid-template-columns: var(--sl-colW, 176px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sl-cols-media { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sl-cols-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+@media (max-width: 520px) { .sl-cols { grid-template-columns: minmax(0, 1fr); } }
+/* Every column opens with the same label row — the label on the left, its
+   one quiet action on the right. */
+.sl-collabel { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.sl-collabel .sl-grow { flex: 1; min-width: 0; }
+.sl-addquiet { border: 0; background: transparent; padding: 0; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.sl-addquiet:hover:not(:disabled) { color: var(--sl-ink); }
+.sl-addquiet:disabled { opacity: .5; }
+.sl-strip { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.sl-slot { display: flex; flex-direction: column; gap: 5px; }
 .sl-slot-media { position: relative; }
 .sl-slot-num { position: absolute; top: 6px; left: 6px; z-index: 2; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: rgba(255,255,255,.92); box-shadow: var(--sl-e-1); font-size: 10.5px; font-weight: 600; color: var(--sl-ink); }
 .sl-slot-cap { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
@@ -319,12 +332,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (prefers-reduced-motion: reduce) { .sl-hover { transition: none; } }
 .sl-hover-btn { min-height: 30px; min-width: 86px; padding: 0 10px; border: 0; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.96); color: var(--sl-ink); font-size: 11.5px; font-weight: 600; box-shadow: var(--sl-e-1); cursor: pointer; }
 .sl-hover-btn:disabled { opacity: .5; }
-/* The + tile ends the row; its menu lists every way a picture joins. */
-.sl-addwrap { position: relative; flex: none; }
-.sl-addslot { width: 116px; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); font-size: 22px; font-weight: 300; cursor: pointer; }
+/* The empty slot is the add control — a dashed placeholder the exact size of
+   the picture that will replace it, so the panel never jumps when one lands. */
+.sl-addplace { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; text-align: center; padding: 10px; cursor: pointer; }
+.sl-addplace:hover:not(:disabled) { background: var(--sl-hover); color: var(--sl-ink); }
+.sl-addplace:disabled { opacity: .5; }
+.sl-addplace-plus { font-size: 20px; line-height: 1; font-weight: 400; }
+.sl-addplace-hint { font-size: 11px; font-weight: 400; color: var(--sl-ink-2); }
+/* A second empty tile exists only once the post is an ordered set (Phase 2). */
+.sl-addslot { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); font-size: 22px; font-weight: 300; cursor: pointer; }
 .sl-addslot:hover:not(:disabled) { border-color: var(--sl-ink); color: var(--sl-ink); }
 .sl-addslot:disabled { opacity: .45; }
-.sl-menu { position: absolute; z-index: 6; top: calc(100% + 6px); left: 0; min-width: 230px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
+/* The menu renders in flow under the strip — absolute positioning clipped it
+   inside the drawer's scroll port. */
+.sl-menu { display: flex; flex-direction: column; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
 .sl-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--sl-radius-control); background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--sl-ink); }
 .sl-menu-item:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-menu-item:disabled { opacity: .55; cursor: not-allowed; }
@@ -531,9 +552,52 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
-.sl-item-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
-.sl-item-tabs button { height: var(--sl-h-compact); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
-.sl-item-tabs button[aria-selected="true"] { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
+/* THE POST SELECTOR — a named list, not a pill row: each row names the post
+   and shows its state as a dot, and the menu foot hosts the only way the
+   batch legitimately grows (another source post). The eyebrow says state
+   only; position is said once, on the selector button. */
+.sl-postsel { position: relative; align-self: flex-start; }
+.sl-postbtn { min-height: 28px; padding: 0 9px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line-strong); background: transparent; font-size: 11.5px; font-weight: 600; color: var(--sl-ink-2); white-space: nowrap; cursor: pointer; }
+.sl-postbtn:hover { background: var(--sl-hover); color: var(--sl-ink); }
+.sl-postmenu { position: absolute; z-index: 40; right: 0; top: calc(100% + 6px); min-width: 288px; max-width: min(340px, calc(100vw - 40px)); padding: 5px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); display: flex; flex-direction: column; }
+.sl-postmenu .sl-pm-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; background: transparent; border-radius: var(--sl-radius-control); padding: 8px 10px; min-height: 36px; font-size: 12.5px; color: var(--sl-ink); cursor: pointer; }
+.sl-postmenu .sl-pm-row:hover:not(:disabled) { background: var(--sl-hover); }
+.sl-postmenu .sl-pm-row:disabled { opacity: .45; }
+.sl-postmenu .sl-pm-tick { width: 14px; color: var(--sl-ink); flex: none; }
+.sl-postmenu .sl-pm-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-postmenu .sl-pm-row.sl-pm-act { font-weight: 600; }
+.sl-postmenu .sl-pm-dot { width: 7px; height: 7px; border-radius: 100%; flex: none; background: var(--sl-ink-2); }
+.sl-postmenu .sl-pm-dot.sl-pm-busy { background: var(--sl-accent); }
+.sl-postmenu .sl-pm-dot.sl-pm-sent { background: var(--sl-success); }
+.sl-postmenu .sl-pm-st { font-size: 11px; color: var(--sl-ink-2); white-space: nowrap; }
+.sl-postmenu .sl-pm-sep { height: 1px; background: var(--sl-line); margin: 4px 6px; }
+.sl-postmenu .sl-pm-why { margin: 0; padding: 0 10px 6px 33px; font-size: 11px; color: var(--sl-warning); }
+.sl-postmenu .sl-pm-add { font-weight: 600; }
+.sl-postmenu .sl-pm-sub { display: block; font-size: 11px; color: var(--sl-ink-2); font-weight: 400; }
+.sl-postmenu .sl-pm-back { font-size: 11.5px; }
+/* Remove belongs to the row it removes. The slot is always there so the list
+   does not shift when a row is hovered; only the glyph appears. */
+.sl-postmenu .sl-pm-rowwrap { position: relative; display: flex; align-items: center; }
+.sl-postmenu .sl-pm-rowwrap .sl-pm-row { padding-right: 34px; }
+.sl-rowx { position: absolute; right: 6px; width: 24px; height: 24px; border: 0; border-radius: var(--sl-radius-control); background: transparent; color: var(--sl-ink-2); display: grid; place-items: center; font-size: 13px; opacity: 0; cursor: pointer; transition: opacity .12s ease, background-color .12s ease; }
+.sl-postmenu .sl-pm-rowwrap:hover .sl-rowx, .sl-postmenu .sl-pm-rowwrap:focus-within .sl-rowx { opacity: 1; }
+.sl-rowx:hover:not(:disabled) { background: var(--sl-danger-soft, #fae9e7); color: var(--sl-danger, #b3261e); }
+.sl-rowx:disabled { opacity: 0; cursor: default; }
+@media (hover: none) { .sl-rowx { opacity: 1; } }
+/* The confirm replaces the row in place — no modal over a menu, and the post
+   being removed stays named while the question is asked. */
+.sl-rowconfirm { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--sl-radius-control); background: var(--sl-danger-soft, #fae9e7); font-size: 12.5px; }
+.sl-rowconfirm .sl-pm-grow { color: var(--sl-danger, #b3261e); font-weight: 600; }
+.sl-rowconfirm button { min-height: 26px; padding: 0 9px; border-radius: var(--sl-radius-control); border: 1px solid transparent; font-size: 11px; font-weight: 600; cursor: pointer; }
+.sl-rowconfirm .sl-pm-yes { background: var(--sl-danger, #b3261e); color: #fff; }
+.sl-rowconfirm .sl-pm-no { background: transparent; color: var(--sl-ink-2); border-color: var(--sl-line-strong); }
+/* The drawer's title is the post's own name, edited where it is read — a
+   heading until it is touched. */
+.sl-titlefield { width: 100%; font: inherit; font-size: 15px; font-weight: 600; color: var(--sl-ink); border: 1px solid transparent; border-radius: var(--sl-radius-control); background: transparent; padding: 2px 6px; margin: 0 -6px; min-height: 30px; }
+.sl-titlefield:hover:not(:read-only) { background: var(--sl-hover); }
+.sl-titlefield:focus { background: var(--sl-surface); border-color: var(--sl-line-strong); outline: none; box-shadow: var(--sl-e-1); }
+.sl-titlefield::placeholder { color: var(--sl-muted); font-weight: 500; }
+.sl-titlefield:read-only { cursor: default; }
 .sl-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
 .sl-dual-pane { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
 .sl-dual-pane header { padding: 9px 13px; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; display: flex; justify-content: space-between; align-items: center; }
@@ -2243,6 +2307,255 @@ function App() {
     const footerEl = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
 
     /*
+     * THE TITLE IS THE POST'S NAME, edited where it is read (batch_items.title,
+     * schema 19). It looks like a heading until touched; Enter commits (via
+     * blur), Escape restores the pre-edit value, and a submitted post's field
+     * is read-only. The derived name — the source text's first line — is only
+     * the placeholder: `title` stays NULL until the owner actually types one.
+     */
+    const titleField = el("input", {
+      id: "sl-drawer-title",
+      class: "sl-titlefield",
+      type: "text",
+      "aria-label": t(locale, "drawerTitleAria")
+    });
+    let titleBefore = null;
+    titleField.addEventListener("focus", () => { titleBefore = titleField.value; });
+    titleField.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); titleField.blur(); }
+      if (event.key === "Escape") { event.preventDefault(); titleField.value = titleBefore ?? ""; titleField.blur(); }
+    });
+    titleField.addEventListener("blur", () => {
+      const item = activeItem();
+      const next = titleField.value.trim();
+      const before = titleBefore;
+      titleBefore = null;
+      if (!item || before === null || next === before.trim()) return;
+      if (next === (item.title ?? "")) return;
+      renamePost(item, next);
+    });
+
+    /*
+     * THE POST SELECTOR replaces the pill row: the button says the position
+     * once (「第 1 / n 篇」), the menu names every post with its state dot, and
+     * the footer is the only way the batch grows — another SOURCE post. The
+     * ✕ slot is reserved on every row so the list never shifts on hover; the
+     * question is asked in place, not over a modal.
+     */
+    const postSelEl = el("div", { class: "sl-postsel" });
+    const postMenu = { open: false, confirm: null, picking: false, sources: null, loadingSources: false };
+
+    /** The post's display name — its stored title, else the derived source head, else the untitled label. */
+    const postNameOf = (entry) => {
+      const titled = typeof entry?.title === "string" && entry.title.trim() ? entry.title.trim() : null;
+      if (titled) return titled;
+      const head = (String(entry?.sourceItem?.text ?? entry?.caption ?? "")
+        .split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 60);
+      return head || t(locale, "drawerTitlePlaceholder");
+    };
+
+    /** Filed means a publication row that was actually sent — bound/superseded/failed are not filings. */
+    const postFiled = (entry) =>
+      (entry?.publications ?? []).some((publication) => !["bound", "superseded", "failed"].includes(publication?.state));
+
+    /** The selector dot: green once submitted, blue while a request is outstanding, grey while drafting. */
+    const postDotOf = (entry) => {
+      if (!isEditableItem(entry) || postFiled(entry)) return "sent";
+      const mark = generationMark(entry?.generation);
+      return mark?.needs?.image || mark?.needs?.caption ? "busy" : "draft";
+    };
+    const postDotLabel = { sent: "drawerPostStSent", busy: "drawerPostStBusy", draft: "drawerPostStDraft" };
+
+    const renamePost = async (item, title) => {
+      let result;
+      try {
+        result = await rpc.renameBatchItem({ batchItemId: item.id, title });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!result?.ok) {
+        announce(result?.message || t(locale, "saveFailed"), "");
+        redraw();
+        return;
+      }
+      announce(t(locale, "drawerTitleSaved"), "");
+      if (!live) return;
+      await refetchItems();
+      redraw();
+    };
+
+    const removePost = async (entry) => {
+      postMenu.confirm = null;
+      let result;
+      try {
+        result = await rpc.removeBatchItem({ batchItemId: entry.id });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!result?.ok) {
+        announce(result?.message || t(locale, "genericError"), "");
+        renderPostSelector();
+        return;
+      }
+      announce(t(locale, "drawerRemovedPost"), "");
+      if (!live) return;
+      await refetchItems();
+      redraw();
+    };
+
+    /**
+     * The picker's blocked state is the client mirror of REQ-017 — the same
+     * `takenSourceIds` computation the Sources view already runs for Continue.
+     * `addBatchItem` stays authoritative for whatever this misses.
+     */
+    const loadPickSources = async () => {
+      if (postMenu.sources || postMenu.loadingSources) return;
+      postMenu.loadingSources = true;
+      renderPostSelector();
+      try {
+        const page = await rpc.listItems({ limit: 50 });
+        if (live) postMenu.sources = Array.isArray(page?.items) ? page.items : [];
+      } catch (error) {
+        console.error(error);
+        if (live) postMenu.sources = [];
+      }
+      if (!live) return;
+      postMenu.loadingSources = false;
+      renderPostSelector();
+    };
+
+    const pickSource = async (source) => {
+      let result;
+      try {
+        result = await rpc.addBatchItem({ batchId: batch.id, itemId: source.id });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!result?.ok) {
+        announce(result?.message || refusalMessage(result ?? {}) || t(locale, "genericError"), "");
+        return;
+      }
+      postMenu.open = false;
+      postMenu.picking = false;
+      if (!live) return;
+      await refetchItems();
+      if (result.item?.id) activeId = result.item.id;
+      redraw();
+    };
+
+    const renderPostSelector = () => {
+      const index = Math.max(0, items.findIndex((entry) => entry.id === activeId));
+      const kids = [el("button", {
+        type: "button",
+        class: "sl-postbtn",
+        "aria-haspopup": "menu",
+        "aria-expanded": postMenu.open ? "true" : "false",
+        onclick: () => {
+          postMenu.open = !postMenu.open;
+          postMenu.confirm = null;
+          if (!postMenu.open) postMenu.picking = false;
+          renderPostSelector();
+        }
+      }, `${t(locale, "drawerPostNofM", { n: index + 1, total: items.length })} ▾`)];
+      if (!postMenu.open) { replace(postSelEl, kids); return; }
+
+      if (postMenu.picking) {
+        const taken = takenSourceIds();
+        const inBatch = new Set(items.map((entry) => entry.itemId));
+        const list = postMenu.sources ?? [];
+        const rows = list.map((source) => {
+          const name = String(source?.text ?? "").split("\n").map((line) => line.trim()).find(Boolean)?.slice(0, 60)
+            || source?.authorHandle || source?.id || t(locale, "drawerTitlePlaceholder");
+          const blocked = inBatch.has(source.id)
+            ? "drawerSourceInBatch"
+            : taken.has(source.id) ? "drawerSourceHasDraft" : null;
+          return el("div", null, [
+            el("button", {
+              type: "button", class: "sl-pm-row", role: "menuitem",
+              disabled: blocked || saving ? true : null,
+              onclick: () => pickSource(source)
+            }, [
+              el("span", { class: "sl-pm-tick" }, ""),
+              el("span", { class: "sl-pm-grow" }, name),
+              el("span", { class: "sl-pm-st" }, source?.authorHandle ? `@${String(source.authorHandle).replace(/^@/, "")}` : "")
+            ]),
+            blocked ? el("p", { class: "sl-pm-why" }, t(locale, blocked)) : null
+          ].filter(Boolean));
+        });
+        replace(postSelEl, [...kids, el("div", { class: "sl-postmenu", role: "menu", "aria-label": t(locale, "drawerPickSource") }, [
+          el("button", {
+            type: "button", class: "sl-pm-row sl-pm-back",
+            onclick: () => { postMenu.picking = false; renderPostSelector(); }
+          }, [el("span", { class: "sl-pm-tick" }, "‹"), el("span", { class: "sl-pm-grow" }, t(locale, "drawerPickBack"))]),
+          el("div", { class: "sl-pm-sep" }),
+          ...(postMenu.loadingSources
+            ? [el("p", { class: "sl-pm-why" }, t(locale, "drawerPickLoading"))]
+            : rows.length
+              ? rows
+              : [el("p", { class: "sl-pm-why" }, t(locale, "drawerPickEmpty"))])
+        ])]);
+        return;
+      }
+
+      const rowFor = (entry) => {
+        const active = entry.id === activeId;
+        if (postMenu.confirm === entry.id) {
+          return el("div", { class: "sl-rowconfirm" }, [
+            el("span", { class: "sl-pm-grow" }, t(locale, "drawerRemovePostQ", { name: postNameOf(entry) })),
+            el("button", { type: "button", class: "sl-pm-no", onclick: () => { postMenu.confirm = null; renderPostSelector(); } }, t(locale, "drawerRegenCancel")),
+            el("button", { type: "button", class: "sl-pm-yes", onclick: () => removePost(entry) }, t(locale, "drawerHoverRemove"))
+          ]);
+        }
+        const dot = postDotOf(entry);
+        const removable = isEditableItem(entry) && !postFiled(entry) && items.length > 1;
+        const blockedWhy = !isEditableItem(entry) || postFiled(entry)
+          ? t(locale, "drawerRemovePostSent")
+          : items.length <= 1 ? t(locale, "drawerRemovePostLast") : t(locale, "drawerHoverRemove");
+        return el("div", { class: "sl-pm-rowwrap" }, [
+          el("button", {
+            type: "button", class: "sl-pm-row" + (active ? " sl-pm-act" : ""), role: "menuitem",
+            onclick: () => {
+              activeId = entry.id;
+              postMenu.open = false;
+              postMenu.confirm = null;
+              postMenu.picking = false;
+              // A read in flight was taken for the previous post's view: it
+              // must not land, but the drawer still owes a refresh.
+              if (refreshing) { readToken += 1; rerun = true; }
+              redraw();
+            }
+          }, [
+            el("span", { class: "sl-pm-tick" }, active ? "✓" : ""),
+            el("span", { class: `sl-pm-dot sl-pm-${dot}` }),
+            el("span", { class: "sl-pm-grow" }, postNameOf(entry)),
+            el("span", { class: "sl-pm-st" }, t(locale, postDotLabel[dot]))
+          ]),
+          el("button", {
+            type: "button", class: "sl-rowx", disabled: removable ? null : true,
+            title: blockedWhy,
+            "aria-label": `${t(locale, "drawerHoverRemove")} — ${postNameOf(entry)}`,
+            onclick: () => { postMenu.confirm = entry.id; renderPostSelector(); }
+          }, "✕")
+        ]);
+      };
+
+      replace(postSelEl, [...kids, el("div", { class: "sl-postmenu", role: "menu", "aria-label": t(locale, "drawerPostListLabel") }, [
+        ...items.map(rowFor),
+        el("div", { class: "sl-pm-sep" }),
+        // Another post means another SOURCE — the batch is made of source
+        // posts, so this opens the source list rather than inventing an
+        // empty draft or another destination.
+        el("button", {
+          type: "button", class: "sl-pm-row sl-pm-add", role: "menuitem",
+          onclick: () => { postMenu.picking = true; loadPickSources(); }
+        }, [
+          el("span", { class: "sl-pm-tick" }, "＋"),
+          el("span", { class: "sl-pm-grow" }, [t(locale, "drawerAddPost"), el("span", { class: "sl-pm-sub" }, t(locale, "drawerAddPostSub"))])
+        ])
+      ])]);
+    };
+
+    /*
      * The accepted image is drawn from the gadget's own bytes. Nothing here
      * converts or re-delivers it: accepted bytes are immutable, and a JPEG
      * copy for a JPEG-only destination is prepared deliberately at Review
@@ -2640,6 +2953,7 @@ function App() {
       const item = activeItem();
       if (!item) {
         replace(headerMeta, []);
+        replace(postSelEl, []);
         replace(tabsEl, []);
         replace(bodyEl, [el("p", { class: "sl-field-note" }, t(locale, "batchUnavailable"))]);
         replace(footerEl, []);
@@ -2685,9 +2999,10 @@ function App() {
         );
       })();
 
+      // The eyebrow keeps state/revision; the position is said once on the
+      // selector button, not in every sentence of the header.
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [
-          items.length > 1 ? t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }) + " · " : "",
           t(locale, headerStateKey),
           " · ",
           (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"),
@@ -2695,36 +3010,33 @@ function App() {
         ].join(""))
       ]);
 
+      // A redraw must never stomp a title the owner is typing — only repaint
+      // the field while it is not focused (blur commits first, so post-blur
+      // repaints see the new value).
+      if (document.activeElement !== titleField) {
+        titleField.value = item.title ?? "";
+        titleField.placeholder = postNameOf({ ...item, title: "" });
+        titleField.readOnly = !isEditableItem(item) || postFiled(item);
+      }
+      renderPostSelector();
+
       // Sibling navigation names ONE post each; switching never applies a
       // buffer to a sibling.
       replace(tabsEl, [
-        items.length > 1
-          ? el("div", { class: "sl-item-tabs", role: "group", "aria-label": t(locale, "drawerSavedWork") },
-              items.map((entry, index) => el("button", {
-                type: "button",
-                "aria-pressed": String(entry.id === activeId),
-                "aria-selected": String(entry.id === activeId),
-                onclick: () => {
-                  activeId = entry.id;
-                  // A read in flight was taken for the previous post's view:
-                  // it must not land, but the drawer still owes a refresh.
-                  if (refreshing) { readToken += 1; rerun = true; }
-                  redraw();
-                }
-              }, t(locale, "drawerPostNofM", { n: index + 1, total: items.length }))))
-          : null,
         renderDrawerTablist(locale, { active: activeTab, onSelect: selectTab })
       ]);
 
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
-        // Inspection only — adopting the source image is the Post tab's
-        // add-image menu entry, the one place that choice lives.
+        // The picture owns its adopt affordance here too — the same action
+        // the Post tab's add menu carries, one click for the same write.
         panel = renderReferencePanel(locale, item, {
           stage: item.sourceItem ? stageFor(item) : null,
           editable,
-          saving
+          saving,
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onAdoptSource: () => { void applyVisual(item, { acceptedVisualMode: "keep_original" }); }
         });
       } else if (activeTab === "instructions") {
         // The brief lives here per the accepted mockup: the settings a
@@ -2840,9 +3152,9 @@ function App() {
             onToggleMenu: () => {
               patchUi(item.id, { menuOpen: uiOf(item.id).menuOpen !== true });
               redraw();
-              // The menu drops below the strip inside the scroll body: bring it
-              // into the viewport, or a short drawer clips it below the fold.
-              bodyEl.querySelector(".sl-menu")?.scrollIntoView({ block: "nearest" });
+              // The menu renders in flow under the strip: bring it into the
+              // scroll viewport, or a short drawer leaves it below the fold.
+              bodyEl.querySelector(".sl-menu")?.scrollIntoView?.({ block: "nearest" });
             },
             onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); void requestPart(item, "image"); },
             onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); pickOwnerUpload(item); },
@@ -2973,9 +3285,10 @@ function App() {
       el("header", { class: "sl-preview-head" }, [
         el("div", { class: "sl-preview-who" }, [
           headerMeta,
-          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork"))
+          titleField
         ]),
         el("div", { class: "sl-preview-head-actions" }, [
+          postSelEl,
           el("button", {
             type: "button", class: "sl-icon-action",
             title: t(locale, "drawerClose"), "aria-label": t(locale, "drawerClose"),

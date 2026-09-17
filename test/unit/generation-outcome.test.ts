@@ -660,8 +660,11 @@ describe("a request whose turn ended with work outstanding", () => {
     );
     await openDrawer(document);
     await click(buttonText(document.body, "Check status"));
-    // The image part's control is the strip's add menu: ＋ → Generate row.
-    await click(findAll(document.body, (element) => element.getAttribute?.("aria-label") === "Add image")[0]);
+    // The image part's control is the strip's add menu: add-place/quiet ＋ → Generate row.
+    await click(findAll(document.body, (element) => {
+      const cls = String(element.className ?? "").split(" ");
+      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot") || element.getAttribute?.("aria-label") === "Add image");
+    })[0]);
     await click(
       findAll(
         document.body,

@@ -33,6 +33,12 @@ export function createRpc(gadget) {
     saveDerivedGeneratedImage: (input) => gadget.saveDerivedGeneratedImage(input),
     createBatch: (input) => gadget.createBatch(input),
     getBatch: (batchId) => gadget.getBatch(batchId),
+    // The selector's three membership/name calls: another source post joins
+    // the batch, a post leaves it (superseded, never deleted), and the post's
+    // own name is edited in place. All refuse by value.
+    addBatchItem: (input) => gadget.addBatchItem(input),
+    removeBatchItem: (input) => gadget.removeBatchItem(input),
+    renameBatchItem: (input) => gadget.renameBatchItem(input),
     // `itemIds` scopes a re-draft to the named posts; omitted means the
     // legacy batch-wide request (still used by createBatch's first run).
     // `options.needs` ({ image, caption }) asks for one part and keeps the other.

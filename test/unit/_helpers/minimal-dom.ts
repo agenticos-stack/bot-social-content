@@ -263,7 +263,12 @@ export class ElementShim extends NodeShim {
     await Promise.all(handlers.map((handler) => handler(full)));
   }
 
-  focus(): void {}
+  focus(): void {
+    void this.dispatchEvent({ type: "focus" });
+  }
+  blur(): void {
+    void this.dispatchEvent({ type: "blur" });
+  }
 
   // <dialog>
   showModal(): void {

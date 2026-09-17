@@ -237,7 +237,7 @@ describe("opening a batch versus announcing one", () => {
       destinationBindings: ["FB_MAIN"]
     });
     expect(notices).toHaveLength(1);
-    expect(notices[0].title).toContain("ready to localize");
+    expect(notices[0].title).toContain("ready to draft");
   });
 
   it("does not announce a batch a scan opened", () => {
