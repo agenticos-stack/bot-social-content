@@ -37,8 +37,10 @@ jobs:
       # The SDK is an npm-locked workspace (no pnpm-workspace); workerd's
       # binary arrives via optionalDependencies, so scripts stay suppressed.
       - run: npm ci --prefix bot-sdk --ignore-scripts --no-audit --no-fund
+      # dist/ must exist before the test phase: the local-runtime preview
+      # spawns scripts/preview.mjs, which reads dist/social-content.gadget.
+      - run: pnpm build
       - run: pnpm test
         env:
           BOT_SDK_SOURCE: ${{ github.workspace }}/bot-sdk
-      - run: pnpm build
       - run: pnpm validate
