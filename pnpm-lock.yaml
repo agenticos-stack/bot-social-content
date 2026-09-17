@@ -120,8 +120,8 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@agenticos-dev/bot-shell':
-        specifier: 0.2.1
-        version: 0.2.1(svelte@5.56.3)
+        specifier: 0.2.2
+        version: 0.2.2(svelte@5.56.3)
       '@fontsource-variable/geist':
         specifier: 5.2.9
         version: 5.2.9
@@ -157,8 +157,8 @@ packages:
   '@agenticos-dev/bot-sdk@0.1.0':
     resolution: {integrity: sha512-cP/st9UtHwmn9CXtSm13yCwW/cS1kmorC9L6cjRzxOm8cEIhXCoj3UHF6K4nFg80lTs2HC9Czzxiq/IWPzegog==}
 
-  '@agenticos-dev/bot-shell@0.2.1':
-    resolution: {integrity: sha512-cY5siLR44pSwuxEtjiusJURepaXVD9zHFA2cSt/aLl4ytPcyv0h63HZTiNRa8m7FqIFDgPJx4KTLnylCW6L9Iw==}
+  '@agenticos-dev/bot-shell@0.2.2':
+    resolution: {integrity: sha512-89zKCiQgqISWuCrMlyuKSKujKPFr4hngKVhGSbHa8y8aIuc3BjJiUPuHldetmA2tdCSZyWro8uObeUVRKd9CNA==}
     peerDependencies:
       svelte: ^5.56.3
 
@@ -807,7 +807,7 @@ snapshots:
 
   '@agenticos-dev/bot-sdk@0.1.0': {}
 
-  '@agenticos-dev/bot-shell@0.2.1(svelte@5.56.3)':
+  '@agenticos-dev/bot-shell@0.2.2(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
 
