@@ -545,30 +545,95 @@ function renderOpenSources(locale, state, handlers) {
  */
 export function renderSetup(root, draft, ctx) {
   const { locale, saving, error, handlers, editing = false, summary = {}, dirty = true } = ctx;
-  const note = (key) => el("p", { class: "sl-field-note" }, t(locale, key));
-  const field = (key, control) => {
+  const note = (key, cls = "sl-field-note") => el("p", { class: cls }, t(locale, key));
+  /*
+   * id/name keep the payload key (the wire shape and tests hang off them)
+   * while the visible label is free to follow the drawer's instruction
+   * names — setupPosterPrompt renders labelled "Image instruction".
+   */
+  const field = (key, control, labelKey = key) => {
     const id = "sl-" + key;
     const input = control.querySelector?.("input, textarea, select") || control;
     input.setAttribute("id", id);
     input.setAttribute("name", key);
-    return el("div", { class: "sl-field" }, [el("label", { for: id }, t(locale, key)), control]);
+    return el("div", { class: "sl-field" }, [el("label", { class: "sl-field-label", for: id }, t(locale, labelKey)), control]);
   };
-  const section = (key, children) => el("fieldset", { class: "sl-setup-section" }, [
-    el("legend", null, t(locale, key)), ...children
+  const fieldrow = (labelKey, control) => el("div", { class: "sl-fieldrow" }, [
+    el("label", { class: "sl-fieldrow-label" }, labelKey ? t(locale, labelKey) : " "),
+    el("div", { class: "sl-fieldrow-ctrl" }, control)
   ]);
-  const select = (value, options, onChange) => el("select", { onchange: e => onChange(e.currentTarget.value) },
-    options.map(([id, label]) => el("option", { value: id, selected: id === value }, t(locale, label))));
-  const accounts = (key, rows) => el("div", { class: "sl-field" }, [
-    el("strong", null, t(locale, key)),
-    rows?.length ? el("ul", null, rows.map(row => el("li", null, row.label || row.displayName || row.provider)))
-      : note("setupNoConnections")
+  const section = (titleKey, hintKey, children) => el("section", { class: "sl-setup-section" }, [
+    el("h2", { class: "sl-setup-sect-title" }, t(locale, titleKey)),
+    hintKey ? note(hintKey, "sl-setup-sect-hint") : null,
+    ...children
   ]);
+  const select = (value, options, onChange) => el("select", {
+    class: "sl-ctl",
+    onchange: e => onChange(e.currentTarget.value)
+  }, options.map(([id, label]) => el("option", { value: id, selected: id === value || null }, label)));
+  const accountRows = (rows) => rows?.length
+    ? el("div", { class: "sl-setup-rows" }, rows.map(row =>
+        el("div", { class: "sl-setup-row" }, [
+          el("span", { class: "sl-setup-dot", "aria-hidden": "true" }),
+          el("span", { class: "sl-setup-grow" }, row.label || row.displayName || row.binding || row.provider),
+          row.provider ? el("span", { class: "sl-chip" }, row.provider) : null
+        ])))
+    : note("setupNoConnections");
   const customCadence = typeof draft.cadence === "object";
   const monitoring = summary.config?.monitoringEnabled;
-  const sourceSection = section("setupSourcesSection", [
-    note("setupSourcesNote"),
-    accounts("setupConnectedSources", (summary.sources || []).filter(row => row.origin !== "open")),
-    accounts("setupDestinations", summary.destinations),
+  const monitoringOn = monitoring === true;
+  const quietOn = Boolean(draft.quietHoursStart && draft.quietHoursEnd);
+  /*
+   * The time-zone menu is the mockup's fixed short list; a saved zone outside
+   * it is prepended so the select still shows what is actually configured
+   * rather than silently snapping to Hong Kong.
+   */
+  const tzChoices = ["Asia/Hong_Kong", "Asia/Taipei", "Asia/Singapore", "UTC"];
+  const tzOptions = (draft.timezone && !tzChoices.includes(draft.timezone)
+    ? [draft.timezone, ...tzChoices] : tzChoices).map(zone => [zone, zone]);
+
+  const quietStart = el("input", {
+    type: "time", class: "sl-ctl sl-quiet-time", value: draft.quietHoursStart || "22:00",
+    "aria-label": t(locale, "setupQuietStart"),
+    onchange: e => handlers.onChange({ quietHoursStart: e.currentTarget.value })
+  });
+  const quietEnd = el("input", {
+    type: "time", class: "sl-ctl sl-quiet-time", value: draft.quietHoursEnd || "08:00",
+    "aria-label": t(locale, "setupQuietEnd"),
+    onchange: e => handlers.onChange({ quietHoursEnd: e.currentTarget.value })
+  });
+  const quietTimes = el("div", { class: "sl-fieldrow", hidden: !quietOn || null }, [
+    el("span", { class: "sl-fieldrow-label" }),
+    el("div", { class: "sl-quiet" }, [
+      el("span", { class: "sl-note" }, t(locale, "setupQuietStart")),
+      quietStart,
+      el("span", { class: "sl-note" }, t(locale, "setupQuietEnd")),
+      quietEnd
+    ])
+  ]);
+  const quietState = el("span", { class: "sl-quiet-state" }, t(locale, quietOn ? "setupQuietHoursSet" : "setupQuietHoursNone"));
+  // The checkbox flips the times row and state label in place — a form-wide
+  // redraw mid-click would drop the interaction.
+  const quietSwitch = el("label", { class: "sl-quiet-switch" }, [
+    el("input", {
+      type: "checkbox", checked: quietOn || null,
+      onchange: e => {
+        const on = e.currentTarget.checked;
+        quietTimes.hidden = !on;
+        quietState.textContent = t(locale, on ? "setupQuietHoursSet" : "setupQuietHoursNone");
+        handlers.onChange(on
+          ? { quietHoursStart: quietStart.value || "22:00", quietHoursEnd: quietEnd.value || "08:00" }
+          : { quietHoursStart: "", quietHoursEnd: "" });
+      }
+    }),
+    quietState
+  ]);
+
+  const sourceSection = section("setupSourcesSection", "setupSourcesNote", [
+    el("span", { class: "sl-field-label" }, t(locale, "setupConnectedSources")),
+    accountRows((summary.sources || []).filter(row => row.origin !== "open")),
+    el("span", { class: "sl-field-label" }, t(locale, "setupDestinations")),
+    accountRows(summary.destinations),
     /*
      * A connector granted after first setup reaches storage only if someone
      * re-derives it — `deriveBindingsFromGrants` runs on first setup and the
@@ -576,62 +641,88 @@ export function renderSetup(root, draft, ctx) {
      * carried a binding list. `refreshGrants` is the additive re-check; the
      * result is said beside the button, not only in a toast.
      */
-    el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-secondary", disabled: ctx.grantsBusy, onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections")),
-      ctx.grantsNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.grantsNote) : null
+    el("div", { class: "sl-setup-acts" }, [
+      el("button", { type: "button", class: "sl-secondary", disabled: ctx.grantsBusy || null, onclick: () => handlers.onRefreshGrants() }, t(locale, "setupCheckConnections")),
+      el("span", { class: "sl-setup-grow" })
     ]),
+    ctx.grantsNote ? el("p", { role: "status", class: "sl-field-note" }, ctx.grantsNote) : null,
     field("openSourceLabel", renderOpenSources(locale, ctx, handlers)),
     note("openSourceDesc")
   ]);
   /*
    * The prompts are the whole form. The protection lists still enforce at
    * saveRevision — they are config carried through `baseConfig`, not fields
-   * the owner edits here.
+   * the owner edits here. Labels share the drawer's instruction names so the
+   * workspace default a post's Instructions tab references reads the same.
    */
-  const rulesSection = section("setupRulesSection", [
-    note("setupRulesNote"),
-    field("setupContentPrompt", el("textarea", { rows: 4, value: draft.contentPrompt, placeholder: t(locale, "setupContentPromptHint"), onchange: e => handlers.onChange({ contentPrompt: e.currentTarget.value }) })),
-    field("setupPosterPrompt", el("textarea", { rows: 4, value: draft.posterPrompt, placeholder: t(locale, "setupPosterPromptHint"), onchange: e => handlers.onChange({ posterPrompt: e.currentTarget.value }) }))
+  const instructionsSection = section("setupInstructions", "setupInstructionsNote", [
+    field("setupPosterPrompt", el("textarea", {
+      class: "sl-ctl", rows: 4, value: draft.posterPrompt,
+      placeholder: t(locale, "setupPosterPromptHint"),
+      onchange: e => handlers.onChange({ posterPrompt: e.currentTarget.value })
+    }), "drawerInstructionsImage"),
+    field("setupContentPrompt", el("textarea", {
+      class: "sl-ctl", rows: 4, value: draft.contentPrompt,
+      placeholder: t(locale, "setupContentPromptHint"),
+      onchange: e => handlers.onChange({ contentPrompt: e.currentTarget.value })
+    }), "drawerInstructionsCaption")
   ]);
-  const monitoringSection = section("setupMonitoringSection", [
-    note("setupMonitoringNote"),
-    el("p", { role: "status" }, t(locale, monitoring === false || !summary.configured ? "setupMonitoringPaused" : monitoring === true ? "setupMonitoringActive" : "setupMonitoringLegacy")),
-    field("setupCadence", select(customCadence ? "custom" : draft.cadence, [
-      ...(customCadence ? [["custom", "setupCustomCadence"]] : []),
-      ["hourly", "setupCadenceHourly"], ["daily", "setupCadenceDaily"], ["weekly", "setupCadenceWeekly"]
+  const monitoringSection = section("setupMonitoringSection", null, [
+    /*
+     * One switch, both directions: enabling needs the saved config (the
+     * cadence the scan will run on lives in this draft), pausing does not —
+     * so only the off→on direction is blocked while the form is dirty.
+     */
+    el("div", { class: "sl-switchrow" }, [
+      el("button", {
+        type: "button", class: "sl-toggle", role: "switch",
+        "aria-checked": monitoringOn ? "true" : "false",
+        "aria-label": t(locale, "setupMonitoringSection"),
+        "data-monitor-enable": "true",
+        disabled: !summary.configured || (dirty && !monitoringOn) || null,
+        onclick: () => handlers.onMonitoring(!monitoringOn)
+      }),
+      el("span", { class: "sl-switchrow-lab" }, [
+        t(locale, monitoringOn ? "setupMonitoringActive" : "setupMonitoringPaused"),
+        el("span", { class: "sl-switchrow-sub" },
+          t(locale, monitoring === undefined && summary.configured ? "setupMonitoringLegacy" : "setupMonitoringSub"))
+      ])
+    ]),
+    fieldrow("setupCadence", select(customCadence ? "custom" : draft.cadence, [
+      ...(customCadence ? [["custom", t(locale, "setupCustomCadence")]] : []),
+      ["hourly", t(locale, "setupCadenceHourly")], ["daily", t(locale, "setupCadenceDaily")], ["weekly", t(locale, "setupCadenceWeekly")]
     ], cadence => { if (cadence !== "custom") handlers.onChange({ cadence }); })),
-    field("setupTimezone", el("input", { type: "text", value: draft.timezone, onchange: e => handlers.onChange({ timezone: e.currentTarget.value }) })),
-    field("setupNotifications", select(draft.notificationPolicy, [
-      ["immediate", "setupNotifyImmediate"], ["daily", "setupNotifyDaily"], ["off", "setupNotifyOff"]
+    // The save-first warning sits at the control it gates, not as a standing
+    // note — it appears only while unsaved changes block enabling.
+    dirty || !summary.configured ? note("setupSaveFirst", "sl-note-warn") : null,
+    fieldrow("setupTimezone", select(draft.timezone, tzOptions, timezone => handlers.onChange({ timezone }))),
+    fieldrow("setupNotifications", select(draft.notificationPolicy, [
+      ["immediate", t(locale, "setupNotifyImmediate")], ["daily", t(locale, "setupNotifyDaily")], ["off", t(locale, "setupNotifyOff")]
     ], notificationPolicy => handlers.onChange({ notificationPolicy }))),
-    field("setupQuietStart", el("input", { type: "time", value: draft.quietHoursStart, onchange: e => handlers.onChange({ quietHoursStart: e.currentTarget.value }) })),
-    field("setupQuietEnd", el("input", { type: "time", value: draft.quietHoursEnd, onchange: e => handlers.onChange({ quietHoursEnd: e.currentTarget.value }) })),
-    dirty || !summary.configured ? note("setupSaveFirst") : null,
-    el("div", { class: "sl-setup-actions" }, [
-      el("button", { type: "button", class: "sl-secondary", "data-monitor-enable": "true", disabled: saving || dirty || !summary.configured, onclick: () => handlers.onMonitoring(true) }, t(locale, "setupEnable")),
-      el("button", { type: "button", class: "sl-secondary", disabled: saving || !summary.configured || monitoring === false, onclick: () => handlers.onMonitoring(false) }, t(locale, "setupPause"))
-    ])
+    fieldrow("setupQuietHours", el("div", { class: "sl-quiet" }, [quietSwitch])),
+    quietTimes
   ]);
   // The host sandbox forbids form submission. Native type=button actions
   // retain Enter/Space keyboard activation without changing sandbox policy.
-  const form = el("form", { class: "sl-setup-form", onsubmit: e => e.preventDefault() }, [
+  const form = el("form", { class: "sl-setup-form sl-setup", onsubmit: e => e.preventDefault() }, [
     el("fieldset", { disabled: saving || ctx.openBusy, class: "sl-setup-fields" }, [
-      sourceSection, rulesSection,
-      section("setupPublicationSection", [note("setupPublicationNote")]),
-      monitoringSection,
+      sourceSection, instructionsSection, monitoringSection,
       error ? el("p", { class: "sl-setup-error", role: "alert" }, [
         error,
         ctx.errorAction ? el("button", { type: "button", class: "sl-secondary", onclick: () => ctx.errorAction.run() }, ctx.errorAction.label) : null
       ]) : null,
       ctx.notice ? el("p", { role: "status", class: "sl-setup-notice" }, ctx.notice) : null,
-      el("div", { class: "sl-setup-actions" }, [
+      el("div", { class: "sl-setup-acts" }, [
+        el("span", { class: "sl-setup-grow" }),
         editing ? el("button", { type: "button", class: "sl-secondary", onclick: () => handlers.onCancel() }, t(locale, "settingsCancel")) : null,
-        el("button", { type: "button", class: "sl-primary", disabled: saving, onclick: () => handlers.onSubmit() }, t(locale, saving ? "setupSaving" : "saveChanges"))
+        el("button", { type: "button", class: "sl-primary", disabled: saving || null, onclick: () => handlers.onSubmit() }, t(locale, saving ? "setupSaving" : "saveChanges"))
       ])
     ])
   ]);
   replace(root, [el("div", { class: "sl-titleline" }, [
-    el("h1", null, t(locale, editing ? "settingsTitle" : "setupTitle")), note("setupFlow")
+    el("h1", null, t(locale, editing ? "settingsTitle" : "setupTitle")),
+    el("p", { class: "sl-setup-desc" }, t(locale, editing ? "settingsDesc" : "setupDesc")),
+    editing ? null : note("setupFlow")
   ]), form]);
 }
 

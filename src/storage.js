@@ -1143,7 +1143,13 @@ export class Storage {
        * INVARIANT: what was REQUESTED is the mark's immutable `scope`; what
        * REMAINS is its mutable `needs`. Completion only ever clears `needs`;
        * authorization of a correlated save reads `scope`.
+       *
+       * `instructionsFor` returns the whole request snapshot for THIS item —
+       * `{ instructions, instructionSources, runInstructions, imageBrief }` —
+       * because the brief is per-item: two posts in one request can resolve
+       * different source media.
        */
+      const snapshot = typeof instructionsFor === "function" ? instructionsFor(item) ?? {} : {};
       const mark = JSON.stringify({
         id: request,
         // `listBatchItems` hydrates `current_revision` to `currentRevision` —
@@ -1152,7 +1158,10 @@ export class Storage {
         scope: wanted,
         needs: wanted,
         at: stamp,
-        ...(typeof instructionsFor === "function" ? { instructions: instructionsFor(item) } : {})
+        ...(snapshot.instructions ? { instructions: snapshot.instructions } : {}),
+        ...(snapshot.instructionSources ? { instructionSources: snapshot.instructionSources } : {}),
+        ...(snapshot.runInstructions ? { runInstructions: snapshot.runInstructions } : {}),
+        ...(snapshot.imageBrief ? { imageBrief: snapshot.imageBrief } : {})
       });
       this.sql.exec(
         "UPDATE batch_items SET generation = ?, last_generation = ?, updated_at = ? WHERE id = ?",

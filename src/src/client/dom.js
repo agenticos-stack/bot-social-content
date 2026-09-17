@@ -9,7 +9,7 @@
 
 // Domain-to-design-system adapter. No SDK dependency on Social Content names.
 const UI_CLASSES = {
-  'sl-primary': 'bot-button', 'sl-secondary': 'bot-button',
+  'sl-primary': 'bot-button', 'sl-secondary': 'bot-button', 'sl-brand': 'bot-button',
   'sl-filter-btn': 'bot-button', 'sl-search-input': 'bot-input',
   'sl-zh-edit': 'bot-input', 'sl-open-source-input': 'bot-input',
   'sl-post': 'bot-card', 'sl-inbox-card': 'bot-card',

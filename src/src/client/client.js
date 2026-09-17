@@ -47,15 +47,18 @@ import {
   drawerPanelId,
   drawerTabId,
   footerState,
+  instructionDefaultsOf,
   instructionPatchFor,
+  publicationHint,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
+  renderPublicationControls,
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -108,12 +111,48 @@ import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
 
 const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
+/*
+ * Settings — the accepted v2 contract: borderless sections separated by
+ * spacing, a 150px-label fieldrow grid, one monitoring switch, rounded
+ * controls. Structure carries no rules; borders stay on controls and data.
+ */
 .sl-setup-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
-.sl-setup-section { min-width: 0; border: 1px solid var(--sl-line); border-radius: 12px; padding: 20px; margin: 0 0 20px; background: var(--sl-surface); }
-.sl-setup-section legend { font-size: 16px; font-weight: 650; padding: 0 6px; }
-.sl-setup-section .sl-field { margin-block: 16px; }
-.sl-setup-section textarea { width: 100%; min-height: 90px; resize: vertical; font: inherit; }
-.sl-setup-actions { flex-wrap: wrap; gap: 10px; }
+.sl-setup-fields:disabled { opacity: 1; }
+.sl-setup { display: flex; flex-direction: column; gap: 22px; max-width: 640px; }
+.sl-setup-desc { margin: 2px 0 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-setup-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.sl-setup-sect-title { margin: 0; font-size: 12.5px; font-weight: 600; }
+.sl-setup-sect-hint { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-setup .sl-field { display: flex; flex-direction: column; gap: 5px; margin: 0; }
+.sl-setup .sl-field label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-setup .sl-field-note { font-size: 11px; }
+.sl-setup-rows { display: flex; flex-direction: column; gap: 6px; }
+.sl-setup-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--sl-ink-2); }
+.sl-setup-dot { width: 6px; height: 6px; border-radius: 100%; background: var(--sl-success); flex: none; }
+.sl-setup-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-setup-row .sl-chip { flex: none; }
+.sl-setup-acts { display: flex; align-items: center; gap: 8px; }
+.sl-fieldrow { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; align-items: center; }
+.sl-fieldrow[hidden] { display: none; }
+.sl-fieldrow-label { font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-fieldrow-ctrl { min-width: 0; }
+.sl-ctl { width: 100%; min-height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 11px; background: var(--sl-surface); font-size: 13.5px; }
+select.sl-ctl { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--sl-ink-4) 50%), linear-gradient(135deg, var(--sl-ink-4) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+textarea.sl-ctl { min-height: 84px; padding: 10px 11px; resize: vertical; line-height: 1.5; }
+input[type="time"].sl-ctl { width: 120px; }
+.sl-switchrow { display: flex; align-items: center; gap: 12px; padding: 2px 0; }
+.sl-switchrow-lab { font-size: 12.5px; font-weight: 600; }
+.sl-switchrow-sub { display: block; font-size: 11.5px; font-weight: 400; color: var(--sl-ink-2); margin-top: 2px; }
+.sl-toggle { position: relative; width: 40px; height: 23px; border-radius: 999px; border: 1px solid var(--sl-line-strong); background: var(--sl-surface-2); flex: none; padding: 0; }
+.sl-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 100%; background: var(--sl-surface); box-shadow: var(--sl-e-1); transition: translate .15s ease; }
+.sl-toggle[aria-checked="true"] { background: var(--sl-ink); border-color: var(--sl-ink); }
+.sl-toggle[aria-checked="true"]::after { translate: 17px 0; }
+.sl-toggle:disabled { opacity: .45; cursor: not-allowed; }
+.sl-quiet { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sl-quiet-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.sl-note { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-note-warn { margin: 0; padding: 6px 9px; font-size: 11.5px; color: var(--sl-warning); background: color-mix(in srgb, var(--sl-warning) 10%, var(--sl-surface)); border-radius: var(--sl-radius-chip); }
+@media (max-width: 560px) { .sl-fieldrow { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
 :root {
   color-scheme: light;
   --sl-bg: var(--color-bg, #fafafa);
@@ -122,17 +161,24 @@ const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
   --sl-line: var(--color-line, #e7e7ea);
   --sl-line-strong: var(--color-line-strong, #d9d9de);
   --sl-ink: var(--color-ink, #18181b);
+  --sl-ink-2: var(--studio-v2-ink-2, #52525b);
   --sl-muted: var(--color-muted, #71717a);
+  --sl-ink-4: var(--studio-v2-ink-4, #a1a1aa);
   --sl-accent: var(--color-accent, #f5b544);
   --sl-accent-strong: var(--color-accent-strong, #e09a2e);
   --sl-accent-soft: var(--color-accent-soft, #fdf5e4);
   --sl-danger: var(--color-danger, #df1b41);
   --sl-warning: var(--color-warning, #b26b00);
   --sl-success: var(--color-success, #0e8a5f);
+  --sl-success-soft: var(--studio-v2-success-soft, #d8f6e8);
   --sl-selected: var(--studio-v2-selected, #f1f1f1);
   --sl-hover: var(--studio-v2-hover, #f6f6f6);
-  --sl-radius-card: var(--studio-v2-radius-card, 14px);
-  --sl-radius-control: var(--studio-v2-radius-control, 9px);
+  --sl-radius-card: var(--studio-v2-radius-card, 12px);
+  --sl-radius-panel: var(--studio-v2-radius-panel, 16px);
+  --sl-radius-control: var(--studio-v2-radius-control, 8px);
+  --sl-radius-chip: var(--studio-v2-radius-chip, 6px);
+  --sl-e-1: 0 1px 2px rgba(24,24,27,.05);
+  --sl-e-3: 0 2px 6px rgba(24,24,27,.08), 0 32px 64px -24px rgba(24,24,27,.35);
   /*
    * THE control scale. Every button, input, chip and tab in this sheet sizes
    * off one of these three -- nothing below declares a height of its own.
@@ -235,26 +281,68 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-card-foot .sl-state-chip { margin: 0; }
 .sl-card-when { margin-left: auto; color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
 
-.sl-drawer-section { padding: 12px 0; }
-.sl-drawer-tablist { display: flex; gap: 2px; border-bottom: 1px solid var(--sl-line); overflow-x: auto; scrollbar-width: none; }
-.sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 13px; font-weight: 600; box-shadow: none; }
+/* Section content gaps come from the flex layout, not per-child margins —
+   the same spacing contract the mockup's .sheet-body/.layers use. */
+.sl-drawer-section { display: flex; flex-direction: column; gap: 10px; }
+.sl-drawer-section > * { margin-block: 0; }
+.sl-drawer-panel-body { display: flex; flex-direction: column; gap: 12px; }
+.sl-drawer-panel-body > * { margin-block: 0; }
+.sl-drawer-tablist { display: flex; gap: 16px; overflow-x: auto; scrollbar-width: none; }
+.sl-drawer-tablist [role="tab"] { flex: 0 0 auto; min-height: 32px; padding: 6px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--sl-muted); font-size: 12.5px; font-weight: 600; box-shadow: none; }
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
-.sl-drawer-meta { font-size: 12px; color: var(--sl-muted); }
-.sl-drawer-state { display: block; margin-top: 2px; }
-.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sl-drawer-meta { font-size: 10.5px; color: var(--sl-muted); letter-spacing: .02em; margin-bottom: 3px; }
+.sl-drawer-state { display: block; }
+.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 14px; align-items: start; }
 .sl-output-compose .sl-output-images { display: block; }
 .sl-output-compose .sl-output-frame,
 .sl-output-thumb { width: 128px; max-width: 128px; }
 .sl-output-copy { padding-top: 0; }
 .sl-output-copy h3 { margin-top: 0; }
-.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0 8px; }
-.sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; }
-.sl-src-btn[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
-.sl-upload-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
-.sl-upload-row .sl-field-note { margin: 0; }
+/* One joined segmented control, per the accepted mockup: the segment carries
+   the border and radius; the buttons inside share dividers, not chrome. */
+.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
+.sl-src-btn.sl-src-btn { min-height: 38px; padding: 0 8px; font-size: 12.5px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-2); font-weight: 600; }
+.sl-src-btn:last-child { border-right: 0; }
+.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
+.sl-src-btn:disabled { opacity: .45; }
+.sl-src-btn:focus-visible { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
+/* The image brief: a quiet collapsible that belongs to the Generate source
+   only. Its summary line always names the resolved ask, so the collapsed
+   state is still honest about what a press would send. */
+.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
+.sl-brief[open] { box-shadow: var(--sl-e-1); }
+.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 0 12px; cursor: pointer; font-size: 12.5px; color: var(--sl-ink-2); }
+.sl-brief > summary::-webkit-details-marker { display: none; }
+.sl-brief-caret { color: var(--sl-ink-4); transition: transform .15s ease; }
+.sl-brief[open] > summary .sl-brief-caret { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .sl-brief-caret { transition: none; } }
+.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-brief-chip { flex-shrink: 0; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); background: transparent; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.sl-brief-body { padding: 2px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.sl-brief-body > * { margin-block: 0; }
+.sl-brief-switch, .sl-brief-save { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; font-weight: 600; color: var(--sl-ink); cursor: pointer; }
+.sl-brief-switch input, .sl-brief-save input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
+.sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
+.sl-brief-switch-label { font-weight: 600; color: var(--sl-ink); }
+.sl-brief-switch .sl-field-note { font-weight: 400; }
+.sl-brief-warn { color: var(--sl-warning); }
+.sl-brief-ratios { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.sl-brief-ratios-lead { font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-brief-ratio { min-height: 30px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-chip); background: transparent; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-brief-ratio[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
+.sl-brief-once-wrap { display: flex; flex-direction: column; gap: 6px; }
+.sl-brief-once-wrap > * { margin-block: 0; }
+.sl-brief-once.sl-drawer-caption { min-height: 58px; height: auto; }
+.sl-brief-link { border: 0; background: transparent; padding: 0; color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; min-height: 0; text-align: left; }
+.sl-brief-link:hover:not(:disabled) { color: var(--sl-ink); }
+.sl-brief-link:disabled { color: var(--sl-line-strong); cursor: not-allowed; text-decoration: none; }
+/* The staged upload row — the mockup's dashed drop slot. */
+.sl-upload-row { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px 10px; font-size: 12.5px; color: var(--sl-ink-2); }
+.sl-upload-row .sl-field-note { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
+.sl-upload-row .sl-primary { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; }
 .sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); overflow: hidden; padding: 0; position: relative; }
+.sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; padding: 0; position: relative; }
 @media (max-width: 420px) {
   .sl-output-compose { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
   .sl-output-compose .sl-output-frame,
@@ -265,35 +353,63 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
 .sl-output-frame-skel::before { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.32); pointer-events: none; }
 .sl-output-frame-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(255,255,255,0) 36%, rgba(255,255,255,.5) 50%, rgba(255,255,255,0) 64%); background-size: 220% 100%; animation: sl-skel-sweep 1.6s linear infinite; pointer-events: none; }
-.sl-skel-label { position: absolute; z-index: 2; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; font-weight: 650; padding: 4px 8px; border-radius: 999px; background: rgba(255,255,255,.94); color: var(--sl-ink); white-space: nowrap; }
+/* The label wraps inside the frame — a nowrap pill in a 128px frame clipped
+   mid-word. Inset both sides instead of left:50% + translateX so shrink-to-fit
+   measures against the full frame, not the half-width region. */
+.sl-skel-label { position: absolute; z-index: 2; top: 50%; left: 8px; right: 8px; width: fit-content; margin-inline: auto; transform: translateY(-50%); font-size: 11.5px; font-weight: 600; padding: 4px 9px; border-radius: var(--sl-radius-chip); background: rgba(255,255,255,.95); box-shadow: var(--sl-e-1); color: var(--sl-ink); max-width: 100%; text-align: center; line-height: 1.35; overflow-wrap: anywhere; }
 @keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
 .sl-drawer-caption.sl-skel { color: transparent; }
-.sl-pub { margin-top: 6px; }
-.sl-pub-dest { margin: 0 0 8px; font-size: 12.5px; color: var(--sl-ink-soft); }
-.sl-pub-radios { display: grid; gap: 6px; }
-.sl-pub-choice { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
-.sl-pub-choice input { accent-color: var(--sl-ink); }
-.sl-pub-when { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--sl-muted); }
-.sl-pub-when input { height: var(--sl-h-control); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); }
+.sl-pub-dest { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+/* Publish timing is a joined segment like the source group above it: three
+   cells in one bordered strip, the checked one shaded. The radio input stays
+   real but invisible; the cell carries the state. */
+.sl-pub-radios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
+.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 38px; margin: 0; padding: 0 8px; font-size: 12.5px; font-weight: 600; color: var(--sl-ink-2); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
+.sl-pub-choice:last-child { border-right: 0; }
+.sl-pub-choice:has(input:checked) { background: var(--sl-surface-2); color: var(--sl-ink); }
+.sl-pub-choice:focus-within { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
+.sl-pub-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.sl-pub-when { display: grid; gap: 4px; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-pub-when input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
 .sl-output-frame-skel .sl-pc-media-empty { display: none; }
-.sl-part-action { margin-top: 8px; }
-.sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
-.sl-reference-text { color: var(--sl-muted); }
-.sl-instructions-part { margin: 0 0 18px; }
-.sl-instructions-used { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
-.sl-history-list { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; }
-.sl-history-delivery, .sl-history-earlier { margin-bottom: 10px; }
-.sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 6px; }
+.sl-reference-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: var(--sl-radius-chip); border: 1px solid var(--sl-line); font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-reference-text { color: var(--sl-ink-2); font-size: 12.5px; }
+.sl-field-label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+/* The two prefilled instruction fields: label, textarea, then a state row —
+   which text applies — with Reset docked right. */
+.sl-instructions-part { display: flex; flex-direction: column; gap: 6px; }
+.sl-instructions-foot { display: flex; align-items: center; gap: 10px; }
+.sl-instructions-state { flex: 1; min-width: 0; font-size: 11.5px; color: var(--sl-ink-2); }
+.sl-instructions-used { padding: 11px 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-instructions-used > strong { font-size: 12.5px; font-weight: 600; display: block; }
+.sl-instructions-used > * { margin-block: 0; }
+.sl-instructions-used > * + * { margin-top: 6px; }
+.sl-instructions-reset.sl-secondary { min-height: 32px; padding: 0 11px; font-size: 11.5px; justify-self: start; }
+/* History is one time-ordered feed: the instant leads, then the event. */
+.sl-history-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.sl-history-event { display: flex; gap: 10px; align-items: baseline; }
+.sl-history-when { flex: 0 0 auto; min-width: 8em; font-size: 10.5px; color: var(--sl-muted); font-variant-numeric: tabular-nums; }
+.sl-history-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sl-history-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; margin: 0; }
+.sl-history-line strong { font-size: 12.5px; font-weight: 600; }
+.sl-history-detail { color: var(--sl-ink-2); font-size: 11.5px; }
+.sl-history-use-image { flex-shrink: 0; }
+/* The batch foot is a column: status, the publication segment, the note,
+   then right-aligned small actions — the mockup's .sheet-foot. The tripled
+   class outranks the shared .sl-preview-actions.sl-preview-actions rule. */
+.sl-preview-actions.sl-drawer-footer.sl-drawer-footer { flex-direction: column; align-items: stretch; gap: 10px; }
+.sl-drawer-stage-note { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 .sl-drawer-footer-actions { display: flex; gap: 8px; }
-.sl-drawer-footer-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
-.sl-drawer-footer-hint { margin: 0; font-size: 12px; color: var(--sl-muted); min-height: 1em; }
+.sl-drawer-footer .sl-drawer-footer-actions { justify-content: flex-end; }
+.sl-drawer-footer .sl-drawer-footer-actions button { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; white-space: normal; }
+.sl-drawer-footer-hint { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
 .sl-drawer-footer-hint:empty { display: none; }
-.sl-drawer-section h3 { margin: 0 0 5px; font-size: 11px; }
+.sl-drawer-section h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
 .sl-drawer-regen-row { margin: 0 0 16px; }
 .sl-drawer-poster { display: block; max-width: 200px; width: 40%; height: auto; margin-top: 10px; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-drawer-poster-dl.sl-secondary.sl-secondary { display: inline-flex; min-height: var(--sl-h-compact); padding: 0 10px; margin-top: 6px; font-size: 10px; margin-left: 0; }
-.sl-drawer-section p { margin: 4px 0; font-size: 11px; }
+.sl-drawer-section p { margin: 0; }
 .sl-post { position: relative; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); overflow: hidden; }
 .sl-post-selected { border-color: var(--sl-ink); background: var(--sl-selected); }
 .sl-selectbox { position: absolute; z-index: 2; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; background: rgba(255,255,255,.9); display: grid; place-items: center; cursor: pointer; }
@@ -361,22 +477,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-clear { border: 0; background: transparent; color: var(--sl-muted); font-size: 11px; border-radius: var(--sl-radius-control); height: var(--sl-h-control); padding: 0 10px; }
 .sl-clear:hover { background: var(--sl-hover); color: var(--sl-ink); }
 /* Appearance only -- alignment belongs to the footer container (see
-   .sl-selection-inner and .sl-preview-actions above/below), not this class. */
-.sl-primary, .sl-secondary { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
-.sl-primary { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
-.sl-primary:hover:not(:disabled) { background: var(--sl-accent-strong); }
-/* A faded brand fill reads as a broken button. An unavailable action is inert,
-   so it drops the brand entirely instead of wearing a washed-out version. */
-.sl-primary:disabled, .sl-app .sl-primary.sl-primary:disabled {
+   .sl-selection-inner and .sl-preview-actions above/below), not this class.
+   v2 button contract (component study): the primary action is ink; gold is
+   the restrained brand variant for creation calls-to-action. The doubled
+   selectors outrank the shell's bot-button[data-variant] rules. */
+.sl-primary, .sl-secondary, .sl-brand { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+/* Dialogs are appended to body, not .sl-app — both roots are covered. */
+.sl-app .sl-primary.sl-primary, .sl-preview-dialog .sl-primary.sl-primary { border: 1px solid var(--sl-ink); background: var(--sl-ink); color: var(--sl-surface); }
+.sl-app .sl-primary.sl-primary:hover:not(:disabled), .sl-preview-dialog .sl-primary.sl-primary:hover:not(:disabled) { background: #36363d; border-color: #36363d; }
+.sl-app .sl-brand.sl-brand, .sl-preview-dialog .sl-brand.sl-brand { border: 1px solid var(--sl-accent-strong); background: var(--sl-accent); color: #1a1a1a; }
+.sl-app .sl-brand.sl-brand:hover:not(:disabled), .sl-preview-dialog .sl-brand.sl-brand:hover:not(:disabled) { background: var(--sl-accent-strong); }
+/* A faded fill reads as a broken button. An unavailable action is inert,
+   so it drops the fill entirely instead of wearing a washed-out version. */
+.sl-primary:disabled, .sl-brand:disabled, .sl-app .sl-primary.sl-primary:disabled, .sl-app .sl-brand.sl-brand:disabled,
+.sl-preview-dialog .sl-primary.sl-primary:disabled, .sl-preview-dialog .sl-brand.sl-brand:disabled {
   border-color: var(--sl-line); background: var(--sl-surface-2); color: var(--sl-muted); opacity: 1; cursor: not-allowed;
 }
 .sl-secondary { border: 1px solid var(--sl-line-strong); background: var(--sl-surface); }
 .sl-secondary:hover:not(:disabled) { background: var(--sl-hover); }
-.sl-setup-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sl-open-source-field { display: grid; gap: 6px; }
-.sl-open-source-input { height: 34px; padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 12px; }
-.sl-open-source-list { display: grid; gap: 4px; }
-.sl-open-source { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-row); background: var(--sl-surface); font-size: 12px; }
+.sl-open-source-input { height: 38px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 13.5px; }
+.sl-open-source-list { display: grid; gap: 6px; }
+.sl-open-source { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
@@ -465,7 +587,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-dest-row-revoked { border-style: dashed; color: var(--sl-muted); cursor: default; }
 .sl-dest-row-revoked:hover { background: none; }
 .sl-dest-row-revoked.sl-dest-row-selected { border-color: var(--sl-line-strong); background: var(--sl-surface-2); }
-.sl-dest-tag { margin-left: auto; color: var(--sl-muted); font-size: 10px; }
+.sl-dest-tag { margin-left: auto; display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; }
 /* Pill segments, the active one filled in ink -- not radio dots. The input
    stays for keyboard/screen-reader semantics; it is visually hidden, not
    display:none, so it keeps its place in the tab order. */
@@ -495,27 +617,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-state-failed_safe { background: color-mix(in srgb, var(--sl-danger) 12%, var(--sl-surface)); color: var(--sl-danger); }
 .sl-state-unknown { background: color-mix(in srgb, var(--sl-warning) 14%, var(--sl-surface)); color: var(--sl-warning); }
 .sl-cta { height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: 7px; background: var(--sl-surface); font-size: 10.5px; }
-.sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-muted); font-size: 10.5px; }
-.sl-receipt { color: var(--sl-ink); font-size: 10.5px; }
-.sl-export-row { display: flex; gap: 8px; margin-bottom: 16px; }
-.sl-setup-form { display: grid; gap: 4px; max-width: 720px; }
-.sl-setup-section .sl-field-note { font-size: 13px; line-height: 1.6; }
-.sl-setup-section .sl-field label { font-size: 13px; }
-.sl-setup-section input, .sl-setup-section select { min-height: 42px; }
-.sl-setup-section textarea { border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 10px; background: var(--sl-surface); }
+.sl-guidance { grid-column: 1/-1; margin: 6px 0 0; padding: 10px 12px; border-radius: var(--sl-radius-row); background: var(--sl-surface-2); color: var(--sl-ink-2); font-size: 11.5px; line-height: 1.55; }
+.sl-receipt { color: var(--sl-ink-2); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px; }
+.sl-receipt:hover { color: var(--sl-ink); }
+
 .sl-radio { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
 /*
- * SLIM, because the media is tall.
+ * FLOATING PANEL, per the accepted workbench mockup.
  *
- * 640px was a generic drawer width. Nine of the twelve posts a real account
- * produces are portrait -- 1080x1350 or 480x852 -- so a wide sheet spends its
- * width on empty ground beside the picture and its height on the thing that
- * matters. 440 is a 4:5 frame at full bleed with the caption still reading
- * near 60 characters; a 9:16 reel sits inside it without the sheet having to
- * grow. The blurred fill behind the frame went with it: it existed only to
- * cover the gap a too-wide sheet left, and there is no gap now.
+ * The dialog is a rounded card that floats over the page — border, radius and
+ * elevation on all four sides, never an edge dock. The two sheet dialogs
+ * (the source preview and the batch drawer) also carry .sl-drawer: right-
+ * docked, inset 12px, 535px wide, full height minus the inset. The small
+ * confirm dialog keeps this shared chrome with the default centered
+ * placement. An earlier revision argued for a slim edge-docked sheet at
+ * 440px because the media is portrait; the owner chose the workbench
+ * geometry instead — do not "fix" this back.
  */
-.sl-preview-dialog { width: min(440px, 100vw); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--sl-line); background: var(--sl-surface); color: var(--sl-ink); box-shadow: -30px 0 60px -32px rgba(24,24,27,.45); translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+/* Doubled class: inside the real shell every preview dialog also carries the
+   SDK's bot-drawer class, whose dialog.bot-drawer rule still describes the
+   old edge dock — the doubled class outranks it so the panel really floats. */
+.sl-preview-dialog.sl-preview-dialog { margin: auto; padding: 0; max-width: calc(100vw - 30px); max-height: calc(100dvh - 30px); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-panel); background: var(--sl-surface); color: var(--sl-ink); box-shadow: var(--sl-e-3); overflow: hidden; translate: 0 0; opacity: 1; transition: translate .3s cubic-bezier(.32,.72,0,1), opacity .24s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog.sl-drawer { margin: 12px 12px 12px auto; width: 535px; height: calc(100dvh - 24px); max-height: none; }
 /* The drawer slides in from the edge it is docked to. The display and overlay
    properties have to transition discretely or the closing frames are never
    painted: a dialog leaves the top layer the instant close() runs. The
@@ -524,26 +647,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-dialog:not([open]) { translate: 100% 0; opacity: 0; }
 @starting-style { .sl-preview-dialog[open] { translate: 100% 0; opacity: 0; } }
 /*
- * No dim. The drawer is for looking at one post while the others stay in
- * view; darkening them makes the grid a wall instead of a row you are moving
- * along. The sheet reads as a layer from its own edge and shadow.
- *
- * The backdrop element stays (showModal still traps focus and Escape still
- * closes) but it is transparent, so a click on it is a click on something the
- * owner can plainly see -- and that click now closes the drawer, because a
- * visible grid that swallows clicks is worse than a dimmed one that does.
+ * Dimmed and blurred, per the same mockup. The panel floats, so the page
+ * behind it recedes; the click-to-close on the backdrop still works, and
+ * showModal still traps focus and Escape. An earlier revision kept the
+ * backdrop transparent so the grid stayed fully visible while the owner
+ * moved along it; the owner chose the dimmed treatment.
  */
-.sl-preview-dialog::backdrop { background: transparent; opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
+.sl-preview-dialog::backdrop { background: #18181b38; backdrop-filter: blur(2px); opacity: 1; transition: opacity .3s ease, display .3s allow-discrete, overlay .3s allow-discrete; }
 .sl-preview-dialog:not([open])::backdrop { opacity: 0; }
 @starting-style { .sl-preview-dialog[open]::backdrop { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-preview-dialog, .sl-preview-dialog::backdrop { transition-duration: 1ms; } }
-.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; box-shadow: -18px 0 40px -16px rgba(24,24,27,.28); }
+/* The elevation lives on the dialog now that it floats — the sheet inside is
+   just the grid that portions it into head / tabs / body / footer. */
+.sl-preview-sheet { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .sl-preview-sheet.sl-sheet-drawer { grid-template-rows: auto auto minmax(0, 1fr) auto; }
-.sl-sheet-drawer .sl-drawer-tabs { padding: 8px 24px 0; display: grid; gap: 8px; }
+.sl-sheet-drawer .sl-drawer-tabs { padding: 6px 18px 0; display: grid; gap: 8px; }
 .sl-sheet-drawer .sl-drawer-tabs:empty { padding: 0; }
-.sl-preview-head { min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--sl-line); display: flex; align-items: flex-start; gap: 10px; }
-.sl-preview-who { flex: 1 1 auto; min-width: 0; padding: 10px 0; }
-.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; padding: 9px 0; }
+/* Inside the floating shell there are no structural rules: spacing separates
+   head, tabs, body and footer; only the selected tab keeps its underline.
+   The zeros are explicit — the host shell's bot-drawer-head/-actions classes
+   still carry their rules, so removing the value is not enough. */
+.sl-preview-head.sl-preview-head { min-height: 0; padding: 16px 18px 4px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
+.sl-preview-who { flex: 1 1 auto; min-width: 0; }
+.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
+.sl-preview-head .sl-icon-action { width: 32px; height: 32px; }
 /*
  * Scoped to the eyebrow, not to every span in the header.
  *
@@ -555,10 +682,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
  *
  * (No backticks in here: this stylesheet is a template literal.)
  */
-.sl-preview-head strong { display: block; font-size: 13px; }
-.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.sl-preview-head strong { display: block; margin: 0; font-size: 15px; font-weight: 600; }
+.sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 10.5px; letter-spacing: .02em; margin-bottom: 3px; }
 
-.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; overflow-wrap: anywhere; }
+.sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 18px 18px; overflow-wrap: anywhere; }
 /* The media stage. See preview-media.js for why the cap is a length. */
 .sl-preview-stage-wrap { margin-bottom: 20px; }
 .sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; padding: 0; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
@@ -610,31 +737,49 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-announce-dismiss { position: absolute; top: 6px; right: 8px; width: 28px; height: 28px; cursor: pointer; border: 0; background: transparent; color: var(--sl-muted); font-size: 17px; line-height: 1; }
 .sl-announce-card { position: relative; padding-right: 34px; }
 .sl-needs-setup { white-space: normal; }
-.sl-preview-head { padding: 12px 20px; }
-.sl-preview-head strong { font-size: 16px; }
-.sl-preview-kicker { font-size: 11px; }
-.sl-preview-scroll .sl-field-note { font-size: 13px; line-height: 1.65; }
-.sl-preview-scroll .sl-drawer-section { padding: 12px 0; }
-.sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
-.sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+/* Drawer-scoped compact type, per the accepted mockup's one scale —
+   meta 10.5 / label 11.5 / compact 12.5 / body 13.5. The earlier overrides
+   inflated every section paragraph to 14px; the components now carry their
+   own sizes. */
+.sl-preview-scroll .sl-field-note { margin: 2px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--sl-ink-2); }
+.sl-preview-scroll .sl-field label { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
+.sl-preview-scroll .sl-output-copy .sl-output-label h3 { font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 /* One footer rule for both drawers -- the single-post preview and the batch
    drawer each carry exactly one action now, so there is no second, opposing
    system to keep in sync with this one. */
-.sl-preview-actions { padding: 12px 16px; border-top: 1px solid var(--sl-line); display: flex; gap: 8px; }
+.sl-preview-actions.sl-preview-actions { padding: 8px 18px 16px; border-top: 0; display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
 /* An item's stage sits inside a sheet that already scrolls — a little shorter
    than the source drawer's, same media fidelity. */
 .sl-drawer-section .sl-stage { min-height: 220px; }
 .sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
 .sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
-.sl-preview-scroll .sl-drawer-section .sl-field-note { font-size: 12px; line-height: 1.6; }
+/* The Reference tab's source stage keeps the shared carousel mechanics but
+   wears the mockup's light frame — a 4/5 light panel, capped, not the dark
+   stage the single-post preview uses. */
+.sl-drawer-section .sl-reference-stage { max-width: 228px; margin-bottom: 0; }
+.sl-drawer-section .sl-reference-stage .sl-stage { min-height: 0; aspect-ratio: 4 / 5; background: var(--sl-surface-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-img { max-height: 320px; }
+.sl-drawer-section .sl-reference-stage .sl-stage-chip { color: var(--sl-ink-2); background: rgba(255,255,255,.92); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-nav { color: var(--sl-ink); background: rgba(255,255,255,.82); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-nav:hover { background: var(--sl-surface); }
+.sl-drawer-section .sl-reference-stage .sl-stage-state p { color: var(--sl-ink-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-state strong { color: var(--sl-ink); }
+.sl-drawer-section .sl-reference-stage .sl-stage-retry { color: var(--sl-ink); border-color: var(--sl-line-strong); }
+.sl-drawer-section .sl-reference-stage .sl-stage-retry:hover { background: var(--sl-surface); }
+.sl-drawer-section .sl-reference-stage .sl-stage-skeleton { background: linear-gradient(100deg, #e9e9ec 30%, #f7f7f9 50%, #e9e9ec 70%) 0 0 / 300% 100%; }
+.sl-drawer-section .sl-reference-stage .sl-stage-strip { background: var(--sl-surface-2); }
+.sl-drawer-section .sl-reference-stage .sl-stage-thumb { color: var(--sl-ink-2); background: var(--sl-surface); border-color: var(--sl-line); }
+.sl-drawer-section .sl-reference-stage .sl-stage-thumb[aria-selected="true"] { color: var(--sl-ink); border-color: var(--sl-accent); }
 /* What the composer below it must not lose, marked read-only -- a
    textarea cannot carry inline marks of its own. */
-.sl-drawer-caption-preview { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
-.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface-2, var(--sl-surface)); color: var(--sl-ink); }
-.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); background: var(--sl-surface); }
+.sl-drawer-caption-preview { margin: 0; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
+.sl-drawer-caption { width: 100%; resize: vertical; font: inherit; font-size: 13.5px; line-height: 1.55; padding: 10px 12px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-ink); }
+.sl-drawer-caption[readonly] { background: var(--sl-surface-2); color: var(--sl-ink-2); }
+.sl-drawer-caption:focus { outline: none; border-color: var(--sl-ink); }
 .sl-drawer-caption.sl-dirty { border-color: var(--sl-ink); }
 .sl-drawer-caption::placeholder { color: var(--sl-muted); }
+.sl-drawer-composer .sl-drawer-caption { height: 126px; min-height: 42px; }
 ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-mobile-panes { display: flex; gap: 6px; margin-bottom: 10px; }
   .sl-mobile-panes button { flex: 1; min-height: 44px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
@@ -646,8 +791,7 @@ ${globalThis.String.fromCharCode(64)}media (max-width: 700px) {
   .sl-inbox-grid { grid-template-columns: 1fr; }
   .sl-dual { grid-template-columns: 1fr; }
   .sl-poster-grid { grid-template-columns: 1fr; }
-  .sl-preview-dialog { width: 100vw; height: 100dvh; margin: 0; border-left: 0; }
-  .sl-preview-scroll { padding: 14px; }
+  .sl-preview-dialog.sl-drawer { margin: 7px; width: calc(100vw - 14px); max-width: none; height: calc(100dvh - 14px); max-height: none; border-radius: 12px; }
   .sl-preview-actions { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .sl-zh-edit, .sl-field input, .sl-field select { font-size: 16px; }
 }
@@ -800,9 +944,13 @@ function App() {
   const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
   const { root: shellRoot, viewHost } = buildShell();
   shellRoot.appendChild(announceRegion);
+  // The two sheets get the right-docked drawer geometry; the confirm dialog
+  // stays a small centered panel (same chrome, no .sl-drawer).
   const previewDialog = buildPreviewDialog(() => closePreview());
   const batchDialog = buildPreviewDialog();
   const leaveDialog = buildPreviewDialog();
+  previewDialog.classList.add("sl-drawer");
+  batchDialog.classList.add("sl-drawer");
   /*
    * The drawer dialog is shared across opens, so its listeners register ONCE
    * and delegate to the current session — a per-open `cancel` listener would
@@ -1196,6 +1344,24 @@ function App() {
     const buffers = new Map(); // batchItemId -> buffer
     const ownerUploads = new Map(); // batchItemId -> File
     const bufferOf = (id) => buffers.get(id) ?? {};
+    /**
+     * The image brief a Generate press would send, resolved: the staged
+     * buffer choices over the configured defaults, so the block and the
+     * request can never disagree about what "the default" is. `useSource`
+     * means "the post's own image is the basis" (an edit); `ratio` is never
+     * unset. The one-off fields stage the this-generation instruction layer.
+     */
+    const imageBriefOf = (item) => {
+      const stored = bufferOf(item.id).imageBrief ?? {};
+      return {
+        open: stored.open === true,
+        useSource: stored.useSource ?? policy?.posterReferences !== "none",
+        ratio: stored.ratio ?? policy?.posterAspectRatio ?? "4:5",
+        oneOffOpen: stored.oneOffOpen === true,
+        oneOff: stored.oneOff ?? "",
+        saveOneOff: stored.saveOneOff === true
+      };
+    };
     // Every change to a buffered field bumps that field's edit version, so a
     // Save acknowledgment can tell "still what I submitted" from "typed
     // since" — including typing the same text back after changing it.
@@ -1494,7 +1660,7 @@ function App() {
         .map((idToSave) => items.find((entry) => entry.id === idToSave))
         .filter(Boolean)
         .map((item) => ({ item, snapshot: snapshotBuffer(item.id) }))
-        .map((job) => ({ ...job, entry: revisionEntryFor(job.item, job.snapshot.buffer), patch: instructionPatchFor(job.item, job.snapshot.buffer) }))
+        .map((job) => ({ ...job, entry: revisionEntryFor(job.item, job.snapshot.buffer), patch: instructionPatchFor(job.item, job.snapshot.buffer, ["image", "caption"], instructionDefaultsOf(policy)) }))
         .filter((job) => job.entry || job.patch);
       if (!work.length) return true;
       saving = true;
@@ -1567,7 +1733,7 @@ function App() {
       return allOk;
     };
 
-    const dirtyItemIds = () => items.filter((item) => dirtyParts(item, bufferOf(item.id)).any).map((item) => item.id);
+    const dirtyItemIds = () => items.filter((item) => dirtyParts(item, bufferOf(item.id), instructionDefaultsOf(policy)).any).map((item) => item.id);
 
     /**
      * The one exit guard every drawer dismissal runs — Close, Escape and
@@ -1718,6 +1884,8 @@ function App() {
       switch (code) {
         case "credits_exhausted":
           return t(locale, "drawerReasonOutOfCredits");
+        case "reference_unavailable":
+          return t(locale, "drawerReasonRefUnavailable");
         case "turn_cancelled":
           return t(locale, "drawerReasonTurnCancelled");
         case "turn_crashed":
@@ -1792,7 +1960,7 @@ function App() {
         if (!(await confirmReplacePending(outstanding))) return;
         supersede = true;
       }
-      const unsavedInstructions = dirtyInstructionParts(item, bufferOf(item.id), parts);
+      const unsavedInstructions = dirtyInstructionParts(item, bufferOf(item.id), parts, instructionDefaultsOf(policy));
       if (unsavedInstructions.length) {
         const choice = await confirmDrawerChoice(leaveDialog, {
           title: t(locale, "drawerInstructionsDecisionTitle"),
@@ -1808,7 +1976,7 @@ function App() {
           // The submitted snapshot: generation runs on exactly what this
           // save acknowledged; instructions typed meanwhile stay dirty.
           const snapshot = snapshotBuffer(item.id);
-          const patch = instructionPatchFor(item, snapshot.buffer, parts);
+          const patch = instructionPatchFor(item, snapshot.buffer, parts, instructionDefaultsOf(policy));
           let saved;
           saving = true;
           redrawFooter();
@@ -1844,8 +2012,45 @@ function App() {
         redrawPreserving();
         if (!ok) return;
       }
+      /*
+       * The image brief a Generate press is made under — the resolved staged
+       * settings, so the request and the block can never disagree. The one-off
+       * instruction is the "this run" layer: sent on the request itself when
+       * it stays one-off, or saved as this post's image instruction FIRST when
+       * the owner asked for both (the request then resolves it as the post
+       * layer — what was saved is what runs).
+       */
+      const options = { needs };
+      let brief = null;
+      if (part === "image") {
+        brief = imageBriefOf(item);
+        options.image = { references: brief.useSource ? "source" : "none", aspectRatio: brief.ratio };
+        const oneOff = brief.oneOff.trim();
+        if (oneOff && brief.saveOneOff) {
+          let savedIns;
+          saving = true;
+          redrawFooter();
+          try { savedIns = await rpc.saveInstructionOverrides({ batchItemId: item.id, image: oneOff }); } catch (error) {
+            savedIns = { ok: false, message: error instanceof Error ? error.message : String(error) };
+          } finally {
+            saving = false;
+          }
+          if (!live) return;
+          if (!savedIns?.ok) {
+            redrawPreserving();
+            announce(refusalMessage(savedIns ?? {}) || t(locale, "drawerInstructionsSaveFailed"), "");
+            return;
+          }
+          for (const target of new Set([item, items.find((entry) => entry.id === item.id)].filter(Boolean))) {
+            target.instructionOverrides = savedIns.instructionOverrides ?? { ...(target.instructionOverrides ?? {}), image: oneOff };
+            if (savedIns.effectiveInstructions) target.effectiveInstructions = savedIns.effectiveInstructions;
+          }
+        } else if (oneOff) {
+          options.instructions = { image: oneOff };
+        }
+      }
       const send = (withReplace) =>
-        rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
+        rpc.requestGeneration(batch.id, [item.id], withReplace ? { ...options, replace: true } : { ...options });
       // Declared outside the try so the recognised `result` is still in scope
       // for the dispatch stamp below, whatever the request path did.
       let result = null;
@@ -1859,16 +2064,48 @@ function App() {
           }
           result = await send(true);
         }
-        if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+        if (result && result.ok === false) {
+          // The fail-closed refusal is localized, never the raw code: the
+          // owner picked "the post's image" and the honest answer is that it
+          // cannot be used — with the two ways forward.
+          announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+          return;
+        }
       } catch (error) {
         announce(error instanceof Error ? error.message : String(error), "");
         return;
       }
       if (!live) return;
+      // The one-off named THIS request — a second Generate must not silently
+      // reuse it. The settings (reference, ratio) stay as staged.
+      if (brief) {
+        patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, oneOff: "", oneOffOpen: false, saveOneOff: false } });
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
       try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+    };
+
+    /**
+     * The options a retry re-asks under: the failed request's OWN brief —
+     * ratio, reference mode and any one-off instruction — because "retry"
+     * means the same ask, not whatever the settings happen to say now. A mark
+     * without a brief (written before the brief existed) retries with none.
+     */
+    const retryOptions = (mark, needs, replace) => {
+      const options = { needs, ...(replace ? { replace: true } : {}) };
+      if (mark?.imageBrief) {
+        options.image = {
+          aspectRatio: mark.imageBrief.aspectRatio,
+          references: mark.imageBrief.references !== undefined ? "source" : "none"
+        };
+      }
+      const run = mark?.runInstructions;
+      if (run && (run.image || run.caption)) {
+        options.instructions = Object.fromEntries(["image", "caption"].filter((part) => run[part]).map((part) => [part, run[part]]));
+      }
+      return options;
     };
 
     /**
@@ -1886,14 +2123,17 @@ function App() {
       redrawFooter();
       let result;
       try {
-        result = await rpc.requestGeneration(batch.id, [item.id], { needs, replace: true });
+        result = await rpc.requestGeneration(batch.id, [item.id], retryOptions(mark, needs, true));
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       } finally {
         saving = false;
       }
       if (!live) return;
-      if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+      if (result && result.ok === false) {
+        announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+        return;
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1918,14 +2158,18 @@ function App() {
       redrawFooter();
       let result;
       try {
-        result = await rpc.requestGeneration(batch.id, [item.id], replaceDead ? { needs, replace: true } : { needs });
+        result = await rpc.requestGeneration(batch.id, [item.id], retryOptions(mark, needs, replaceDead));
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       } finally {
         saving = false;
       }
       if (!live) return;
-      if (result && result.ok === false) { announce(refusalMessage(result), ""); if (await refetchItems()) redraw(); return; }
+      if (result && result.ok === false) {
+        announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+        if (await refetchItems()) redraw();
+        return;
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -2043,12 +2287,25 @@ function App() {
       }
     };
 
+    /*
+     * The one place a publication-intent patch lands. Shared by the footer's
+     * timing controls and kept honest with them: a mode change rebuilds the
+     * whole sheet (the schedule field joins or leaves), any other field only
+     * rebuilds the foot.
+     */
+    const patchPublicationIntent = (entry, patch) => {
+      const before = bufferOf(entry.id).publicationIntent ?? entry.publicationIntent ?? { publishMode: "save_draft" };
+      patchBuffer(entry.id, { publicationIntent: { ...before, ...patch } });
+      if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
+      else redrawFooter();
+    };
+
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
-        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving });
-        const reason = state.primary.reason || state.save.reason;
+        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving, defaults: instructionDefaultsOf(policy) });
+        const reason = state.primary.reason || state.save.reason || publicationHint(locale, item, bufferOf(item.id));
         /*
          * The truthful pending state. The mark's dispatch says whether the
          * request was FILED; the platform's canonical state, read back by
@@ -2177,6 +2434,15 @@ function App() {
           resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
+          // Publication timing sits in the sheet foot per the accepted
+          // mockup — visible on every tab, above the actions.
+          ...renderPublicationControls(locale, item, {
+            editable: true,
+            saving,
+            buffers: bufferOf(item.id),
+            destinationLabel,
+            onPublicationIntent: (patch) => patchPublicationIntent(item, patch)
+          }),
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
           el("div", { class: "sl-drawer-footer-actions" }, [
             el("button", {
@@ -2371,11 +2637,12 @@ function App() {
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
+        // Inspection only — adopting the source image is the Post tab's
+        // "Use reference" source control, the one place that choice lives.
         panel = renderReferencePanel(locale, item, {
           stage: item.sourceItem ? stageFor(item) : null,
           editable,
-          saving,
-          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
+          saving
         });
       } else if (activeTab === "instructions") {
         panel = renderInstructionsPanel(locale, item, {
@@ -2423,12 +2690,7 @@ function App() {
             redrawFooter();
           },
           destinationLabel,
-          onPublicationIntent: (patch) => {
-            const before = bufferOf(item.id).publicationIntent ?? item.publicationIntent ?? { publishMode: "save_draft" };
-            patchBuffer(item.id, { publicationIntent: { ...before, ...patch } });
-            if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
-            else redrawFooter();
-          },
+          onPublicationIntent: (patch) => patchPublicationIntent(item, patch),
           captionConflict: captionConflicts.get(item.id) ?? null,
           onReacceptImage: async (mediaId) => {
             if (saving) return;
@@ -2460,6 +2722,16 @@ function App() {
             else dropBufferFields(item.id, ["imageId"]);
             redraw();
           },
+          imageBrief: imageBriefOf(item),
+          // The toggle's honesty line: whether this post's own image can
+          // actually be sent as a reference — decided by the same rule the
+          // server applies, so a missing one warns before the refusal.
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onPatchImageBrief: (patch) => {
+            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
+          },
+          onBriefChanged: () => redraw(),
+          onShowInstructions: () => selectTab("instructions", { focus: false }),
           onRequestPart: (part) => requestPart(item, part),
           uploadPreview: ownerUploads.has(item.id) ? { name: ownerUploads.get(item.id).name } : null,
           onPickUpload: (file) => pickOwnerUpload(item, file),
@@ -2468,16 +2740,8 @@ function App() {
         });
       }
 
-      // Export stays batch-scoped (the archive is one batch).
-      const exportRow = activeTab === "history"
-        ? el("div", { class: "sl-export-row" }, [
-            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("json") }, t(locale, "exportJson")),
-            el("button", { type: "button", class: "sl-secondary", onclick: () => wizardHandlers.onExport("html") }, t(locale, "exportHtml"))
-          ])
-        : null;
-
       replace(bodyEl, [
-        el("div", { id: drawerPanelId(activeTab), role: "tabpanel", "aria-labelledby": drawerTabId(activeTab), class: "sl-drawer-panel" }, [panel, exportRow])
+        el("div", { id: drawerPanelId(activeTab), role: "tabpanel", "aria-labelledby": drawerTabId(activeTab), class: "sl-drawer-panel" }, [panel])
       ]);
       redrawFooter();
     };
@@ -2551,8 +2815,8 @@ function App() {
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [
       el("header", { class: "sl-preview-head" }, [
         el("div", { class: "sl-preview-who" }, [
-          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork")),
-          headerMeta
+          headerMeta,
+          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork"))
         ]),
         el("div", { class: "sl-preview-head-actions" }, [
           el("button", {
@@ -3109,18 +3373,6 @@ function App() {
         console.error(error);
       }
     },
-    // Relocated into the batch drawer's body (openBatchDrawer, next to
-    // Regenerate) now that the Batch summary screen is gone -- the drawer
-    // is already scoped to one batch, which is what an export is of.
-    // Unchanged: same rpc call, same refusal handling.
-    onExport: async (format) => {
-      try {
-        await rpc.exportAs(format);
-      } catch (error) {
-        console.error(error);
-        announce(t(locale, "exportFailed"), "");
-      }
-    }
   };
 
   async function refreshPublishState() {
@@ -3367,8 +3619,10 @@ function App() {
         errorAction = null;
         notice = null;
         // Do not replace the clicked Save button during the input's blur/change
-        // event: replacement would consume the user's first click.
-        viewHost.querySelector?.("[data-monitor-enable]")?.setAttribute("disabled", "");
+        // event: replacement would consume the user's first click. Only the
+        // off→on direction is gated on a clean draft; pausing stays live.
+        const monitorSwitch = viewHost.querySelector?.("[data-monitor-enable]");
+        if (monitorSwitch && monitorSwitch.getAttribute("aria-checked") !== "true") monitorSwitch.setAttribute("disabled", "");
         const savedNotice = viewHost.querySelector?.(".sl-setup-notice");
         if (savedNotice) savedNotice.textContent = "";
         viewHost.querySelector?.(".sl-setup-error")?.remove();
