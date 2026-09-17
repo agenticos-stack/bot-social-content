@@ -1218,21 +1218,125 @@ function generationInstructions(value) {
   return { image: text(value.image), caption: text(value.caption) };
 }
 
+// ---------------------------------------------------------------------------
+// The image brief: what one image request was made under
+// ---------------------------------------------------------------------------
+
 /**
- * The owner's per-post instruction overrides and the saved defaults, resolved
- * to what a generation request for this post would actually use. An override
- * that is absent or blank falls back to the saved default.
+ * The aspect ratios the image brief offers — the catalog decides which of
+ * them a model actually honours, so this list is the UI/validation surface,
+ * not a capability claim. `4:5` is the default everywhere ("follow the
+ * post"), never left unset.
  */
-export function effectiveInstructions(config, overrides) {
-  const pick = (override, fallback) => {
-    const own = typeof override === "string" && override.trim() ? override : null;
-    return own !== null
-      ? { text: own, source: "post" }
-      : { text: typeof fallback === "string" ? fallback : "", source: "default" };
+export const GENERATION_IMAGE_RATIOS = Object.freeze(["4:5", "1:1", "9:16"]);
+export const DEFAULT_IMAGE_ASPECT_RATIO = "4:5";
+
+/** Whether the image request steers from the post's own picture. */
+export const GENERATION_REFERENCE_MODES = Object.freeze(["source", "none"]);
+
+/** Config read: an unknown or absent ratio is the follow-the-post default, never carried. */
+export function normalizePosterAspectRatio(value) {
+  return GENERATION_IMAGE_RATIOS.includes(value) ? value : DEFAULT_IMAGE_ASPECT_RATIO;
+}
+
+/** Config read: only an explicit "none" means the owner asked to generate without the post's image. */
+export function normalizePosterReferences(value) {
+  return value === "none" ? "none" : "source";
+}
+
+/**
+ * The built-in image-instruction floor — the bottom of the four layers.
+ * Written in the workspace's target language because it is sent to the image
+ * model verbatim, like `posterPrompt`: what's shown is what's recorded is
+ * what's sent.
+ */
+export function builtinImageInstruction(config) {
+  const to = typeof config?.locale?.to === "string" ? config.locale.to : "zh-HK";
+  return to.startsWith("zh")
+    ? "保持原帖構圖,把畫面上的文字改成繁體中文。"
+    : "Keep the original composition; put the on-image text into Traditional Chinese.";
+}
+
+/**
+ * The source post's own image media, as image-brief references.
+ *
+ * Only `kind: "image"` entries with an `https://` URL the provider can fetch —
+ * a stored id rides along so the work request names WHICH media it meant.
+ * Bounded at ten, matching the work-request contract's own cap. An empty
+ * result on a "source" request is the fail-closed case: the caller declares
+ * the reference anyway and the platform refuses it, rather than silently
+ * generating without it.
+ */
+export function sourceImageReferences(item) {
+  const media = Array.isArray(item?.media) ? item.media : [];
+  const references = [];
+  for (const entry of media) {
+    if (entry?.kind !== "image") continue;
+    const url = typeof entry.url === "string" ? entry.url : "";
+    if (!url.startsWith("https://") || url.length > 2048) continue;
+    const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
+    references.push(id ? { id, url } : { url });
+    if (references.length >= 10) break;
+  }
+  return references;
+}
+
+/** Which instruction layer a snapshot came from — the mark records it so the answer is never re-derived. */
+const INSTRUCTION_SOURCES = new Set(["builtin", "default", "post", "run"]);
+
+function generationInstructionSources(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const layer = (entry) => (INSTRUCTION_SOURCES.has(entry) ? entry : null);
+  return { image: layer(value.image), caption: layer(value.caption) };
+}
+
+/**
+ * The structured brief one image request was made under, as stored on the
+ * mark: `{ aspectRatio, references? }`. `references` PRESENT — even as an
+ * empty array — means "an edit against the post's image was asked for"; the
+ * key being absent means plain text-to-image. Any well-formed `W:H` ratio is
+ * read (the writer bounds it to the offered list); a malformed or missing
+ * ratio drops the whole brief rather than letting half of it describe the
+ * request.
+ */
+function generationImageBrief(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const aspectRatio =
+    typeof value.aspectRatio === "string" && /^\d{1,3}:\d{1,3}$/.test(value.aspectRatio) ? value.aspectRatio : null;
+  if (!aspectRatio) return undefined;
+  const brief = { aspectRatio };
+  if (value.references !== undefined) {
+    const list = Array.isArray(value.references) ? value.references : [];
+    brief.references = list.slice(0, 10).flatMap((entry) => {
+      const url =
+        typeof entry?.url === "string" && entry.url.startsWith("https://") && entry.url.length <= 2048
+          ? entry.url
+          : null;
+      if (!url) return [];
+      const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
+      return [id ? { id, url } : { url }];
+    });
+  }
+  return brief;
+}
+
+/**
+ * The four instruction layers resolved to what a generation request for this
+ * post would actually use: a one-off instruction for this generation ("run"),
+ * then this post's override, then the saved default, then — for the image —
+ * the built-in floor. The returned `source` names the winning layer, so the
+ * drawer can show WHICH instruction applies instead of only which text.
+ */
+export function effectiveInstructions(config, overrides, run) {
+  const pick = (runText, override, fallback, builtin) => {
+    if (typeof runText === "string" && runText.trim()) return { text: runText, source: "run" };
+    if (typeof override === "string" && override.trim()) return { text: override, source: "post" };
+    if (typeof fallback === "string" && fallback.trim()) return { text: fallback, source: "default" };
+    return builtin ? { text: builtin, source: "builtin" } : { text: "", source: "default" };
   };
   return {
-    image: pick(overrides?.image, config?.posterPrompt),
-    caption: pick(overrides?.caption, config?.contentPrompt)
+    image: pick(run?.image, overrides?.image, config?.posterPrompt, builtinImageInstruction(config)),
+    caption: pick(run?.caption, overrides?.caption, config?.contentPrompt, null)
   };
 }
 
@@ -1258,6 +1362,15 @@ export function generationMark(mark) {
       // under (`{ image, caption }`) — present only on marks that recorded them.
       at: typeof mark.at === "string" ? mark.at : undefined,
       instructions: generationInstructions(mark.instructions),
+      // Which layer each snapshot came from, and the raw one-off text when a
+      // "this generation only" instruction won — recorded so the drawer can
+      // name the layer without re-deriving it against later edits.
+      instructionSources: generationInstructionSources(mark.instructionSources),
+      runInstructions: generationInstructions(mark.runInstructions),
+      // The image part's structured brief (aspect ratio always set; declared
+      // references when the post's own image was the basis). Absent on marks
+      // written before the brief existed, and on caption-only asks.
+      imageBrief: generationImageBrief(mark.imageBrief),
       // What the PLATFORM did with the request, stamped by the host from the
       // annotated method result and confirmed (never overridden) by the client.
       // Absent means no acknowledgement was ever recorded — not that generation

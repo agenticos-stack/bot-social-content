@@ -292,7 +292,14 @@ export function footerState(locale, item, { buffers = {}, saving = false } = {})
  * ctx: `{ editable, saving, buffers, loadImage(generated, img, onFail), highlighted,
  * noteRef(el), onCaptionInput(value), onAltTextInput(value), onStageImage(id|null),
  * onRequestPart("image"|"caption"), onPickUpload(file?), onAdoptUpload(), onAdoptReference(),
+ * imageBrief?: { open, useSource, ratio, oneOffOpen, oneOff, saveOneOff },
+ * imageRefsAvailable?: bool, onPatchImageBrief(patch), onBriefChanged(), onShowInstructions(),
  * uploadPreview?: { name }, captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use") }`.
+ *
+ * `buffers` = `{ caption?, altText?, imageId?, visualMode?, imageSource?, instructions?,
+ * publicationIntent?, imageBrief? }` — `imageBrief` stages the NEXT Generate ask
+ * (reference toggle, aspect ratio, the one-off instruction); it is not content and
+ * is never part of a Save.
  */
 export function renderOutputPanel(locale, item, ctx) {
   const buffers = ctx.buffers ?? {};
@@ -480,6 +487,116 @@ export function renderOutputPanel(locale, item, ctx) {
         }, t(locale, "drawerSrcReference"))
       ])
     : null;
+  // Arrow keys move along the segment — the same roving the tablist uses.
+  sourceRow?.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    const buttons = [...sourceRow.querySelectorAll("button")];
+    const index = buttons.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault?.();
+    buttons[(index + (event.key === "ArrowRight" ? 1 : buttons.length - 1)) % buttons.length].focus();
+  });
+
+  /*
+   * The image brief — the settings a Generate ask is made under. It hangs
+   * under the source segment and only exists while Generate is the picked
+   * source: "Use reference" adopts the post's picture outright and "Upload"
+   * stages a file, and neither is a generation. The block shows the RESOLVED
+   * brief (the owner's staged choices over the configured defaults), so the
+   * summary line always names exactly what a press of Generate would ask for.
+   */
+  const brief = ctx.imageBrief ?? { open: false, useSource: true, ratio: "4:5", oneOffOpen: false, oneOff: "", saveOneOff: false };
+  const refsAvailable = ctx.imageRefsAvailable === true;
+  let briefBlock = null;
+  if (editable && imageSource === "generate") {
+    const patch = (part) => ctx.onPatchImageBrief?.(part);
+    const changed = () => ctx.onBriefChanged?.();
+    const summaryLine = [
+      brief.useSource ? t(locale, "drawerBriefOn") : t(locale, "drawerBriefOff"),
+      brief.ratio,
+      brief.oneOff.trim() ? t(locale, "drawerBriefOnceLabel") : null
+    ].filter(Boolean).join(" · ");
+
+    const details = el("details", { class: "sl-brief", open: brief.open || null });
+    details.addEventListener("toggle", () => {
+      if (details.open !== brief.open) patch({ open: details.open });
+    });
+    details.appendChild(el("summary", { class: "sl-brief-head" }, [
+      el("span", { class: "sl-brief-caret", "aria-hidden": "true" }, "›"),
+      el("span", { class: "sl-brief-title" }, `${t(locale, "drawerBriefTitle")} — ${summaryLine}`),
+      el("span", { class: "sl-brief-chip" }, t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew"))
+    ]));
+
+    const body = el("div", { class: "sl-brief-body" });
+    body.appendChild(el("label", { class: "sl-brief-switch" }, [
+      el("input", {
+        type: "checkbox",
+        checked: brief.useSource || null,
+        disabled: ctx.saving || null,
+        onchange: (event) => { patch({ useSource: event.currentTarget.checked }); changed(); }
+      }),
+      el("span", { class: "sl-brief-switch-text" }, [
+        el("span", { class: "sl-brief-switch-label" }, t(locale, "drawerBriefRefTitle")),
+        el("span", { class: "sl-field-note" }, t(locale, "drawerBriefRefSub"))
+      ])
+    ]));
+    if (brief.useSource && !refsAvailable) {
+      body.appendChild(el("p", { class: "sl-field-note sl-brief-warn", role: "note" }, t(locale, "drawerBriefRefMissing")));
+    }
+    body.appendChild(el("div", { class: "sl-brief-ratios", role: "group", "aria-label": t(locale, "drawerBriefRatioLead") }, [
+      el("span", { class: "sl-brief-ratios-lead" }, t(locale, "drawerBriefRatioLead")),
+      ...[["4:5", "drawerRatioMatch"], ["1:1", "drawerRatioSquare"], ["9:16", "drawerRatioStory"]].map(([value, key]) =>
+        el("button", {
+          type: "button",
+          class: "sl-brief-ratio",
+          "aria-pressed": brief.ratio === value ? "true" : "false",
+          disabled: ctx.saving || null,
+          onclick: () => { patch({ ratio: value }); changed(); }
+        }, t(locale, key)))
+    ]));
+    if (brief.oneOffOpen || brief.oneOff.trim()) {
+      const area = el("textarea", {
+        class: "sl-drawer-caption sl-brief-once",
+        rows: "2",
+        placeholder: t(locale, "drawerBriefOncePlaceholder"),
+        "aria-label": t(locale, "drawerBriefOnceLabel"),
+        readonly: ctx.saving || null
+      });
+      area.value = brief.oneOff;
+      area.addEventListener("input", () => patch({ oneOff: area.value }));
+      // The summary and in-effect lines re-read the buffer on redraw — a blur
+      // is when a typing pause becomes the stated ask.
+      area.addEventListener("blur", () => changed());
+      body.appendChild(el("div", { class: "sl-brief-once-wrap" }, [
+        area,
+        el("p", { class: "sl-field-note" }, t(locale, "drawerBriefOnceSub")),
+        el("label", { class: "sl-brief-save" }, [
+          el("input", {
+            type: "checkbox",
+            checked: brief.saveOneOff || null,
+            disabled: ctx.saving || null,
+            onchange: (event) => patch({ saveOneOff: event.currentTarget.checked })
+          }),
+          el("span", null, t(locale, "drawerBriefOnceSave"))
+        ])
+      ]));
+    } else {
+      body.appendChild(el("button", {
+        type: "button",
+        class: "sl-brief-link",
+        disabled: ctx.saving || null,
+        onclick: () => { patch({ oneOffOpen: true }); changed(); }
+      }, t(locale, "drawerBriefOnceOpen")));
+    }
+    const liveLayer = brief.oneOff.trim() ? "run" : (item.effectiveInstructions?.image?.source ?? "default");
+    const LAYER_KEYS = { run: "drawerLayerRun", post: "drawerLayerPost", default: "drawerLayerGadget", builtin: "drawerLayerBuiltin" };
+    body.appendChild(el("p", { class: "sl-field-note" }, [
+      `${t(locale, "drawerBriefInEffect")} ${t(locale, LAYER_KEYS[liveLayer] ?? "drawerLayerGadget")} · `,
+      el("button", { type: "button", class: "sl-brief-link", onclick: () => ctx.onShowInstructions?.() }, t(locale, "drawerBriefEditIns"))
+    ]));
+    details.appendChild(body);
+    briefBlock = details;
+  }
   const uploadPreview = ctx.uploadPreview;
   const uploadBlock = imageSource === "upload" && uploadPreview
     ? el("div", { class: "sl-upload-row" }, [
@@ -594,6 +711,7 @@ export function renderOutputPanel(locale, item, ctx) {
     altField,
     imageStatusLine,
     sourceRow,
+    briefBlock,
     uploadBlock,
     publicationSection
   ]);
@@ -649,7 +767,7 @@ export function renderReferencePanel(locale, item, ctx = {}) {
 // 3. Instructions
 // ---------------------------------------------------------------------------
 
-/** ctx: `{ editable, buffers, policy, onInput(part, value), onReset(part) }`. */
+/** ctx: `{ editable, buffers, policy, builtinImage?, runInstruction?, onInput(part, value), onReset(part) }`. */
 export function renderInstructionsPanel(locale, item, ctx = {}) {
   const buffers = ctx.buffers ?? {};
   const saved = item.instructionOverrides ?? {};
@@ -688,15 +806,50 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
         : null
     ]);
   };
+  /*
+   * The image instruction's four layers, made visible. Each row names the
+   * layer and what it currently says ("Not set — the layer above applies");
+   * the "In effect" chip sits on the layer the next Generate ask would
+   * actually use — the staged one-off first, then this post's override, then
+   * the saved default, then the built-in floor.
+   */
+  const layerName = (source) =>
+    t(locale, { run: "drawerLayerRun", post: "drawerLayerPost", builtin: "drawerLayerBuiltin", default: "drawerLayerGadget" }[source] ?? "drawerLayerGadget");
+  const imageDraft = buffers.instructions?.image !== undefined ? buffers.instructions.image : (saved.image ?? "");
+  const layerRows = [
+    { key: "builtin", label: "drawerLayerBuiltin", text: ctx.builtinImage ?? "" },
+    { key: "default", label: "drawerLayerGadget", text: defaults.image },
+    { key: "post", label: "drawerLayerPost", text: normalizeOverride(imageDraft) ?? "" },
+    { key: "run", label: "drawerLayerRun", text: typeof ctx.runInstruction === "string" ? ctx.runInstruction.trim() : "" }
+  ];
+  const liveKey = [...layerRows].reverse().find((row) => row.text)?.key ?? "builtin";
+  const layerStack = el("div", { class: "sl-layers", "aria-label": t(locale, "drawerInstructionsImage") }, layerRows.map((row) =>
+    el("div", { class: `sl-layer${row.key === liveKey ? " sl-layer-live" : ""}` }, [
+      el("div", { class: "sl-layer-top" }, [
+        el("span", { class: "sl-layer-name" }, t(locale, row.label)),
+        row.key === liveKey ? el("span", { class: "sl-dest-tag sl-layer-chip" }, t(locale, "drawerLayerInEffect")) : null
+      ]),
+      el("p", { class: `sl-layer-text${row.text ? "" : " sl-layer-none"}` }, row.text || t(locale, "drawerLayerNone"))
+    ])
+  ));
   // Three different snapshots, each only when the projection carries it:
   // what produced the ACCEPTED output (recorded on the accepted asset or its
   // revision), what the PENDING request was made under, and — when neither
-  // names the accepted output — what the last completed request used.
-  const snapshot = (instructions, heading) =>
+  // names the accepted output — what the last completed request used. A mark
+  // snapshot also names the layer each text came from and the brief it was
+  // sent with (ratio always explicit; references only when the post's image
+  // was the basis).
+  const snapshot = (instructions, heading, mark) =>
     el("div", { class: "sl-instructions-used" }, [
       el("strong", null, heading),
-      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${instructions.image || t(locale, "drawerInstructionsNoDefault")}`),
-      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${instructions.caption || t(locale, "drawerInstructionsNoDefault")}`)
+      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsImage")}: ${instructions.image || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.image ? ` · ${layerName(mark.instructionSources.image)}` : ""}`),
+      el("p", { class: "sl-field-note" }, `${t(locale, "drawerInstructionsCaption")}: ${instructions.caption || t(locale, "drawerInstructionsNoDefault")}${mark?.instructionSources?.caption ? ` · ${layerName(mark.instructionSources.caption)}` : ""}`),
+      mark?.imageBrief
+        ? el("p", { class: "sl-field-note" }, t(locale, "drawerSnapshotBrief", {
+            ratio: mark.imageBrief.aspectRatio,
+            ref: t(locale, mark.imageBrief.references !== undefined ? "drawerBriefOn" : "drawerBriefOff")
+          }))
+        : null
     ]);
   const currentRevision = (Array.isArray(item.revisionHistory) ? item.revisionHistory : []).find((entry) => entry.revision === item.revision);
   const acceptedUsed = item.generatedImage?.instructions ?? currentRevision?.instructions ?? null;
@@ -708,14 +861,15 @@ export function renderInstructionsPanel(locale, item, ctx = {}) {
     el("h3", { id: "sl-instructions-title" }, t(locale, "drawerTabInstructions")),
     el("p", { class: "sl-field-note" }, t(locale, "drawerInstructionsNote")),
     legacyWording ? el("p", { class: "sl-guidance sl-instructions-legacy", role: "note" }, t(locale, "drawerInstructionsLegacyPoster")) : null,
+    layerStack,
     part("image", "drawerInstructionsImage"),
     part("caption", "drawerInstructionsCaption"),
     acceptedUsed ? snapshot(acceptedUsed, t(locale, "drawerInstructionsAcceptedUsed")) : null,
     pending?.instructions
-      ? snapshot(pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"))
+      ? snapshot(pending.instructions, pending.at ? t(locale, "drawerInstructionsPendingAt", { time: whenLabel(locale, pending.at) }) : t(locale, "drawerInstructionsPending"), pending)
       : null,
     !acceptedUsed && !pending && last?.instructions
-      ? snapshot(last.instructions, last.at ? t(locale, "drawerInstructionsLastUsed", { time: whenLabel(locale, last.at) }) : t(locale, "drawerHistoryInstructions"))
+      ? snapshot(last.instructions, last.at ? t(locale, "drawerInstructionsLastUsed", { time: whenLabel(locale, last.at) }) : t(locale, "drawerHistoryInstructions"), last)
       : null
   ]);
 }

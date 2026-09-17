@@ -5,6 +5,8 @@
 // because these shapes are about the INSTANCE (cadence, doors, policy), not
 // about a provider's post.
 
+import { normalizePosterAspectRatio, normalizePosterReferences } from "./model.js";
+
 const MIN_INTERVAL_MINUTES = 1; // REQ-012: minimum interval 60 s.
 const MAX_BINDINGS = 20; // REQ-002: 1 to 20 sources, 1 to 20 destinations.
 const MAX_LABEL_CHARS = 100;
@@ -229,6 +231,12 @@ export function normalizeConfig(input) {
     // still carries the old key — read it when the new one is absent, or the
     // owner's saved prompt silently vanishes on upgrade.
     posterPrompt: boundedString(config.posterPrompt, 4000) || boundedString(config.imagePrompt, 4000) || "",
+    // The image brief's defaults, read with the same absent-means-default rule
+    // as posterPrompt: an upgraded config carries neither key, and reads as
+    // "start from the post's image at 4:5" — the behaviour the brief was
+    // written to make explicit.
+    posterAspectRatio: normalizePosterAspectRatio(boundedString(config.posterAspectRatio, 20)),
+    posterReferences: normalizePosterReferences(boundedString(config.posterReferences, 20)),
     drafting: normalizeDrafting(config.drafting)
   };
 }

@@ -93,6 +93,9 @@ import {
   dispatchCarriesFinalOutcome,
   FINAL_GENERATION_OUTCOMES,
   effectiveInstructions,
+  GENERATION_IMAGE_RATIOS,
+  GENERATION_REFERENCE_MODES,
+  sourceImageReferences,
   itemPresentation,
 
   posterPngConstraints,
@@ -1033,6 +1036,16 @@ export class Gadget extends DurableObject {
         ...(typeof mark.instructions?.caption === "string" && mark.instructions.caption
           ? { captionPrompt: mark.instructions.caption.slice(0, 4000) }
           : {}),
+        /*
+         * The image brief rides the mark verbatim: the aspect ratio is always
+         * explicit, and `imageReferences` PRESENT — even empty — is the
+         * declaration that an edit against the post's image was asked for,
+         * which the platform must resolve or refuse (never silently drop).
+         */
+        ...(mark.imageBrief?.aspectRatio ? { aspectRatio: mark.imageBrief.aspectRatio } : {}),
+        ...(mark.imageBrief && mark.imageBrief.references !== undefined
+          ? { imageReferences: mark.imageBrief.references }
+          : {}),
         base: mark.base ?? 0
       });
     }
@@ -1647,21 +1660,36 @@ export class Gadget extends DurableObject {
       //
       // `request` is shared by every item opened in the same call, so one
       // platform approval names the whole batch it covers.
-      generation: JSON.stringify({
-        id: request ?? generateId("gen"),
-        base: 0,
-        // Requested (immutable) vs remaining (mutable) — see setGeneration.
-        scope: { caption: true, image: true },
-        needs: { caption: true, image: true },
-        at: new Date().toISOString(),
+      generation: JSON.stringify((() => {
         // The same snapshot requestGeneration stamps: the instructions this
         // first ask was made under, so the drawer can say what produced the
         // output even when the owner never pressed Regenerate.
-        instructions: (() => {
-          const effective = effectiveInstructions(this.storage.getConfig(), null);
-          return { image: effective.image.text, caption: effective.caption.text };
-        })()
-      })
+        const config = this.storage.getConfig();
+        const effective = effectiveInstructions(config, null);
+        /*
+         * The brief rides the first ask too, resolved from the configured
+         * defaults. LENIENT where requestGeneration is strict: this ask was
+         * opened by a scan or a Continue, not by an explicit "use the post's
+         * image" click, so a media-less source simply declares no references
+         * — the fail-closed refusal belongs to the explicit ask.
+         */
+        const imageBrief = { aspectRatio: config?.posterAspectRatio ?? "4:5" };
+        if ((config?.posterReferences ?? "source") === "source") {
+          const references = sourceImageReferences(item);
+          if (references.length) imageBrief.references = references;
+        }
+        return {
+          id: request ?? generateId("gen"),
+          base: 0,
+          // Requested (immutable) vs remaining (mutable) — see setGeneration.
+          scope: { caption: true, image: true },
+          needs: { caption: true, image: true },
+          at: new Date().toISOString(),
+          instructions: { image: effective.image.text, caption: effective.caption.text },
+          instructionSources: { image: effective.image.source, caption: effective.caption.source },
+          imageBrief
+        };
+      })())
     });
     for (const binding of destinationBindings) {
       this.storage.boundPublication(batchItemId, binding);
@@ -1896,6 +1924,21 @@ export class Gadget extends DurableObject {
        */
       let needs = null;
       const replace = options && typeof options === "object" && options.replace === true;
+      /*
+       * `options.instructions` — the one-off "this generation only" layer. It
+       * wins over this post's override and the saved default for THIS request
+       * and is recorded on the mark (`runInstructions`), never written to the
+       * post's saved overrides — saving it is the client's own earlier call.
+       */
+      const runInstructions = {};
+      /*
+       * `options.image` — the image brief's choices for this ask:
+       * `references` ("source" | "none") and `aspectRatio` (one of the offered
+       * ratios). Either may be omitted to take the configured default; the
+       * RESOLVED value is what the mark records, so the durable brief is
+       * always explicit.
+       */
+      let imageAsk = null;
       if (options !== undefined && options !== null) {
         const raw = typeof options === "object" ? options.needs : undefined;
         if (raw !== undefined) {
@@ -1913,6 +1956,47 @@ export class Gadget extends DurableObject {
             };
           }
           needs = { image: raw.image === true, caption: raw.caption === true };
+        }
+        const run = typeof options === "object" ? options.instructions : undefined;
+        if (run !== undefined) {
+          const valid =
+            run !== null &&
+            typeof run === "object" &&
+            !Array.isArray(run) &&
+            Object.keys(run).every((key) => ["image", "caption"].includes(key)) &&
+            Object.values(run).every((value) => typeof value === "string" && value.length <= 4000);
+          if (!valid) {
+            return {
+              ok: false,
+              code: "generation_instructions_invalid",
+              message: "`instructions` takes only { image, caption } strings of at most 4000 characters — the one-off layer for this generation."
+            };
+          }
+          for (const part of ["image", "caption"]) {
+            if (typeof run[part] === "string" && run[part].trim()) runInstructions[part] = run[part];
+          }
+        }
+        const image = typeof options === "object" ? options.image : undefined;
+        if (image !== undefined) {
+          const valid =
+            image !== null &&
+            typeof image === "object" &&
+            !Array.isArray(image) &&
+            Object.keys(image).every((key) => ["references", "aspectRatio"].includes(key)) &&
+            (image.references === undefined || GENERATION_REFERENCE_MODES.includes(image.references)) &&
+            (image.aspectRatio === undefined || GENERATION_IMAGE_RATIOS.includes(image.aspectRatio));
+          if (!valid) {
+            return {
+              ok: false,
+              code: "generation_image_brief_invalid",
+              message:
+                "`image` takes { references: \"source\" | \"none\", aspectRatio } — the ratio must be one of the offered values."
+            };
+          }
+          imageAsk = {
+            references: image.references ?? null,
+            aspectRatio: image.aspectRatio ?? null
+          };
         }
       }
       const batch = this.storage.getBatch(String(batchId));
@@ -1969,6 +2053,50 @@ export class Gadget extends DurableObject {
       // `satisfyItemGeneration`.
       const request = generateId("gen");
       const config = this.storage.getConfig();
+      const wantsImage = needs ? needs.image === true : true;
+      /*
+       * THE BRIEF IS RESOLVED BEFORE ANY MARK IS STAMPED. A declared source
+       * reference that resolves to nothing refuses the WHOLE call by value —
+       * `reference_unavailable`, the same word the platform's job records —
+       * rather than silently generating a text-to-image the owner did not ask
+       * for. The mark and the request either describe the real brief for
+       * every item, or none is written.
+       */
+      const snapshots = new Map();
+      const unresolved = [];
+      for (const item of draftable) {
+        const effective = effectiveInstructions(config, item.instructionOverrides, runInstructions);
+        const snapshot = {
+          instructions: { image: effective.image.text, caption: effective.caption.text },
+          instructionSources: { image: effective.image.source, caption: effective.caption.source }
+        };
+        const run = {};
+        for (const part of ["image", "caption"]) if (runInstructions[part]) run[part] = runInstructions[part];
+        if (Object.keys(run).length) snapshot.runInstructions = run;
+        if (wantsImage) {
+          const mode = imageAsk?.references ?? config?.posterReferences ?? "source";
+          const brief = { aspectRatio: imageAsk?.aspectRatio ?? config?.posterAspectRatio ?? "4:5" };
+          if (mode === "source") {
+            const references = sourceImageReferences(this.storage.getItem(item.itemId));
+            if (!references.length) {
+              unresolved.push({ batchItemId: item.id, itemId: item.itemId });
+              continue;
+            }
+            brief.references = references;
+          }
+          snapshot.imageBrief = brief;
+        }
+        snapshots.set(item.id, snapshot);
+      }
+      if (unresolved.length) {
+        return {
+          ok: false,
+          code: "reference_unavailable",
+          message:
+            "This post's own image could not be used as a reference — nothing was requested and nothing was charged. Upload an image instead, or generate without the post's image.",
+          items: unresolved
+        };
+      }
       const selected = new Set(draftable.map((item) => item.id));
       /*
        * THE WHOLE REPLACED REQUEST MOVES, NOT JUST THE SELECTED POST.
@@ -1987,10 +2115,7 @@ export class Gadget extends DurableObject {
       });
       this.storage.setGeneration(batch.id, draftable.map((item) => item.id), request, {
         needs,
-        instructionsFor: (item) => {
-          const effective = effectiveInstructions(config, item.instructionOverrides);
-          return { image: effective.image.text, caption: effective.caption.text };
-        }
+        instructionsFor: (item) => snapshots.get(item.id)
       });
       for (const sibling of siblings) this.storage.rearmGeneration(sibling.id, request);
       /*

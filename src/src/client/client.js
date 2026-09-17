@@ -55,7 +55,7 @@ import {
   renderReferencePanel,
   revisionEntryFor
 } from "./drawer.js";
-import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage } from "../../model.js";
+import { builtinImageInstruction, detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
 import {
   classifyReviewSelection,
   clearInboxSelection,
@@ -250,6 +250,40 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0 8px; }
 .sl-src-btn { min-height: var(--sl-h-control); padding: 0 8px; font-size: 12px; }
 .sl-src-btn[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
+/* The image brief: a quiet collapsible that belongs to the Generate source
+   only. Its summary line always names the resolved ask, so the collapsed
+   state is still honest about what a press would send. */
+.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); margin: 0 0 10px; }
+.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: var(--sl-h-compact); padding: 0 10px; cursor: pointer; font-size: 11px; }
+.sl-brief > summary::-webkit-details-marker { display: none; }
+.sl-brief-caret { color: var(--sl-muted); transition: transform .15s ease; }
+.sl-brief[open] > summary .sl-brief-caret { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .sl-brief-caret { transition: none; } }
+.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sl-ink); }
+.sl-brief-chip { flex-shrink: 0; padding: 1px 8px; border-radius: 999px; background: var(--sl-surface-2); color: var(--sl-muted); font-size: 9.5px; white-space: nowrap; }
+.sl-brief-body { padding: 2px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.sl-brief-switch { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; cursor: pointer; }
+.sl-brief-switch input { margin-top: 2px; accent-color: var(--sl-ink); }
+.sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sl-brief-switch-label { font-weight: 600; color: var(--sl-ink); }
+.sl-brief-warn { color: var(--sl-warning); }
+.sl-brief-ratios { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sl-brief-ratios-lead { font-size: 11px; color: var(--sl-muted); }
+.sl-brief-ratio { min-height: var(--sl-h-compact); padding: 0 10px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); background: var(--sl-surface); font-size: 11px; }
+.sl-brief-ratio[aria-pressed="true"] { border-color: var(--sl-ink); font-weight: 650; }
+.sl-brief-once-wrap { display: flex; flex-direction: column; gap: 6px; }
+.sl-brief-save { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
+.sl-brief-save input { accent-color: var(--sl-ink); }
+.sl-brief-link { border: 0; background: transparent; padding: 0; color: var(--sl-ink); font-size: 11px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; min-height: 0; text-align: left; }
+.sl-brief-link:disabled { color: var(--sl-line-strong); cursor: not-allowed; text-decoration: none; }
+/* The instruction layers: which of the four a Generate ask would use. */
+.sl-layers { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; }
+.sl-layer { padding: 8px 10px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); }
+.sl-layer-live { border-color: var(--sl-ink); }
+.sl-layer-top { display: flex; align-items: center; gap: 8px; }
+.sl-layer-name { font-size: 11px; font-weight: 600; }
+.sl-layer-text { margin: 4px 0 0; font-size: 11px; line-height: 1.5; color: var(--sl-ink-soft); }
+.sl-layer-none { color: var(--sl-muted); }
 .sl-upload-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
 .sl-upload-row .sl-field-note { margin: 0; }
 .sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
@@ -1196,6 +1230,24 @@ function App() {
     const buffers = new Map(); // batchItemId -> buffer
     const ownerUploads = new Map(); // batchItemId -> File
     const bufferOf = (id) => buffers.get(id) ?? {};
+    /**
+     * The image brief a Generate press would send, resolved: the staged
+     * buffer choices over the configured defaults, so the block and the
+     * request can never disagree about what "the default" is. `useSource`
+     * means "the post's own image is the basis" (an edit); `ratio` is never
+     * unset. The one-off fields stage the this-generation instruction layer.
+     */
+    const imageBriefOf = (item) => {
+      const stored = bufferOf(item.id).imageBrief ?? {};
+      return {
+        open: stored.open === true,
+        useSource: stored.useSource ?? policy?.posterReferences !== "none",
+        ratio: stored.ratio ?? policy?.posterAspectRatio ?? "4:5",
+        oneOffOpen: stored.oneOffOpen === true,
+        oneOff: stored.oneOff ?? "",
+        saveOneOff: stored.saveOneOff === true
+      };
+    };
     // Every change to a buffered field bumps that field's edit version, so a
     // Save acknowledgment can tell "still what I submitted" from "typed
     // since" — including typing the same text back after changing it.
@@ -1718,6 +1770,8 @@ function App() {
       switch (code) {
         case "credits_exhausted":
           return t(locale, "drawerReasonOutOfCredits");
+        case "reference_unavailable":
+          return t(locale, "drawerReasonRefUnavailable");
         case "turn_cancelled":
           return t(locale, "drawerReasonTurnCancelled");
         case "turn_crashed":
@@ -1844,8 +1898,45 @@ function App() {
         redrawPreserving();
         if (!ok) return;
       }
+      /*
+       * The image brief a Generate press is made under — the resolved staged
+       * settings, so the request and the block can never disagree. The one-off
+       * instruction is the "this run" layer: sent on the request itself when
+       * it stays one-off, or saved as this post's image instruction FIRST when
+       * the owner asked for both (the request then resolves it as the post
+       * layer — what was saved is what runs).
+       */
+      const options = { needs };
+      let brief = null;
+      if (part === "image") {
+        brief = imageBriefOf(item);
+        options.image = { references: brief.useSource ? "source" : "none", aspectRatio: brief.ratio };
+        const oneOff = brief.oneOff.trim();
+        if (oneOff && brief.saveOneOff) {
+          let savedIns;
+          saving = true;
+          redrawFooter();
+          try { savedIns = await rpc.saveInstructionOverrides({ batchItemId: item.id, image: oneOff }); } catch (error) {
+            savedIns = { ok: false, message: error instanceof Error ? error.message : String(error) };
+          } finally {
+            saving = false;
+          }
+          if (!live) return;
+          if (!savedIns?.ok) {
+            redrawPreserving();
+            announce(refusalMessage(savedIns ?? {}) || t(locale, "drawerInstructionsSaveFailed"), "");
+            return;
+          }
+          for (const target of new Set([item, items.find((entry) => entry.id === item.id)].filter(Boolean))) {
+            target.instructionOverrides = savedIns.instructionOverrides ?? { ...(target.instructionOverrides ?? {}), image: oneOff };
+            if (savedIns.effectiveInstructions) target.effectiveInstructions = savedIns.effectiveInstructions;
+          }
+        } else if (oneOff) {
+          options.instructions = { image: oneOff };
+        }
+      }
       const send = (withReplace) =>
-        rpc.requestGeneration(batch.id, [item.id], withReplace ? { needs, replace: true } : { needs });
+        rpc.requestGeneration(batch.id, [item.id], withReplace ? { ...options, replace: true } : { ...options });
       // Declared outside the try so the recognised `result` is still in scope
       // for the dispatch stamp below, whatever the request path did.
       let result = null;
@@ -1859,16 +1950,48 @@ function App() {
           }
           result = await send(true);
         }
-        if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+        if (result && result.ok === false) {
+          // The fail-closed refusal is localized, never the raw code: the
+          // owner picked "the post's image" and the honest answer is that it
+          // cannot be used — with the two ways forward.
+          announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+          return;
+        }
       } catch (error) {
         announce(error instanceof Error ? error.message : String(error), "");
         return;
       }
       if (!live) return;
+      // The one-off named THIS request — a second Generate must not silently
+      // reuse it. The settings (reference, ratio) stay as staged.
+      if (brief) {
+        patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, oneOff: "", oneOffOpen: false, saveOneOff: false } });
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
       try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+    };
+
+    /**
+     * The options a retry re-asks under: the failed request's OWN brief —
+     * ratio, reference mode and any one-off instruction — because "retry"
+     * means the same ask, not whatever the settings happen to say now. A mark
+     * without a brief (written before the brief existed) retries with none.
+     */
+    const retryOptions = (mark, needs, replace) => {
+      const options = { needs, ...(replace ? { replace: true } : {}) };
+      if (mark?.imageBrief) {
+        options.image = {
+          aspectRatio: mark.imageBrief.aspectRatio,
+          references: mark.imageBrief.references !== undefined ? "source" : "none"
+        };
+      }
+      const run = mark?.runInstructions;
+      if (run && (run.image || run.caption)) {
+        options.instructions = Object.fromEntries(["image", "caption"].filter((part) => run[part]).map((part) => [part, run[part]]));
+      }
+      return options;
     };
 
     /**
@@ -1886,14 +2009,17 @@ function App() {
       redrawFooter();
       let result;
       try {
-        result = await rpc.requestGeneration(batch.id, [item.id], { needs, replace: true });
+        result = await rpc.requestGeneration(batch.id, [item.id], retryOptions(mark, needs, true));
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       } finally {
         saving = false;
       }
       if (!live) return;
-      if (result && result.ok === false) { announce(refusalMessage(result), ""); return; }
+      if (result && result.ok === false) {
+        announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+        return;
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -1918,14 +2044,18 @@ function App() {
       redrawFooter();
       let result;
       try {
-        result = await rpc.requestGeneration(batch.id, [item.id], replaceDead ? { needs, replace: true } : { needs });
+        result = await rpc.requestGeneration(batch.id, [item.id], retryOptions(mark, needs, replaceDead));
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       } finally {
         saving = false;
       }
       if (!live) return;
-      if (result && result.ok === false) { announce(refusalMessage(result), ""); if (await refetchItems()) redraw(); return; }
+      if (result && result.ok === false) {
+        announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
+        if (await refetchItems()) redraw();
+        return;
+      }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
@@ -2382,6 +2512,8 @@ function App() {
           editable,
           buffers: buffer,
           policy,
+          builtinImage: builtinImageInstruction(policy),
+          runInstruction: imageBriefOf(item).oneOff,
           onInput: (part, value) => {
             patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: value } });
             redrawFooter();
@@ -2460,6 +2592,16 @@ function App() {
             else dropBufferFields(item.id, ["imageId"]);
             redraw();
           },
+          imageBrief: imageBriefOf(item),
+          // The toggle's honesty line: whether this post's own image can
+          // actually be sent as a reference — decided by the same rule the
+          // server applies, so a missing one warns before the refusal.
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onPatchImageBrief: (patch) => {
+            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
+          },
+          onBriefChanged: () => redraw(),
+          onShowInstructions: () => selectTab("instructions", { focus: false }),
           onRequestPart: (part) => requestPart(item, part),
           uploadPreview: ownerUploads.has(item.id) ? { name: ownerUploads.get(item.id).name } : null,
           onPickUpload: (file) => pickOwnerUpload(item, file),

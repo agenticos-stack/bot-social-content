@@ -350,7 +350,7 @@ function recoveryGadget() {
     provider: "instagram",
     providerItemId: "p1",
     text: "Synthetic reference",
-    media: [],
+    media: [{ id: "m1", kind: "image", url: "https://cdn.example.com/p1.jpg" }],
     metrics: {},
     contentHash: "synthetic",
     firstSeenAt: "2026-09-15",

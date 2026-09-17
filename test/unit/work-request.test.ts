@@ -94,7 +94,7 @@ function gadgetWith(drafting: string | undefined, notifications?: unknown) {
       provider: "instagram",
       providerItemId: suffix,
       text: `Source ${suffix}`,
-      media: [],
+      media: [{ id: `m_${suffix}`, kind: "image", url: `https://cdn.example.com/${suffix}.jpg` }],
       metrics: {},
       contentHash: `hash-${suffix}`,
       firstSeenAt: "2026-09-10T00:00:00.000Z",
