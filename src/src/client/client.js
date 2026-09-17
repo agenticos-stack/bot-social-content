@@ -260,7 +260,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-pub-choice input { accent-color: var(--sl-ink); }
 .sl-pub-when { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--sl-muted); }
 .sl-pub-when input { height: var(--sl-h-control); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); }
-.sl-part-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.sl-output-frame-skel .sl-pc-media-empty { display: none; }
+.sl-part-action { margin-top: 8px; }
 .sl-reference-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: 999px; border: 1px dashed var(--sl-line-strong); font-size: 11px; font-weight: 600; color: var(--sl-muted); }
 .sl-reference-text { color: var(--sl-muted); }
 .sl-instructions-part { margin: 0 0 18px; }
@@ -597,7 +598,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-head strong { font-size: 16px; }
 .sl-preview-kicker { font-size: 11px; }
 .sl-preview-scroll .sl-field-note { font-size: 13px; line-height: 1.65; }
-.sl-preview-scroll .sl-drawer-section { padding: 20px 0; }
+.sl-preview-scroll .sl-drawer-section { padding: 12px 0; }
 .sl-preview-scroll .sl-drawer-section h3 { font-size: 15px; }
 .sl-preview-scroll .sl-drawer-section p { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 /* One footer rule for both drawers -- the single-post preview and the batch
@@ -2046,12 +2047,19 @@ function App() {
           outcomeRechecked.add(outcomeKey);
           void checkCanonicalStatus(item).then((ok) => { if (ok && live) redrawPreserving(); });
         }
-        const requestPending =
+        const showStatusCheck =
           display === "start_unconfirmed" ||
-          display === "awaiting_approval" ||
-          display === "approved_not_started" ||
+          display === "start_failed" ||
           display === "insufficient_credits" ||
-          display === "credit_check_unavailable";
+          display === "credit_check_unavailable" ||
+          display === "stopped" ||
+          display === "declined" ||
+          display === "execution_failed" ||
+          canonical === "declined" ||
+          canonical === "execution_failed" ||
+          canonical === "stopped" ||
+          resolution === "not_found" ||
+          resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
@@ -2079,7 +2087,9 @@ function App() {
             // Check status: a read-only re-read of the platform's canonical
             // state for this request. It launches nothing, notifies nobody and
             // charges nothing, and it reuses the request identity on the mark.
-            requestPending || canonical || resolution
+            // Healthy in-flight work (approved / executing) is the overlay and
+            // one footer line — not a second homework button.
+            showStatusCheck
               ? el("button", {
                   type: "button", class: "sl-secondary",
                   disabled: statusChecking,

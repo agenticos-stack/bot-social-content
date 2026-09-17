@@ -556,6 +556,10 @@ describe("a request whose turn ended with work outstanding", () => {
       expect(text).toMatch(lang === "en" ? /hasn't reported back/ : /尚未回報/);
       expect(text).not.toContain("Waiting for your approval");
       expect(text).not.toContain("等待你在對話中批核");
+      expect(
+        buttonText(document.body, lang === "en" ? "Check status" : "檢查狀態"),
+        `${lang}: Check status stays off while generation is in flight`
+      ).toBeFalsy();
     }
   });
 
@@ -687,10 +691,10 @@ describe("a request whose turn ended with work outstanding", () => {
     const calls = { status: 0 };
     installGadget({ actionId: "act_1", state: "ran", decision: "approved" }, calls);
     await openDrawer(document);
-    await click(buttonText(document.body, "Check status"));
 
     const text = String(document.body.textContent);
     expect(text).not.toContain("finished this request");
     expect(text).toContain("hasn't reported back");
+    expect(buttonText(document.body, "Check status")).toBeFalsy();
   });
 });

@@ -412,7 +412,9 @@ describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
     const r = rig({ items: [post("a", { generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    expect(r.dialog().textContent).toContain("A caption request is still pending for this post.");
+    expect(findButton(r.dialog(), t("en", "drawerRegenerateImage")).getAttribute("title")).toContain(
+      "A caption request is still pending for this post."
+    );
     const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
     expect(labels(r.scope.leaveDialog)).toContain("Replace the pending caption request");
     expect(r.calls.requests).toHaveLength(0);
