@@ -80,7 +80,7 @@ function setup() {
       provider: "instagram",
       providerItemId: suffix,
       text: `Synthetic reference ${suffix}`,
-      media: [],
+      media: [{ id: `m${suffix}`, kind: "image", url: `https://cdn.example.com/p${suffix}.jpg` }],
       metrics: {},
       contentHash: `synthetic-${suffix}`,
       firstSeenAt: "2026-09-15",

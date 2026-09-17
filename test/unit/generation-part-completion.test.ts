@@ -69,7 +69,7 @@ function setup() {
   gadget.storage.setConfig({ protectedTerms: [], protectedHashtags: [], disclaimers: [], claimsRequiringConfirmation: [] });
   gadget.storage.upsertItem({
     id: "source1", sourceBinding: "SOURCE", sourceLabel: "Synthetic", provider: "instagram",
-    providerItemId: "p1", text: "A reference", media: [], metrics: {}, contentHash: "x",
+    providerItemId: "p1", text: "A reference", media: [{ id: "m1", kind: "image", url: "https://cdn.example.com/p1.jpg" }], metrics: {}, contentHash: "x",
     firstSeenAt: "2026-09-10", lastSeenAt: "2026-09-10"
   });
   gadget.storage.createBatch("batch1");

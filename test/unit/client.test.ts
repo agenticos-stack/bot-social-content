@@ -1081,7 +1081,8 @@ describe("bundled client.js smoke test", () => {
     await import(pathToFileURL(bundlePath).href + `?case=draft-ask-${Date.now()}`);
     await flushAsyncWork();
 
-    const primary = findAll(document.body, (element) => element.tagName === "BUTTON" && element.classList.contains("sl-primary"))[0];
+    // The batch's creation call-to-action wears the brand variant, not primary.
+    const primary = findAll(document.body, (element) => element.tagName === "BUTTON" && element.classList.contains("sl-brand"))[0];
     expect(primary.textContent).toBe("Draft 1 post");
     await primary.dispatchEvent({ type: "click", preventDefault: () => {} });
     await flushAsyncWork();

@@ -339,7 +339,9 @@ export function renderCollection(root, state, ctx) {
        */
       el(
         "button",
-        { type: "button", class: "sl-primary", disabled: nSelected === 0, onclick: handlers.onContinue },
+        // Brand gold, not primary ink: drafting a batch is the one creation
+        // call-to-action on this screen (the component study's `brand`).
+        { type: "button", class: "sl-brand", disabled: nSelected === 0, onclick: handlers.onContinue },
         nSelected
           // One agent turn drafts the whole batch — and the count on the
           // action is the DRAFTABLE count, not the selected one (PM decision

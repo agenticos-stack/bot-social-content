@@ -8,10 +8,12 @@ import {
   footerState,
   imageState,
   instructionPatchFor,
+  publicationHint,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
+  renderPublicationControls,
   renderReferencePanel,
   revisionEntryFor
 } from "../../src/src/client/drawer.js";
@@ -62,6 +64,18 @@ function output(item: Record<string, unknown>, extra: Record<string, unknown> = 
   return { root, loads, staged, parts };
 }
 
+function pubsHost(locale: string, item: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  const patches: Record<string, unknown>[] = [];
+  const host = document.createElement("div");
+  for (const node of renderPublicationControls(locale, item as never, {
+    editable: true,
+    buffers: {},
+    onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch),
+    ...extra
+  } as never)) host.appendChild(node);
+  return { root: host, patches };
+}
+
 describe("Output section", () => {
   it("shows a ready candidate beside the accepted image, and accepting it sends acceptedGeneratedMediaId", async () => {
     const item = post({ generatedCandidate: { id: "gm_b", ready: true, altText: "A newer bowl" } });
@@ -104,7 +118,6 @@ describe("Output section", () => {
     const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
     expect(frames.some((e) => String(e.className).includes("sl-output-frame-skel"))).toBe(true);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
-    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
     expect(view.loads).toEqual([]);
   });
 
@@ -132,11 +145,14 @@ describe("Output section", () => {
     expect(String(textarea.className)).toContain("sl-skel");
   });
 
-  it("lays out a compact thumbnail beside the caption so publish stays on the first screen", () => {
-    const view = output(post({ destinationBindings: ["FB_MAIN"] }));
+  it("lays out a compact thumbnail beside the caption and keeps publish controls in the foot", () => {
+    const item = post({ destinationBindings: ["FB_MAIN"] });
+    const view = output(item);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-compose"))).toHaveLength(1);
     expect(all(view.root, (e) => String(e.className).includes("sl-output-thumb")).length).toBeGreaterThan(0);
-    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
+    expect(all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(0);
+    const pubs = pubsHost("en", item);
+    expect(all(pubs.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode")).toHaveLength(3);
   });
 
   it("offers Generate, Upload and Use reference as the image sources", async () => {
@@ -209,11 +225,9 @@ describe("Output section", () => {
     expect(view.loads).toEqual([]);
   });
 
-  it("offers keep as draft, publish now, and schedule on the same sheet", async () => {
-    const patches: Array<Record<string, unknown>> = [];
-    const view = output(post({ destinationBindings: ["FB_MAIN"] }), {
-      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding),
-      onPublicationIntent: (patch: Record<string, unknown>) => patches.push(patch)
+  it("offers keep as draft, publish now, and schedule in the foot", async () => {
+    const view = pubsHost("en", post({ destinationBindings: ["FB_MAIN"] }), {
+      destinationLabel: (binding: string) => (binding === "FB_MAIN" ? "Facebook Main" : binding)
     });
     const radios = all(view.root, (e) => e.tagName === "INPUT" && e.getAttribute("name") === "publicationMode");
     expect(radios).toHaveLength(3);
@@ -224,7 +238,7 @@ describe("Output section", () => {
     expect(view.root.textContent).not.toContain("please approve");
     expect(view.root.textContent).not.toContain("Awaiting approval");
     await radios[1].dispatchEvent({ type: "change" });
-    expect(patches[0]).toMatchObject({ publishMode: "publish_now" });
+    expect(view.patches[0]).toMatchObject({ publishMode: "publish_now" });
   });
 
   it("renders the zh-HK labels", () => {
@@ -233,8 +247,9 @@ describe("Output section", () => {
     expect(root.textContent).toContain("上載");
     expect(root.textContent).toContain("採用來源");
     expect(root.textContent).toContain("重新撰寫文案");
-    expect(root.textContent).toContain("立即發佈");
-    expect(root.textContent).toContain("排程發佈");
+    const pubs = pubsHost("zh-HK", post());
+    expect(pubs.root.textContent).toContain("立即發佈");
+    expect(pubs.root.textContent).toContain("排程發佈");
   });
 });
 
@@ -310,22 +325,30 @@ describe("unsaved changes and footer reasons", () => {
 });
 
 describe("Reference section", () => {
-  it("lets the owner use the source image on this post", async () => {
+  it("is inspection only — adopting the source image lives on the Post tab's source control", async () => {
     const adopted: string[] = [];
-    const root = renderReferencePanel("en", post({
-      sourceItem: { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] }
-    }) as never, {
+    const sourceItem = { text: "Weekend Omega-3 tray", authorHandle: "essentialfoodsofficial", media: [{ id: "m1", kind: "image" }] };
+    const root = renderReferencePanel("en", post({ sourceItem }) as never, {
       editable: true,
       onAdoptReference: () => adopted.push("reference")
     } as never);
     expect(root.textContent).toContain("Reference only");
-    await buttonNamed(root, "Use this image")!.dispatchEvent({ type: "click" });
+    // No adopt button here at all — even if a stray handler is passed.
+    expect(buttonNamed(root, "Use this image")).toBeFalsy();
+    // The Post tab's source segment is the one place the choice is made.
+    const output = renderOutputPanel("en", post({ sourceItem }) as never, {
+      editable: true,
+      buffers: {},
+      onAdoptReference: () => adopted.push("reference")
+    } as never);
+    const adopt = all(output, (e) => e.tagName === "BUTTON" && e.getAttribute("data-src") === "reference")[0];
+    await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
   });
 });
 
 describe("Instructions section", () => {
-  it("shows the saved defaults against this post's overrides and resets to default", async () => {
+  it("prefills both fields, marks own-vs-default truthfully, and resets to default", async () => {
     const item = post({ instructionOverrides: { image: "Outdoor photo", caption: null } });
     const resets: string[] = [];
     const root = renderInstructionsPanel("en", item as never, {
@@ -334,23 +357,57 @@ describe("Instructions section", () => {
       policy: { posterPrompt: "Default image text", contentPrompt: "Default caption text" },
       onReset: (part: string) => resets.push(part)
     } as never);
-    expect(root.textContent).toContain("Saved default: Default image text");
-    expect(root.textContent).toContain("This post only");
-    expect(root.textContent).toContain("Nothing is generated now");
-    const reset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "image")[0];
-    expect(reset.disabled).toBe(false);
-    await reset.dispatchEvent({ type: "click" });
+    const fields = all(root, (e) => e.tagName === "TEXTAREA") as Array<Node & { value: string }>;
+    expect(fields).toHaveLength(2);
+    expect(fields[0].value).toBe("Outdoor photo"); // the saved post override wins
+    expect(fields[1].value).toBe("Default caption text"); // the workspace default prefills
+    expect(root.textContent).toContain("This post's own instruction.");
+    expect(root.textContent).toContain("Using the workspace default.");
+    const imageReset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "image")[0];
+    const captionReset = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-part") === "caption")[0];
+    expect(imageReset.disabled).toBe(false);
+    expect(captionReset.disabled).toBe(true); // no override — nothing to reset
+    await imageReset.dispatchEvent({ type: "click" });
     expect(resets).toEqual(["image"]);
     // Reset is an empty draft, saved as null.
     expect(instructionPatchFor(item as never, { instructions: { image: "" } })).toEqual({ batchItemId: "item-1", image: null });
   });
 
-  it("names the instructions the latest request used", () => {
-    const root = renderInstructionsPanel("en", post({
+  it("writes no override when the draft equals the prefilled text, and a plain field follows the workspace default", () => {
+    const item = post(); // no saved overrides
+    const defaults = { image: "Default image text", caption: "Default caption text" };
+    // Retyping the prefilled default verbatim is not an override.
+    expect(instructionPatchFor(item as never, { instructions: { image: "Default image text" } }, ["image", "caption"], defaults)).toBeNull();
+    // Reset on a field that was never overridden clears nothing — the empty
+    // draft normalizes to the same null the store already holds.
+    expect(instructionPatchFor(item as never, { instructions: { image: "" } }, ["image", "caption"], defaults)).toBeNull();
+    // A real difference is.
+    expect(instructionPatchFor(item as never, { instructions: { image: "Studio light" } }, ["image", "caption"], defaults))
+      .toEqual({ batchItemId: "item-1", image: "Studio light" });
+    // And nothing pins the old text — when the workspace default moves, a
+    // field with no override prefills the new one.
+    const after = renderInstructionsPanel("en", item as never, {
+      editable: true, buffers: {}, policy: { posterPrompt: "New workspace text" }
+    } as never);
+    expect((all(after, (e) => e.tagName === "TEXTAREA")[0] as Node & { value: string }).value).toBe("New workspace text");
+  });
+
+  it("keeps request snapshots in History — the editor holds only the two fields", () => {
+    const item = post({
+      generation: { id: "gen_2", scope: { image: true, caption: false }, needs: { image: true, caption: false }, at: "2026-09-14T04:00:00.000Z", instructions: { image: "Studio light", caption: "Friendly" } },
       lastGeneration: { id: "gen_1", base: 1, needs: { image: true, caption: false }, at: "2026-09-14T03:00:00.000Z", instructions: { image: "Outdoor photo", caption: "Friendly" } }
-    }) as never, { editable: true, buffers: {}, policy: {} } as never);
-    expect(root.textContent).toContain("Used for the latest request");
-    expect(root.textContent).toContain("Image instructions: Outdoor photo");
+    });
+    const instructions = renderInstructionsPanel("en", item as never, { editable: true, buffers: {}, policy: {} } as never);
+    expect(all(instructions, (e) => e.tagName === "TEXTAREA")).toHaveLength(2);
+    expect(instructions.textContent).not.toContain("Studio light");
+    expect(instructions.textContent).not.toContain("Outdoor photo");
+    // The pending request is a History event; the completed request's
+    // instruction snapshot follows it under the unified field names.
+    const history = renderHistoryPanel("en", item as never, {} as never);
+    expect(history.textContent).toContain("Generation request");
+    expect(history.textContent).toContain("waiting");
+    expect(history.textContent).toContain("Instructions used");
+    expect(history.textContent).toContain("Image instruction: Outdoor photo");
   });
 });
 
@@ -371,7 +428,7 @@ describe("History section", () => {
   it("renders the scheduled time with its timezone, and no receipt link the data does not carry", () => {
     const root = renderHistoryPanel("en", post(scheduled) as never, ctx as never);
     expect(root.textContent).toContain("Scheduled for 2026-09-16 10:30 (Asia/Hong_Kong)");
-    expect(root.textContent).toContain("No provider receipt yet.");
+    // No receipt simply renders nothing — the feed never spends a line on it.
     expect(all(root, (e) => e.tagName === "A")).toHaveLength(0);
     // The failed earlier filing stays visible with an owner-safe explanation
     // that does not claim nothing went out — only failed_safe confirms that.
