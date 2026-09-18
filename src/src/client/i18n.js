@@ -516,7 +516,6 @@ export const STRINGS = Object.freeze({
     publisherGrantAction: "Grant publishing",
     scheduleNotGrantedBody: "Turning monitoring on needs the scan cadence permission. Grant it, then turn monitoring on again.",
     scheduleGrantAction: "Grant scan cadence",
-    drawerSelectedNotice: "Added to your selection",
 
     // --- Draft (step 2) --------------------------------------------------
     reviewed: "Reviewed",
@@ -1070,7 +1069,6 @@ export const STRINGS = Object.freeze({
     publisherGrantAction: "授予發佈權限",
     scheduleNotGrantedBody: "啟用監察需要掃描頻率權限。請先授予，然後再啟用監察。",
     scheduleGrantAction: "授予掃描頻率權限",
-    drawerSelectedNotice: "已加入選取",
     reviewed: "已審閱",
     posterTitle: "海報編輯器",
     posterBackground: "背景顏色",

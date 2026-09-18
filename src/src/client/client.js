@@ -1375,7 +1375,6 @@ function App() {
             if (!activePreviewItem.selected) {
               await handleSelect(item.id, true);
               activePreviewItem = { ...activePreviewItem, selected: true };
-              announce(t(locale, "drawerSelectedNotice"), "");
             }
             closePreview();
           }
