@@ -30,6 +30,7 @@ import {
   newCount,
   selectedCount,
   selectedIds,
+  setContinuing,
   setFilter,
   setItems,
   setNotice,
@@ -264,6 +265,30 @@ describe("the selection tray, when nothing is set up to publish to", () => {
     const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
     expect(labels.join(" ")).toContain("Draft 1 post");
     expect(labels.join(" ")).not.toContain("post(s)");
+  });
+
+  /*
+   * THE PRESS IS ACKNOWLEDGED. createBatch used to run with the tray button
+   * untouched — no pending label, no disabled state, and a thrown failure
+   * died at console.error. While the call is in flight the action holds a
+   * "Drafting…" label and cannot be pressed twice.
+   */
+  it("holds a pending label and refuses a second press while a draft is in flight", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const state = setContinuing(
+      setItems(createCollectionState(), { items: [item] as never, nextCursor: null }),
+      true
+    );
+    renderCollection(root as never, state as never, {
+      locale: "en", sources: [], summary: { destinations: [{ binding: "IG_MAIN" }] },
+      handlers: { onSelect() {}, onOpen() {}, onMore() {}, onContinue() {}, onOpenSettings() {} }
+    } as never);
+    const button = findAll(root as never, (e: { tagName?: string; classList?: { contains(c: string): boolean } }) =>
+      e.tagName === "BUTTON" && e.classList?.contains("sl-brand"))[0] as { textContent?: string; disabled?: boolean };
+    expect(button.textContent).toContain("Drafting");
+    expect(button.disabled).toBe(true);
   });
 });
 

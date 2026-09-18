@@ -974,7 +974,7 @@ export function renderReferencePanel(locale, item, ctx = {}) {
         el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
         // One quiet line, still a <dl>: the pairing is right for a screen
         // reader; it just stopped pretending to be a data table.
-        el("dl", { class: "sl-drawer-facts sl-drawer-facts-line" }, [
+        el("dl", { class: "sl-drawer-facts" }, [
           el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceAccount")), el("dd", null, handle || t(locale, "stateUnknown"))]),
           source.sourceLabel && source.sourceLabel !== handle
             ? el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceWatch")), el("dd", null, source.sourceLabel)])

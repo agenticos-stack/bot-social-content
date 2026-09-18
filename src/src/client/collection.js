@@ -27,6 +27,9 @@ export function createCollectionState() {
     sourceFilter: null, // a sourceBinding, or null for every granted source
     nextCursor: null,
     loading: false,
+    // Continue is in flight: the tray's action holds a pending label and
+    // stays disabled so a second press cannot file a duplicate batch.
+    continuing: false,
     lastCheckedAt: null,
     // A refusal the collection's own action came back with, rendered above
     // the tray. Generic on purpose (PAT-003): any "watch, notify, act"
@@ -62,6 +65,10 @@ export function setItems(state, { items, nextCursor = null, append = false }) {
 
 export function setLoading(state, loading) {
   return { ...state, loading };
+}
+
+export function setContinuing(state, continuing) {
+  return { ...state, continuing: !!continuing };
 }
 
 export function setFilter(state, filter) {
@@ -341,16 +348,18 @@ export function renderCollection(root, state, ctx) {
         "button",
         // Brand gold, not primary ink: drafting a batch is the one creation
         // call-to-action on this screen (the component study's `brand`).
-        { type: "button", class: "sl-brand", disabled: nSelected === 0, onclick: handlers.onContinue },
-        nSelected
-          // One agent turn drafts the whole batch — and the count on the
-          // action is the DRAFTABLE count, not the selected one (PM decision
-          // 5, corrected): posts already in an open draft are skipped by
-          // `continueWithSelection`, so the button says what the batch will
-          // actually hold. All-taken selections keep the selected count —
-          // that click reaches the duplicate refusal and its new-version opt-in.
-          ? t(locale, nDraft === 1 ? "draftPost" : "draftPosts", { n: nDraft })
-          : t(locale, "continueSelectPrompt")
+        { type: "button", class: "sl-brand", disabled: nSelected === 0 || state.continuing, onclick: handlers.onContinue },
+        state.continuing
+          ? t(locale, "draftStarting")
+          : nSelected
+            // One agent turn drafts the whole batch — and the count on the
+            // action is the DRAFTABLE count, not the selected one (PM decision
+            // 5, corrected): posts already in an open draft are skipped by
+            // `continueWithSelection`, so the button says what the batch will
+            // actually hold. All-taken selections keep the selected count —
+            // that click reaches the duplicate refusal and its new-version opt-in.
+            ? t(locale, nDraft === 1 ? "draftPost" : "draftPosts", { n: nDraft })
+            : t(locale, "continueSelectPrompt")
       )
     ])
   ]);

@@ -20,6 +20,7 @@ import {
   mergeScanResult,
   renderCollection,
   selectedIds,
+  setContinuing,
   setFilter,
   setItems,
   setLastCheckedAt,
@@ -830,19 +831,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-stage-strip { display: flex; gap: 6px; padding: 8px 10px; background: #080807; border: 1px solid var(--sl-line); border-top: 0; border-radius: 0 0 var(--sl-radius-card) var(--sl-radius-card); overflow-x: auto; overscroll-behavior-x: contain; }
 .sl-stage-thumb { flex: 0 0 auto; width: 34px; height: 42px; cursor: pointer; display: grid; place-items: center; color: #9d968a; background: #14120f; border: 1px solid rgba(243,240,233,.18); font-size: 11px; font-variant-numeric: tabular-nums; }
 .sl-stage-thumb[aria-selected="true"] { color: #f3f0e9; border-color: var(--sl-accent, #f5b544); }
-.sl-drawer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--sl-line); border: 1px solid var(--sl-line); margin: 0 0 18px; }
-.sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-.sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
-.sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
-/* The source facts read as one quiet line, not a definition list stacked in a
- * column — the <dl> stays because the pairing is right for a screen reader. */
-.sl-drawer-facts.sl-drawer-facts-line { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; background: transparent; border: 0; font-size: 11px; }
-.sl-drawer-facts-line .sl-fact { display: inline-flex; gap: 5px; padding: 0; background: transparent; }
-.sl-drawer-facts-line .sl-fact dt { font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--sl-muted); }
-.sl-drawer-facts-line .sl-fact dd { font-size: 11px; font-weight: 500; color: var(--sl-ink-2); }
+/* Provenance and metrics read as ONE quiet wrapping line, not a data
+ * table — the <dl> stays because the pairing is right for a screen
+ * reader; each fact is "label value" inline. */
+.sl-drawer-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; font-size: 11px; }
+.sl-fact { display: inline-flex; gap: 5px; }
+.sl-fact dt { font-size: 11px; font-weight: 400; color: var(--sl-muted); }
+.sl-fact dd { margin: 0; font-size: 11px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-preview-who { display: flex; flex-direction: column; gap: 1px; }
 .sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
-.sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
 .sl-announce { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; max-width: min(520px, calc(100vw - 32px)); pointer-events: none; }
 .sl-announce-card { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; background: var(--sl-surface); border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
 .sl-announce-card strong { font-size: 13px; }
@@ -1326,17 +1323,36 @@ function App() {
     if (activePreviewStage) activePreviewStage.dispose();
     activePreviewStage = mediaStageFor(item);
 
+    /*
+     * Same column pair as the drawer's 帖文 and 參考 panels: media under a
+     * quiet label on the left, caption + facts on the right. Inspecting a
+     * source post is the same act as checking the reference a draft kept.
+     */
     replace(body, [
-      el("div", { class: "sl-preview-stage-wrap" }, [
-        activePreviewStage.node,
-        activePreviewStage.strip
-      ]),
-      drawerFacts(locale, item, activePreviewStage.frameCount),
-      el("p", { class: "sl-preview-caption" }, item.text || ""),
-      item.permalink
-        ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
-        : null,
-      item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
+      el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-source-media-label" }, [
+        el("div", { class: "sl-cols" }, [
+          el("div", { class: "sl-cols-media" }, [
+            el("div", { class: "sl-collabel" }, [
+              el("span", { class: "sl-field-label sl-grow", id: "sl-source-media-label" }, t(locale, "drawerRefImageLabel"))
+            ]),
+            el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [
+              activePreviewStage.node,
+              activePreviewStage.strip
+            ])
+          ]),
+          el("div", { class: "sl-cols-side" }, [
+            el("div", { class: "sl-collabel" }, [
+              el("span", { class: "sl-field-label sl-grow" }, t(locale, "drawerSourceCaption")),
+              item.permalink
+                ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-brief-link" }, t(locale, "drawerViewOriginal"))
+                : null
+            ].filter(Boolean)),
+            el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, item.text || ""),
+            drawerFacts(locale, item, activePreviewStage.frameCount),
+            item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
+          ].filter(Boolean))
+        ])
+      ])
     ]);
 
     /*
@@ -3546,6 +3562,8 @@ function App() {
     const taken = takenSourceIds();
     const draftable = selected.filter((id) => !taken.has(id));
     const ids = draftable.length ? draftable : selected;
+    collectionState = setContinuing(collectionState, true);
+    renderCurrentView();
     try {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
@@ -3558,12 +3576,10 @@ function App() {
             message: refusalMessage(batch),
             actionLabel: t(locale, "duplicateBlockedNewVersion")
           });
-          renderCurrentView();
           return;
         }
         collectionState = clearNotice(collectionState);
         announceRefusal(batch);
-        renderCurrentView();
         return;
       }
       collectionState = clearNotice(collectionState);
@@ -3589,9 +3605,14 @@ function App() {
       } catch (error) {
         console.error(error);
       }
-      renderCurrentView();
     } catch (error) {
       console.error(error);
+      // A thrown failure used to die here silently — the tray went back to
+      // its idle label with nothing to show for the press. Say it.
+      announce(t(locale, "batchBlockedTitle"), error instanceof Error ? error.message : String(error));
+    } finally {
+      collectionState = setContinuing(collectionState, false);
+      renderCurrentView();
     }
   }
 
