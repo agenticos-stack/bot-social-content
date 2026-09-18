@@ -22,13 +22,13 @@
     "test:unit": "vitest run --pool=threads --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
-    "@agenticos-dev/bot-contract": "0.1.0"
+    "@agenticos-dev/bot-contract": "0.2.3"
   },
   "devDependencies": {
-    "@agenticos-dev/bot-archive-tools": "0.1.0",
+    "@agenticos-dev/bot-archive-tools": "0.2.3",
     "@agenticos-dev/bot-devkit": "0.2.3",
-    "@agenticos-dev/bot-sdk": "0.1.0",
-    "@agenticos-dev/bot-shell": "0.2.2",
+    "@agenticos-dev/bot-sdk": "0.2.3",
+    "@agenticos-dev/bot-shell": "0.2.3",
     "@agenticos-dev/bot-testkit": "0.1.0",
     "@fontsource-variable/geist": "5.2.9",
     "@fontsource-variable/plus-jakarta-sans": "5.2.8",

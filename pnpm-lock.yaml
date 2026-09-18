@@ -110,21 +110,21 @@ importers:
   .:
     dependencies:
       '@agenticos-dev/bot-contract':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.2.3
+        version: 0.2.3
     devDependencies:
       '@agenticos-dev/bot-archive-tools':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.2.3
+        version: 0.2.3
       '@agenticos-dev/bot-devkit':
         specifier: 0.2.3
         version: 0.2.3
       '@agenticos-dev/bot-sdk':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.2.3
+        version: 0.2.3
       '@agenticos-dev/bot-shell':
-        specifier: 0.2.2
-        version: 0.2.2(svelte@5.56.3)
+        specifier: 0.2.3
+        version: 0.2.3(svelte@5.56.3)
       '@agenticos-dev/bot-testkit':
         specifier: 0.1.0
         version: 0.1.0
@@ -152,16 +152,8 @@ importers:
 
 packages:
 
-  '@agenticos-dev/bot-archive-tools@0.1.0':
-    resolution: {integrity: sha512-iTL2qCu1L/LUvo4YOT43/FVgPIwyJW3Y8bMbjjC2vkQTJNdEFGc9EZ0R5USNbQoJHFlU5uEIcndgN/ZoweApPg==}
-    engines: {node: '>=22.17'}
-
   '@agenticos-dev/bot-archive-tools@0.2.3':
     resolution: {integrity: sha512-w45MGPfn87jzr8BM6Q8lHF30VIHNgDZCqdRSyCopq4FkyN15Tr5ycwbylgS9+9XfzkGCh+BHKKvfjdWaImhpSQ==}
-    engines: {node: '>=22.17'}
-
-  '@agenticos-dev/bot-contract@0.1.0':
-    resolution: {integrity: sha512-IKexETh4ITdGXeLWTHJY0JZc8a0VaLkRmBpzbuHowizmpbTDDllqO1iWxeTIXFgUN/JfOYQPDl5Yj4l8Lkcmwg==}
     engines: {node: '>=22.17'}
 
   '@agenticos-dev/bot-contract@0.2.3':
@@ -173,11 +165,11 @@ packages:
     engines: {node: '>=22.17'}
     hasBin: true
 
-  '@agenticos-dev/bot-sdk@0.1.0':
-    resolution: {integrity: sha512-cP/st9UtHwmn9CXtSm13yCwW/cS1kmorC9L6cjRzxOm8cEIhXCoj3UHF6K4nFg80lTs2HC9Czzxiq/IWPzegog==}
+  '@agenticos-dev/bot-sdk@0.2.3':
+    resolution: {integrity: sha512-RFHnhE7V2g02WshJLlYGlcQ/BUPLYJPghSSIL/9XT7zDPNZLfsVmG/Ms4/eCE4C1iQEVFghq7luZyA8BYZ3A+g==}
 
-  '@agenticos-dev/bot-shell@0.2.2':
-    resolution: {integrity: sha512-89zKCiQgqISWuCrMlyuKSKujKPFr4hngKVhGSbHa8y8aIuc3BjJiUPuHldetmA2tdCSZyWro8uObeUVRKd9CNA==}
+  '@agenticos-dev/bot-shell@0.2.3':
+    resolution: {integrity: sha512-BZdkV85kcOW8n9UxT7iNHGUoQ8btlstE35n1rV+0emL7A4mZ5FKvj6+Mno61ltgeEcfBtlVSBNBDbqWkXvOzhA==}
     peerDependencies:
       svelte: ^5.56.3
 
@@ -1090,15 +1082,9 @@ packages:
 
 snapshots:
 
-  '@agenticos-dev/bot-archive-tools@0.1.0':
-    dependencies:
-      yjs: 13.6.32
-
   '@agenticos-dev/bot-archive-tools@0.2.3':
     dependencies:
       yjs: 13.6.32
-
-  '@agenticos-dev/bot-contract@0.1.0': {}
 
   '@agenticos-dev/bot-contract@0.2.3': {}
 
@@ -1107,9 +1093,9 @@ snapshots:
       '@agenticos-dev/bot-archive-tools': 0.2.3
       '@agenticos-dev/bot-contract': 0.2.3
 
-  '@agenticos-dev/bot-sdk@0.1.0': {}
+  '@agenticos-dev/bot-sdk@0.2.3': {}
 
-  '@agenticos-dev/bot-shell@0.2.2(svelte@5.56.3)':
+  '@agenticos-dev/bot-shell@0.2.3(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
 
