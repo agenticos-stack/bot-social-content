@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createConnectedApi } from '../scripts/connected-api.mjs';
 import { createDevelopmentSessions } from '../scripts/development-session.mjs';
-import { createDoorRuntime } from '../scripts/door-runtime.mjs';
-import { refuse } from '../scripts/door-certainty.mjs';
-import { grantReceiptOutcome } from '../scripts/grant-receipt.mjs';
+import { createDoorRuntime } from '@agenticos-dev/bot-devkit/doors';
+import { refuse } from '@agenticos-dev/bot-devkit/doors';
+import { grantReceiptOutcome } from '@agenticos-dev/bot-devkit/doors';
 
 const origin = 'http://127.0.0.1:17931';
 

@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectedApi} from '../scripts/connected-api.mjs';
-import { refuse } from '../scripts/door-certainty.mjs';
+import { refuse } from '@agenticos-dev/bot-devkit/doors';
 const frontendOrigin='http://social.localhost:18000';
 test('poster requests pass the connected BFF without increasing the agent-message budget',async()=>{
   const body=JSON.stringify({method:'savePoster',args:[{png:{$bot_bytes_b64:'a'.repeat(150000)}}]});

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {refuse} from './door-certainty.mjs';
+import {refuse} from '@agenticos-dev/bot-devkit/doors';
 
 /** Host-owned local runtime registry. No marketplace, API conversation or model loop. */
 export function createDevelopmentSessions({appKey, authenticate, createRuntime, origin}) {

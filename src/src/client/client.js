@@ -79,7 +79,7 @@ import {
   draftFromConfig,
   createWizardState,
   goToStep as goToWizardStep,
-  isRefusal,
+  isRefusalResult,
   publicationStateSummary,
   refusalMessage,
   renderPublish,
@@ -109,6 +109,7 @@ const PHASE_STATE_KEYS = {
 
 import sharedTokens from '@agenticos-dev/bot-shell/tokens.css';
 import sharedComponents from '@agenticos-dev/bot-shell/components.css';
+import { createToaster } from '@agenticos-dev/bot-shell/client/toast.js';
 
 const BASE_STYLE = `${sharedTokens}\n${sharedComponents}
 /*
@@ -940,7 +941,6 @@ function App() {
   }
 
   const locale = resolveLocale(document.documentElement.lang);
-  let announceTimer = null;
   const announceRegion = el("div", { class: "sl-announce", role: "status", "aria-live": "polite" });
   const { root: shellRoot, viewHost } = buildShell();
   shellRoot.appendChild(announceRegion);
@@ -1141,31 +1141,21 @@ function App() {
     return stage;
   }
 
+  const toaster = createToaster(announceRegion, {
+    duration: 12000,
+    dismissLabel: t(locale, "dismiss"),
+    onLog: (title, body) => console.log(`[social-localization] ${title}: ${body || ""}`),
+    // The `sl-announce-*` chrome is this canvas's own — the card markup stays
+    // byte-identical to the pre-extraction toast.
+    classes: { card: "sl-announce-card", action: "sl-announce-action", dismiss: "sl-announce-dismiss" }
+  });
+  // Long enough to read a refusal, and it can be dismissed sooner — a notice
+  // that vanishes before it is read is the same as no notice (the toaster's
+  // own duration).
   function announce(title, body, action) {
-    console.log(`[social-localization] ${title}: ${body || ""}`);
-    if (announceTimer) clearTimeout(announceTimer);
-    replace(announceRegion, [
-      el("div", { class: "sl-announce-card" }, [
-        el("strong", null, title),
-        body ? el("span", null, body) : null,
-        action
-          ? el("button", { type: "button", class: "sl-announce-action", onclick: () => { announce.clear(); action.run(); } }, action.label)
-          : null,
-        el("button", {
-          type: "button", class: "sl-announce-dismiss",
-          "aria-label": t(locale, "dismiss"), onclick: () => announce.clear()
-        }, "\u00d7")
-      ])
-    ]);
-    // Long enough to read a refusal, and it can be dismissed sooner. A notice
-    // that vanishes before it is read is the same as no notice.
-    announceTimer = setTimeout(() => announce.clear(), 12000);
+    toaster.show({ title, body, action });
   }
-  announce.clear = () => {
-    if (announceTimer) clearTimeout(announceTimer);
-    announceTimer = null;
-    replace(announceRegion, []);
-  };
+  announce.clear = toaster.clear;
 
   async function loadCollection(filter = collectionState.filter) {
     collectionState = setLoading(collectionState, true);
@@ -3019,7 +3009,7 @@ function App() {
       // createBatch answers an expected refusal (no items, an existing
       // active localization) as a value, not a throw — see server.js's
       // header note.
-      if (isRefusal(batch)) {
+      if (isRefusalResult(batch)) {
         if (batch.code === "duplicate_active") {
           collectionState = setNotice(collectionState, {
             message: refusalMessage(batch),
@@ -3198,7 +3188,7 @@ function App() {
   };
   const settleAcceptance = async (id, saved) => {
     if (!saved) return;
-    if (isRefusal(saved)) {
+    if (isRefusalResult(saved)) {
       wizard = setPublishError(wizard, id, { code: saved.code, message: refusalMessage(saved) });
     } else {
       wizard = setPublishError(wizard, id, null);
@@ -3267,7 +3257,7 @@ function App() {
           intent: choice.intent,
           createNewVersion
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, id, { code: result.code, message: refusalMessage(result) });
         } else {
           // The filing landed — read back the item and its publication rows
@@ -3351,7 +3341,7 @@ function App() {
           expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0,
           destinationBindings: [destinationBinding]
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, itemId, { code: result.code, message: refusalMessage(result) });
         } else {
           const state = await rpc.readPublishState(itemId);
