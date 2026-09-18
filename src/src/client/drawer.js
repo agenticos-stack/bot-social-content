@@ -380,7 +380,8 @@ function columnLabel(text, action, id = null) {
  * imageBrief?: { useSource, ratio, oneOffOpen, oneOff, saveOneOff },
  * imageRefsAvailable?: bool, uploadPreview?: { name },
  * captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use"),
- * strip?: { menuOpen, menuAnchor, regen, candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
+ * strip?: { menuOpen, menuAnchor ("place" = empty slot's add menu, "pic" = the
+ *   picture's ⋯ menu), regen, candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
  *   onMenuUpload(), onMenuAdoptSource(), onRegenOpen(n), onRegenChip(key),
  *   onRegenOtherInput(value), onRegenOtherBlur(), onRegenToggleOther(),
  *   onRegenSubmit(), onRegenCancel(), onRemoveSlot(n), onViewSlot(n),
@@ -438,21 +439,16 @@ export function renderOutputPanel(locale, item, ctx) {
   };
 
   /*
-   * THE STRIP. One slot per accepted picture — one today. The actions that
-   * belong to THAT picture live on it: hover reveals them on a fine pointer,
-   * :focus-within reveals them for the keyboard, and a coarse pointer sees
-   * them permanently (@media (hover: none)). Generating overlays the slot's
-   * own frame — including an empty first slot — so a request never reads as
-   * a second tile.
-   *
-   * ONE IMAGE IS NOT A SET. A number badge, a "Cover" caption and a second
-   * empty tile are the furniture of an ordered collection; on a post that has
-   * a single picture they name nothing, so the number and the cap appear only
-   * when there is more than one slot.
+   * THE STRIP. One slot per accepted picture — one today. Every action on an
+   * existing picture lives on the picture itself: one ⋯ opens the merged
+   * menu, so nothing per-image sits in the column header. Generating
+   * overlays the slot's own frame — including an empty first slot — so a
+   * request never reads as a second tile, and a live slot carries no ⋯:
+   * there is nothing to act on yet, and a second ask during a live one is
+   * the double spend the regenerate conversation exists to prevent.
    */
   const hasPicture = (slot) => Boolean(slot.image) || Boolean(slot.legacy);
   const slots = imageSlots(item);
-  const isSet = slots.length > 1;
   const slotNode = (slot) => {
     const media = el("div", { class: "sl-slot-media" });
     media.appendChild(figure(slot.image, {
@@ -460,58 +456,11 @@ export function renderOutputPanel(locale, item, ctx) {
       legacy: slot.legacy,
       skel: overlayBusy
     }));
-    if (isSet) media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(slot.index)));
-    if (editable && hasPicture(slot) && !overlayBusy) {
-      media.appendChild(el("div", { class: "sl-hover" }, [
-        el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onRegenOpen?.(slot.index) }, t(locale, "drawerHoverRegen")),
-        slot.index === 1 ? null : el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onMakeCover?.(slot.index) }, t(locale, "drawerHoverCover")),
-        el("button", { type: "button", class: "sl-hover-btn", disabled: ctx.saving || null, onclick: () => strip.onRemoveSlot?.(slot.index) }, t(locale, "drawerHoverRemove")),
-        slot.image?.ready === true
-          ? el("button", { type: "button", class: "sl-hover-btn", onclick: () => strip.onViewSlot?.(slot.index) }, t(locale, "drawerHoverView"))
-          : null
-      ].filter(Boolean)));
-    }
-    return el("div", { class: "sl-slot", role: "listitem" }, [
-      media,
-      isSet
-        ? el("div", { class: "sl-slot-cap" }, [
-            el("b", null, slot.index === 1 ? t(locale, "drawerCover") : t(locale, "drawerSlotN", { n: slot.index })),
-            staged && slot.index === 1 ? [" ", el("span", { class: "sl-dest-tag" }, t(locale, "drawerCandidateStagedTag"))] : null
-          ])
-        : null
-    ].filter(Boolean));
+    // `picControls` is declared below with the rest of the menu machinery;
+    // slotNode runs only once the strip is assembled, after it exists.
+    if (editable && hasPicture(slot) && !overlayBusy) media.appendChild(picControls(slot));
+    return el("div", { class: "sl-slot", role: "listitem" }, media);
   };
-
-  // Built in strip order: the accepted slot loads before the candidate beside
-  // it. An EMPTY slot is not furniture — when the post can still be edited the
-  // dashed `.sl-addplace` placeholder IS the add control, so the slot itself
-  // only renders for a picture, a generating skeleton, or the locked view.
-  const slotNodes = slots.filter((slot) => hasPicture(slot) || overlayBusy || !editable).map(slotNode);
-
-  // The candidate sits BESIDE the slot it would replace — never in its place.
-  // "Keep current" on an untouched candidate dismisses the proposal (the image
-  // stays in History); on a staged one it unstages, the existing meaning.
-  const candidateSlot = showCandidate
-    ? el("div", { class: "sl-slot sl-slot-candidate", role: "listitem" }, [
-        el("div", { class: "sl-slot-media" }, [
-          figure(candidate, { extra: "sl-slot-frame sl-output-frame-candidate" })
-        ]),
-        el("div", { class: "sl-slot-cap" }, [
-          el("b", null, t(locale, "drawerImgNew")),
-          ` ${t(locale, staged === candidate.id ? "drawerCandidateStaged" : "drawerImgNewNote")}`
-        ]),
-        facts(candidate),
-        candidate.status === "legacy" ? el("p", { class: "sl-field-note" }, t(locale, "drawerCandidateLegacy")) : null,
-        editable
-          ? el("div", { class: "sl-slot-acts" }, [
-              staged === candidate.id
-                ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
-                : el("button", { type: "button", class: "sl-primary sl-sm sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
-              staged === candidate.id ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.() }, t(locale, "drawerKeepCurrentShort"))
-            ].filter(Boolean))
-          : null
-      ])
-    : null;
 
   // One menu holds every way a picture joins the set — generate under the
   // resolved brief (its row says so), upload, or adopt the post's own picture
@@ -519,8 +468,8 @@ export function renderOutputPanel(locale, item, ctx) {
   // in the column: trapped in the 176px media column every row wrapped to
   // three lines. `.sl-addwrap` is the anchor; the menu sizes to its own
   // content (238–300px) and overhangs the column.
-  const menuRow = (title, sub, onclick, disabled = false, warn = false) =>
-    el("button", { type: "button", role: "menuitem", class: "sl-menu-item", disabled: disabled || null, onclick }, [
+  const menuRow = (title, sub, onclick, disabled = false, warn = false, itemCls = null) =>
+    el("button", { type: "button", role: "menuitem", class: `sl-menu-item${itemCls ? ` ${itemCls}` : ""}`, disabled: disabled || null, onclick }, [
       el("span", { class: "sl-menu-lead" }, title),
       sub ? el("span", { class: `sl-menu-sub${warn ? " sl-menu-warn" : ""}` }, sub) : null
     ]);
@@ -546,7 +495,13 @@ export function renderOutputPanel(locale, item, ctx) {
     generateItem.setAttribute("title", t(locale, "drawerPartOtherPendingCaption"));
     generateItem.setAttribute("data-pending", "caption");
   }
-  const addMenu = editable && strip.menuOpen
+  // The menu belongs to the control that opened it — the click names its
+  // anchor. Without a name (older callers) it is the empty slot's when there
+  // is no picture, the picture's ⋯ otherwise.
+  const emptyEditable = editable && !slots.some(hasPicture) && !overlayBusy && !showCandidate;
+  const menuAnchor = strip.menuAnchor ?? (emptyEditable ? "place" : "pic");
+  const expanded = (anchor) => (strip.menuOpen && menuAnchor === anchor ? "true" : "false");
+  const addMenu = editable && strip.menuOpen && menuAnchor === "place"
     ? el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerAddImage") }, [
         generateItem,
         el("div", { class: "sl-menu-sep", role: "separator" }),
@@ -576,15 +531,9 @@ export function renderOutputPanel(locale, item, ctx) {
    * will land in it: a dashed placeholder at the frame's own aspect ratio
    * carries ＋ / Add image / the three ways one arrives. A text link under a
    * hollow frame moved everything below it the moment an image arrived; this
-   * box never changes shape. Once a picture exists the quiet ＋ in the column
-   * label takes over; a generating slot keeps its skeleton instead.
+   * box never changes shape. Once a picture exists its own ⋯ carries every
+   * action; a generating slot keeps its skeleton instead.
    */
-  const emptyEditable = editable && !slots.some(hasPicture) && !overlayBusy && !showCandidate;
-  const quietVisible = editable && !emptyEditable && !overlayBusy;
-  // The menu belongs to the control that opened it — the click names its
-  // anchor. Without a name (older callers) it is the first control rendered.
-  const menuAnchor = strip.menuAnchor ?? (emptyEditable ? "place" : quietVisible ? "quiet" : "slot");
-  const expanded = (anchor) => (strip.menuOpen && menuAnchor === anchor ? "true" : "false");
   const addPlace = emptyEditable
     ? addWrap(el("button", {
         type: "button",
@@ -599,32 +548,74 @@ export function renderOutputPanel(locale, item, ctx) {
         el("span", { class: "sl-addplace-hint" }, t(locale, "drawerAddPlaceHint"))
       ]), "place")
     : null;
-  // The quiet way to add a picture once the placeholder is gone — and it is
-  // NOT offered while a slot is generating: there is nothing to add to yet,
-  // and a second ask during a live one is the double spend the regenerate
-  // conversation exists to prevent.
-  const quietAdd = quietVisible
-    ? addWrap(el("button", {
+
+  /*
+   * THE ⋯ ON THE PICTURE. Once a picture exists every image action is
+   * something done to THAT picture: regenerate (the feedback conversation —
+   * never a direct generate, since a blind rerun of the same brief returns
+   * the same picture for the same price), upload a replacement, adopt the
+   * source photo, view, remove. The button reveals on hover and
+   * :focus-within, stays visible while its menu is open, and is always
+   * visible under @media (hover: none).
+   */
+  const picMenuFor = (slot) =>
+    el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerImgActions") }, [
+      menuRow(t(locale, "drawerPicRegen"), t(locale, "drawerPicRegenSub"), () => strip.onRegenOpen?.(slot.index)),
+      menuRow(t(locale, "drawerPicUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
+      menuRow(
+        t(locale, "drawerPicSource"),
+        refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
+        () => strip.onMenuAdoptSource?.(),
+        !refsAvailable || item.acceptedVisualMode === "keep_original"
+      ),
+      el("div", { class: "sl-menu-sep", role: "separator" }),
+      menuRow(t(locale, "drawerPicView"), null, () => strip.onViewSlot?.(slot.index), slot.image?.ready !== true),
+      menuRow(t(locale, "drawerPicRemove"), null, () => strip.onRemoveSlot?.(slot.index), false, false, "sl-menu-danger")
+    ]);
+  const picControls = (slot) =>
+    el("span", { class: "sl-addwrap sl-addwrap-pic", "data-addanchor": "pic" }, [
+      el("button", {
         type: "button",
-        class: "sl-addquiet",
+        class: "sl-picbtn",
         "aria-haspopup": "menu",
-        "aria-expanded": expanded("quiet"),
+        "aria-expanded": expanded("pic"),
+        "aria-label": t(locale, "drawerImgActions"),
         disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.("quiet")
-      }, t(locale, "drawerAddFirst")), "quiet", true)
-    : null;
-  // A real second tile is the ordered-set affordance — Phase 2 only, never on
-  // a post that holds one picture.
-  const addSlot = editable && isSet && slots.length < 10
-    ? addWrap(el("button", {
-        type: "button",
-        class: "sl-addslot",
-        "aria-label": t(locale, "drawerAddImage"),
-        "aria-haspopup": "menu",
-        "aria-expanded": expanded("slot"),
-        disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.("slot")
-      }, "＋"), "slot", true)
+        onclick: () => strip.onToggleMenu?.("pic")
+      }, "⋯"),
+      strip.menuOpen && menuAnchor === "pic" ? picMenuFor(slot) : null
+    ].filter(Boolean));
+
+  // Built in strip order: the accepted slot loads before the candidate beside
+  // it. An EMPTY slot is not furniture — when the post can still be edited the
+  // dashed `.sl-addplace` placeholder IS the add control, so the slot itself
+  // only renders for a picture, a generating skeleton, or the locked view.
+  const slotNodes = slots.filter((slot) => hasPicture(slot) || overlayBusy || !editable).map(slotNode);
+
+  // The candidate sits BESIDE the slot it would replace — never in its place,
+  // and it is built after the accepted slots so media loads in strip order.
+  // "Keep current" on an untouched candidate dismisses the proposal (the image
+  // stays in History); on a staged one it unstages, the existing meaning.
+  const candidateSlot = showCandidate
+    ? el("div", { class: "sl-slot sl-slot-candidate", role: "listitem" }, [
+        el("div", { class: "sl-slot-media" }, [
+          figure(candidate, { extra: "sl-slot-frame sl-output-frame-candidate" })
+        ]),
+        el("div", { class: "sl-slot-cap" }, [
+          el("b", null, t(locale, "drawerImgNew")),
+          ` ${t(locale, staged === candidate.id ? "drawerCandidateStaged" : "drawerImgNewNote")}`
+        ]),
+        facts(candidate),
+        candidate.status === "legacy" ? el("p", { class: "sl-field-note" }, t(locale, "drawerCandidateLegacy")) : null,
+        editable
+          ? el("div", { class: "sl-slot-acts" }, [
+              staged === candidate.id
+                ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
+                : el("button", { type: "button", class: "sl-primary sl-sm sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
+              staged === candidate.id ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.() }, t(locale, "drawerKeepCurrentShort"))
+            ].filter(Boolean))
+          : null
+      ])
     : null;
 
   /*
@@ -810,9 +801,9 @@ export function renderOutputPanel(locale, item, ctx) {
   return el("div", { class: "sl-drawer-panel-body" }, [
     el("div", { class: "sl-cols" }, [
       el("section", { class: "sl-cols-media", "aria-labelledby": "sl-output-images-title" }, [
-        columnLabel(t(locale, "drawerImageSet"), quietAdd, "sl-output-images-title"),
+        columnLabel(t(locale, "drawerImageSet"), null, "sl-output-images-title"),
         addPlace,
-        el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot, addSlot].filter(Boolean)),
+        el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot].filter(Boolean)),
         provenance,
         imageStatusLine,
         uploadBlock,

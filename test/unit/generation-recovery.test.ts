@@ -185,14 +185,15 @@ const buttonText = (root: unknown, text: string) =>
   findAll(root, (element) => element.tagName === "BUTTON" && String(element.textContent ?? "").trim() === text)[0];
 const partButton = (root: unknown, part: string) =>
   findAll(root, (element) => element.getAttribute?.("data-part") === part)[0];
-// The image part's control is the strip's add menu: the add-place tile (empty
-// slot) or the quiet ＋ Add image link opens it, and its Generate row is the
-// pressable action. A pending request marks the row (`data-requested`)
-// without disabling it — a re-ask always asks first.
+// The image part's control is the empty slot's add menu: the dashed
+// add-place tile opens it, and its Generate row is the pressable action — a
+// bare Generate exists only while there is no picture. A pending request
+// marks the row (`data-requested`) without disabling it — a re-ask always
+// asks first.
 const imageAdd = (root: unknown) =>
   findAll(root, (element) => {
     const cls = String(element.className ?? "").split(" ");
-    return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot") || element.getAttribute?.("aria-label") === "Add image");
+    return element.tagName === "BUTTON" && cls.includes("sl-addplace");
   })[0];
 const imageGenerate = (root: unknown) =>
   findAll(

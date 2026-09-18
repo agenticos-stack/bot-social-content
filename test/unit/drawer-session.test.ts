@@ -53,6 +53,9 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
 }
 
 const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: false, caption: false, ...needs }, needs: { image: false, caption: false, ...needs }, at: "2026-09-14T03:00:00.000Z" });
+// A post with no picture: the only state a bare Generate exists in — once a
+// picture lands, generation goes through the ⋯ menu's Regenerate… ask.
+const imageless = { generatedImage: null, acceptedVisualMode: null };
 
 function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; takenSourceIds?: string[] } = {}) {
   installMinimalDom();
@@ -179,21 +182,34 @@ async function click(root: unknown, label: string) {
   await findButton(root, label).dispatchEvent({ type: "click" });
   await flushAsyncWork();
 }
+/** The picture's ⋯ menu — the only per-image action surface once a picture
+ *  exists. */
+async function openPicMenu(r: AnyRec) {
+  const trigger = buttons(r.dialog()).find((b) =>
+    String(b.className ?? "").split(" ").includes("sl-picbtn"));
+  if (!trigger) throw new Error("⋯ trigger missing in: " + labels(r.dialog()).join(" | "));
+  await trigger.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+}
 /**
- * The regenerate conversation end to end: hover Regenerate, name the
+ * The regenerate conversation end to end: ⋯ → Regenerate…, name the
  * correction (a chip), press Generate. Returns the dispatch promise, which
  * stays pending while a decision dialog waits inside the request.
  */
 async function startRegen(r: AnyRec, chip = "drawerRegenC1") {
-  await click(r.dialog(), t("en", "drawerHoverRegen"));
+  await openPicMenu(r);
+  const row = menuButton(r.dialog(), t("en", "drawerPicRegen"));
+  if (!row) throw new Error("Regenerate row missing in: " + labels(r.dialog()).join(" | "));
+  await row.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
   await click(r.dialog(), t("en", chip));
   return press(r.dialog(), t("en", "drawerRegenGo"));
 }
-/** Opens the add-image menu: the quiet ＋ Add image link once a picture
- *  exists, or the dashed add-place tile while the slot is still empty. */
+/** Opens the empty slot's add menu: the dashed add-place tile is the only
+ *  add trigger — a bare Generate exists only while there is no picture. */
 async function openAddMenu(r: AnyRec) {
   const trigger = buttons(r.dialog()).find((b) =>
-    String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+    String(b.className ?? "").split(" ").includes("sl-addplace"));
   if (!trigger) throw new Error("Add-image trigger missing in: " + labels(r.dialog()).join(" | "));
   await trigger.dispatchEvent({ type: "click" });
   await flushAsyncWork();
@@ -395,7 +411,7 @@ async function editImageInstructions(r: AnyRec, value: string) {
 
 describe("U2: unsaved instructions are decided before a request", () => {
   it("asks before Generate uses stale instructions, and sends nothing yet", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
     const done = await pressGenerate(r);
@@ -405,7 +421,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("saves the instructions, then sends exactly one request", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
     const done = await pressGenerate(r);
@@ -419,7 +435,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("keeps the edits and requests nothing when saving the instructions fails", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     r.responses.saveInstructionOverrides = { ok: false, code: "invalid_argument", message: "Instructions are too long." };
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
@@ -434,7 +450,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("does nothing on Cancel", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
     const done = await pressGenerate(r);
@@ -447,7 +463,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("generates with the saved instructions only when chosen, keeping the edits unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
     const done = await pressGenerate(r);
@@ -461,7 +477,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("saves only the requested part's instructions and leaves unrelated edits unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
@@ -477,7 +493,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("does not ask when only the other part's instructions are unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
@@ -494,7 +510,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
 
 describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
-    const r = rig({ items: [post("a", { generation: pendingMark({ caption: true }) })] });
+    const r = rig({ items: [post("a", { ...imageless, generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
     await openAddMenu(r);
     const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
@@ -522,11 +538,12 @@ describe("one outstanding request per post", () => {
   it("a new post's initial request (both parts) is never doubled — the add control hides while it runs", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    // While a slot is generating there is nothing to add to: no trigger, so
-    // no second ask — and no silent replacement — can leave the strip. A
-    // refusal the server still reports gets the same explicit decision (next test).
+    // While a slot is generating there is nothing to add to and no picture
+    // to act on: neither the add-place tile nor the ⋯ renders, so no second
+    // ask — and no silent replacement — can leave the strip. A refusal the
+    // server still reports gets the same explicit decision (next test).
     const trigger = buttons(r.dialog()).find((b) =>
-      String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+      String(b.className ?? "").split(" ").some((c) => c === "sl-addplace" || c === "sl-picbtn"));
     expect(trigger).toBeUndefined();
     expect(r.calls.requests).toHaveLength(0);
   });
@@ -1063,7 +1080,7 @@ describe("the image brief on the Instructions tab", () => {
   });
 
   it("sends references:none when the owner switches the source image off", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     briefSwitch(r.dialog()).checked = false;
@@ -1075,7 +1092,7 @@ describe("the image brief on the Instructions tab", () => {
   });
 
   it("sends the picked ratio — the Instructions tab carries no run layer of its own", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await click(r.dialog(), t("en", "drawerRatioStory"));
@@ -1107,7 +1124,7 @@ describe("the image brief on the Instructions tab", () => {
   });
 
   it("announces the translated refusal when the server reports reference_unavailable", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     r.responses.requestGeneration = [{ ok: false, code: "reference_unavailable", message: "raw server wording" }];
     await r.open({ id: "b", itemId: "a" });
     await pressGenerate(r);

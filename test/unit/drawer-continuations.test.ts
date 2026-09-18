@@ -60,10 +60,11 @@ const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraf
 // The primary names what it files: the picked destination subset.
 const PUBLISH = t("en", "drawerPublishToOne", { who: "FB_MAIN" });
 /** The add menu's Generate row — a bare press sends the staged brief. The
- *  trigger is the quiet ＋ Add image link, or the add-place tile when empty. */
+ *  trigger is the empty slot's dashed add-place tile: once a picture exists
+ *  generation moves to its ⋯ menu's Regenerate… ask, never a bare press. */
 async function startGenerate(r: AnyRec) {
   const trigger = buttons(r.dialog()).find((b: AnyRec) =>
-    String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+    String(b.className ?? "").split(" ").includes("sl-addplace"));
   if (!trigger) throw new Error("Add-image trigger missing");
   await trigger.dispatchEvent({ type: "click" });
   await flushAsyncWork();
@@ -370,7 +371,7 @@ describe("F01: Save and leave (Close's unsaved-changes decision)", () => {
 
 describe("F01: Save instructions and generate", () => {
   it("generates on the acknowledged instructions A; B typed during the save stays visible and dirty", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", { generatedImage: null, acceptedVisualMode: null })] });
     const saves = gateSaves(r);
     const requested = r.scope.rpc.requestGeneration;
     const savedAtRequest: AnyRec[] = [];

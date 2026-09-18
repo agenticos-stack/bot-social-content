@@ -665,7 +665,7 @@ describe("a request whose turn ended with work outstanding", () => {
     // silent replacement — can leave it.
     expect(findAll(document.body, (element) => {
       const cls = String(element.className ?? "").split(" ");
-      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot"));
+      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-picbtn"));
     })).toHaveLength(0);
     await click(buttonText(document.body, "Retry"));
     const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };

@@ -104,8 +104,8 @@ describe("Output section", () => {
     });
   });
 
-  it("renders the accepted image with per-picture hover actions and no set furniture", () => {
-    const view = output(post());
+  it("renders the accepted image with one ⋯ menu and no set furniture", () => {
+    const view = output(post(), { imageRefsAvailable: true, strip: { menuOpen: true } });
     const slots = all(view.root, (e) => {
       const cls = String(e.className).split(" ");
       return cls.includes("sl-slot") && !cls.includes("sl-slot-candidate");
@@ -115,18 +115,23 @@ describe("Output section", () => {
     // and no second empty tile — that furniture names an ordered collection.
     expect(view.root.textContent).not.toContain("Cover");
     expect(all(view.root, (e) => String(e.className).includes("sl-slot-num"))).toHaveLength(0);
-    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addslot"))).toHaveLength(0);
-    // The picture's own actions: regenerate, remove, view — never a blind retry.
-    const hover = all(view.root, (e) => String(e.className).includes("sl-hover-btn"));
-    expect(hover.map((b) => String(b.textContent))).toEqual(["Regenerate", "Remove", "View"]);
-    // Once a picture exists, the quiet add action moves to the column label.
-    expect(all(view.root, (e) => String(e.className).includes("sl-addquiet"))).toHaveLength(1);
+    // One ⋯ on the picture is the whole per-image action surface — nothing
+    // in the column header, no hover bar, no second tile.
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(1);
+    const leads = all(view.root, (e) => String(e.className).split(" ").includes("sl-menu-lead")).map((s) => String(s.textContent));
+    expect(leads).toEqual(["Regenerate…", "Upload a replacement…", "Use the original image", "View", "Remove image"]);
+    // Removal is the danger row.
+    const remove = buttons(view.root).find((b) => String(b.textContent).includes("Remove image"));
+    expect(String(remove!.className)).toContain("sl-menu-danger");
+    // A fresh generate from the same brief is never offered on an existing
+    // picture — Regenerate… is the ask that names what is wrong first.
+    expect(buttonNamed(view.root, "Generate a new image")).toBeUndefined();
   });
 
   it("the strip still renders one slot when only a legacy visual exists", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: "keep_original" }));
     expect(view.root.textContent).toContain("source media");
-    expect(all(view.root, (e) => String(e.className).includes("sl-hover-btn")).length).toBeGreaterThan(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-picbtn")).length).toBeGreaterThan(0);
   });
 
   it("overlays generating on the accepted image instead of a second empty frame", () => {
@@ -167,8 +172,8 @@ describe("Output section", () => {
     expect(String(place[0].textContent)).toContain("Generate, upload, or use the post's picture");
     await place[0].dispatchEvent({ type: "click" });
     expect(toggles).toEqual(["menu"]);
-    // No quiet link beside it — that only exists once a picture does.
-    expect(all(view.root, (e) => String(e.className).includes("sl-addquiet"))).toHaveLength(0);
+    // No ⋯ either — there is no picture to act on yet.
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(0);
   });
 
   it("does not overlay when the request was never submitted", () => {
@@ -204,7 +209,7 @@ describe("Output section", () => {
   it("the add-image menu offers Generate, Upload and the post's own picture", async () => {
     const adopted: string[] = [];
     const uploaded: string[] = [];
-    const view = output(post(), {
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), {
       imageRefsAvailable: true,
       strip: {
         menuOpen: true,
@@ -226,7 +231,7 @@ describe("Output section", () => {
   });
 
   it("says so when the post has no usable picture to adopt", () => {
-    const view = output(post(), { imageRefsAvailable: false, strip: { menuOpen: true } });
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), { imageRefsAvailable: false, strip: { menuOpen: true } });
     const adopt = buttonNamed(view.root, "Use the post's own picture")!;
     expect(adopt).toBeTruthy();
     expect(adopt.disabled).toBe(true);
@@ -236,14 +241,14 @@ describe("Output section", () => {
   it("swaps the generate row's brief for the no-caption warning — a soft gate, not a block", () => {
     // An image made before the text exists is likely to be made again once
     // the brief changes: the row stays pressable and says what it spends.
-    const view = output(post({ caption: "" }), { strip: { menuOpen: true } });
+    const view = output(post({ caption: "", generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
     const row = buttonNamed(view.root, "Generate a new image")!;
     expect(row.disabled).toBe(false);
     const warn = all(row, (e) => String(e.className).split(" ").includes("sl-menu-warn"))[0];
     expect(warn?.textContent).toContain("No caption yet");
     expect(row.textContent).not.toContain("priced as");
     // A post that does have a caption keeps the brief summary.
-    const captioned = output(post(), { strip: { menuOpen: true } });
+    const captioned = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
     expect(buttonNamed(captioned.root, "Generate a new image")!.textContent).toContain("priced as an edit");
   });
 
@@ -268,7 +273,7 @@ describe("Output section", () => {
   });
 
   it("offers image generation through the menu and Rewrite caption inline, each honest about what it keeps", async () => {
-    const view = output(post(), { strip: { menuOpen: true, onMenuGenerate: () => view.parts.push("image") } });
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true, onMenuGenerate: () => view.parts.push("image") } });
     const image = buttonNamed(view.root, "Generate a new image")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(caption.getAttribute("title")).toContain("Keeps the accepted image.");
@@ -283,7 +288,7 @@ describe("Output section", () => {
     expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
     // There is nothing to add to while a slot is generating: no trigger, so
     // the menu has no anchor and no Generate row exists to double the spend.
-    expect(all(view.root, (e) => ["sl-addplace", "sl-addquiet", "sl-addslot"].some((c) => String(e.className).split(" ").includes(c)))).toHaveLength(0);
+    expect(all(view.root, (e) => ["sl-addplace", "sl-picbtn"].some((c) => String(e.className).split(" ").includes(c)))).toHaveLength(0);
     expect(buttonNamed(view.root, "Generate a new image")).toBeUndefined();
     // The caption side still names what is outstanding rather than looking
     // like an unfilled form.
@@ -295,7 +300,7 @@ describe("Output section", () => {
   });
 
   it("keeps the generate row honest while the other part is pending — marked, still pressable", () => {
-    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }), { strip: { menuOpen: true } });
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }), { strip: { menuOpen: true } });
     const image = buttonNamed(view.root, "Generate a new image")!;
     expect(image.disabled).toBe(false);
     expect(image.getAttribute("data-pending")).toBe("caption");
@@ -381,12 +386,24 @@ describe("Output section", () => {
       buffers: {},
       strip: { menuOpen: true, regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: false } }
     } as never);
-    expect(root.textContent).toContain("＋ 加入圖片");
-    expect(root.textContent).toContain("重新生成");
-    expect(root.textContent).toContain("生成新圖片");
-    expect(root.textContent).toContain("採用原帖圖片");
+    // The picture's ⋯ menu — regenerate is the conversation, not a blind retry.
+    expect(root.textContent).toContain("重新生成…");
+    expect(root.textContent).toContain("上載替換…");
+    expect(root.textContent).toContain("改用原帖圖片");
+    expect(root.textContent).toContain("檢視");
+    expect(root.textContent).toContain("移除圖片");
     expect(root.textContent).toContain("重新撰寫文案");
     expect(root.textContent).toContain("第 1 張要改甚麼？");
+    // No image yet — the dashed tile carries the add menu.
+    const empty = renderOutputPanel("zh-HK", post({ generatedImage: null, acceptedVisualMode: null }) as never, {
+      editable: true,
+      buffers: {},
+      strip: { menuOpen: true }
+    } as never);
+    expect(empty.textContent).toContain("＋");
+    expect(empty.textContent).toContain("加入圖片");
+    expect(empty.textContent).toContain("生成新圖片");
+    expect(empty.textContent).toContain("採用原帖圖片");
     const pubs = pubsHost("zh-HK", post({ destinationBindings: ["FB_MAIN"] }));
     expect(pubs.root.textContent).toContain("發佈至");
     expect(pubs.root.textContent).toContain("FB_MAIN");
@@ -499,14 +516,14 @@ describe("Reference section", () => {
     const adopt = buttonNamed(root, "Use original")!;
     await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
-    // The Post tab's add menu carries the same choice, the same rule.
+    // The Post tab's picture menu carries the same choice, the same rule.
     const output = renderOutputPanel("en", post({ sourceItem }) as never, {
       editable: true,
       buffers: {},
       imageRefsAvailable: true,
       strip: { menuOpen: true, onMenuAdoptSource: () => adopted.push("reference") }
     } as never);
-    await buttonNamed(output, "Use the post's own picture")!.dispatchEvent({ type: "click" });
+    await buttonNamed(output, "Use the original image")!.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference", "reference"]);
     // Already the adopted source, or no usable picture: disabled, not hidden.
     const adoptedAlready = renderReferencePanel("en", post({ sourceItem, acceptedVisualMode: "keep_original" }) as never, {

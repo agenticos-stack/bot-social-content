@@ -321,28 +321,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    one quiet action on the right. */
 .sl-collabel { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .sl-collabel .sl-grow { flex: 1; min-width: 0; }
-.sl-addquiet { border: 0; background: transparent; padding: 0; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-.sl-addquiet:hover:not(:disabled) { color: var(--sl-ink); }
-.sl-addquiet:disabled { opacity: .5; }
 .sl-strip { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
 .sl-slot { display: flex; flex-direction: column; gap: 5px; }
 .sl-slot-media { position: relative; }
-.sl-slot-num { position: absolute; top: 6px; left: 6px; z-index: 2; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: rgba(255,255,255,.92); box-shadow: var(--sl-e-1); font-size: 10.5px; font-weight: 600; color: var(--sl-ink); }
 .sl-slot-cap { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
 .sl-slot-cap b { font-weight: 600; color: var(--sl-ink); }
 .sl-slot-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
 .sl-slot-acts { display: flex; flex-wrap: wrap; gap: 6px; }
 .sl-slot-acts .sl-primary, .sl-slot-acts .sl-secondary { min-height: 30px; padding: 0 11px; font-size: 11.5px; }
-/* Per-picture actions live ON the picture: revealed by hover on a fine
-   pointer, by :focus-within for the keyboard, permanently on coarse. */
-.sl-hover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center; padding: 8px; background: rgba(20,20,20,.44); opacity: 0; pointer-events: none; transition: opacity .12s ease; }
-.sl-slot-media:hover .sl-hover, .sl-slot-media:focus-within .sl-hover { opacity: 1; pointer-events: auto; }
-/* Coarse pointers have no hover: the actions stop overlaying and sit under
-   the tile, per the accepted design. */
-@media (hover: none) { .sl-hover { position: static; opacity: 1; pointer-events: auto; margin-top: 4px; flex-direction: row; flex-wrap: wrap; background: transparent; padding: 0; } }
-@media (prefers-reduced-motion: reduce) { .sl-hover { transition: none; } }
-.sl-hover-btn { min-height: 30px; min-width: 86px; padding: 0 10px; border: 0; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.96); color: var(--sl-ink); font-size: 11.5px; font-weight: 600; box-shadow: var(--sl-e-1); cursor: pointer; }
-.sl-hover-btn:disabled { opacity: .5; }
+/* Every action on an existing picture lives ON the picture: one ⋯ opens the
+   merged menu. It reveals on hover and :focus-within, stays visible while
+   its menu is open, and is always visible on coarse pointers. */
+.sl-addwrap-pic { position: absolute; top: 8px; left: 8px; z-index: 3; }
+/* The menu drops from the ⋯ inside the panel's own scroller: cap it to the
+   space below the trigger and let it scroll internally, so the Remove row is
+   never clipped off the sheet on a short viewport. */
+.sl-addwrap-pic .sl-menu { max-height: calc(100dvh - 300px); overflow-y: auto; overscroll-behavior: contain; }
+.sl-picbtn { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.96); color: var(--sl-ink); font-size: 15px; font-weight: 700; line-height: 1; box-shadow: var(--sl-e-1); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+.sl-slot-media:hover .sl-picbtn, .sl-slot-media:focus-within .sl-picbtn, .sl-addwrap-pic:has(.sl-menu) .sl-picbtn { opacity: 1; pointer-events: auto; }
+.sl-slot-media .sl-picbtn:disabled { opacity: .5; }
+@media (hover: none) { .sl-picbtn { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { .sl-picbtn { transition: none; } }
 /* The empty slot is the add control — a dashed placeholder the exact size of
    the picture that will replace it, so the panel never jumps when one lands. */
 .sl-addplace { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; text-align: center; padding: 10px; cursor: pointer; }
@@ -350,10 +349,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-addplace:disabled { opacity: .5; }
 .sl-addplace-plus { font-size: 20px; line-height: 1; font-weight: 400; }
 .sl-addplace-hint { font-size: 11px; font-weight: 400; color: var(--sl-ink-2); }
-/* A second empty tile exists only once the post is an ordered set (Phase 2). */
-.sl-addslot { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); font-size: 22px; font-weight: 300; cursor: pointer; }
-.sl-addslot:hover:not(:disabled) { border-color: var(--sl-ink); color: var(--sl-ink); }
-.sl-addslot:disabled { opacity: .45; }
 /* The add menu is a POPOVER on its control, not a block inside the media
  * column — trapped in a 176px column every row wrapped to three lines. It
  * sizes to its own content and may overhang the column. .sl-addwrap is the
@@ -369,6 +364,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-menu-lead { font-size: 12.5px; font-weight: 600; }
 .sl-menu-sub { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
 .sl-menu-sub.sl-menu-warn { color: var(--sl-warning); }
+.sl-menu-item.sl-menu-danger .sl-menu-lead { color: var(--sl-danger); }
 .sl-menu-sep { height: 1px; background: var(--sl-line); margin: 5px 4px; }
 /* The regenerate conversation under the strip: chips name the change, the
    plan line restates it with the price, and Generate files once — never a
@@ -1075,13 +1071,14 @@ function App() {
   let drawerSession = null; // { requestClose, refresh, dispose, previous } for the open drawer
   batchDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    // An open add-image popover takes the first Escape; the sheet asks next.
+    // An open drawer popover (add-image or the picture's ⋯ menu) takes the
+    // first Escape; the sheet asks next.
     if (drawerSession?.closeAddMenu?.(true)) return;
     drawerSession?.requestClose();
   });
   batchDialog.addEventListener("click", (event) => {
-    // The add-image popover closes on any click outside its control and
-    // menu; the sheet itself never closes on a stray click.
+    // A drawer popover closes on any click outside its control and menu;
+    // the sheet itself never closes on a stray click.
     if (event.target?.closest?.(".sl-addwrap")) return;
     drawerSession?.closeAddMenu?.(false);
   });
@@ -2040,7 +2037,7 @@ function App() {
     };
 
     /*
-     * The add-image menu is a popover on its control: Escape closes the menu
+     * A drawer menu is a popover on its control: Escape closes the menu
      * and puts focus back on that control — it never reaches the sheet. A
      * click anywhere else closes it too, and the click itself owns the focus.
      */
@@ -3278,10 +3275,11 @@ function App() {
               }
             },
             onRemoveSlot: () => {
+              patchUi(item.id, { menuOpen: false });
               dropBufferFields(item.id, ["imageId"]);
               void applyVisual(item, { acceptedVisualMode: null });
             },
-            onViewSlot: () => { void openPreview(item); },
+            onViewSlot: () => { patchUi(item.id, { menuOpen: false }); redraw(); void openPreview(item); },
             onDismissCandidate: () => {
               patchUi(item.id, { candidateDismissed: item.generatedCandidate?.id ?? null });
               redraw();
