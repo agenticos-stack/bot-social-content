@@ -436,6 +436,20 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
         agent:{
           get info(){return agent.info;},
           handle:async(input,credential)=>{
+            /*
+             * The picture's ⋯ → Regenerate hand-off, mirrored on the draft
+             * wrapper: the canvas's intent becomes the seeded turn, with the
+             * gadget's own instructions attached (a plain `run` carries none).
+             * The seed says what to file and what never to do in-turn — the
+             * durable requestGeneration, never a generateImage mid-turn.
+             */
+            if(input?.operation==='regen-intent'){
+              const intent=input.intent;
+              const post=intent?.post??{}, image=intent?.image??{};
+              if(typeof post.batchItemId!=='string'||!post.batchItemId)throw new Error('An agent intent needs the batch item it names.');
+              const replies=Array.isArray(intent.suggestedReplies)&&intent.suggestedReplies.length?` The one-tap replies beside this message are: ${intent.suggestedReplies.map(entry=>`「${entry}」`).join(' ')}.`:'';
+              return agent.handle({operation:'run',message:`The owner pressed Regenerate on the image in the post "${typeof post.title==='string'&&post.title?post.title:'this post'}" (batch ${post.batchId}, batch item ${post.batchItemId}) in LOCAL_DEVELOPMENT — aspect ratio ${image.aspectRatio ?? 'the post\'s current'}, references ${image.references === 'source' ? 'the post\'s own image' : 'none'}${typeof image.mediaId==='string'&&image.mediaId?`, media ${image.mediaId}`:''}.${replies} The intent already names the image — ask what should change about THIS image in one or two short questions, never which one. When the change is named, file requestGeneration for this batch item through callGadgetMethod with needs {image:true,caption:false}, options.image {references:"${image.references ?? 'source'}",aspectRatio:"${image.aspectRatio ?? '4:5'}"}, and options.instructions.image carrying the correction. Never call generateImage or editImage in this turn. Follow the gadget instructions that accompany this message.`,instructions:archive.files['agent.md']},credential);
+            }
             if(input?.operation!=='draft')return agent.handle(input,credential);
             if(typeof input.batchId!=='string'||!/^batch_[a-z0-9]+$/.test(input.batchId))throw new Error('A draft batch is required.');
             await localReady;
@@ -562,6 +576,36 @@ const server = createServer(async (request, response) => {
         ...(!['GET','HEAD'].includes(request.method) ? {body: Readable.toWeb(request), duplex: 'half'} : {})
       }));
       response.writeHead(result.status, Object.fromEntries(result.headers));
+      response.end(await result.text());
+    } catch { response.writeHead(500, {'Content-Type':'application/json'}).end('{"error":"local_transport_failed"}'); }
+    return;
+  }
+  /*
+   * The HOST's call into the local runtime — the conversation half of the
+   * workspace, not the sandboxed canvas. The canvas's own transport bakes
+   * the session token into its bridge; the host cannot mint it, so this
+   * route injects the same credential server-side for the one method the
+   * regenerate conversation files. Anything else is refused at the door —
+   * the workspace host is not a second full RPC client.
+   */
+  if (runtime && url.pathname === '/dev-local-rpc' && request.method === 'POST') {
+    try {
+      let text = '';
+      for await (const chunk of request) text += chunk;
+      const body = JSON.parse(text || '{}');
+      const method = typeof body?.method === 'string' ? body.method : '';
+      if (method !== 'requestGeneration') { response.writeHead(405, {'Content-Type':'application/json'}).end('{"error":"method_not_allowed"}'); return; }
+      const result = await runtime.handle(new Request('http://127.0.0.1/local-rpc', {
+        method: 'POST',
+        /*
+         * The caller's own origin is the honest one to forward — it is in the
+         * runtime's allowed list (the gateway name or the loopback), while a
+         * configured frontendOrigin may be unset in local-runtime mode.
+         */
+        headers: { origin: request.headers.origin ?? frontendOrigin, 'content-type': 'application/json', 'x-bot-local-session': runtime.token },
+        body: JSON.stringify({ method, args: Array.isArray(body?.args) ? body.args : [] }), duplex: 'half'
+      }));
+      response.writeHead(result.status, { 'Content-Type': 'application/json' });
       response.end(await result.text());
     } catch { response.writeHead(500, {'Content-Type':'application/json'}).end('{"error":"local_transport_failed"}'); }
     return;

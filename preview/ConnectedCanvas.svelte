@@ -2,10 +2,11 @@
   import {onDestroy} from 'svelte';
   import {LOCAL_RPC_MAX_BYTES} from '../scripts/local-rpc-contract.mjs';
   import {canvasGrantPersistToAgent, gadgetGrantResultMessage, parseGadgetActivateDoorMessage, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
+  import {gadgetHostFeaturesMessage, gadgetTopupResultMessage, parseGadgetAgentIntentMessage, parseGadgetTopupMessage} from '../src/agent-intent.js';
   import {grantReceiptOutcome} from '../scripts/grant-receipt.mjs';
   import {attachHostEvents} from '../scripts/host-events.mjs';
   import {SOCIAL_CONTENT_DEFINITION} from '../definition.ts';
-  let {onDraftRequested = () => {}, onMutation = () => {}, revision = 0} = $props();
+  let {onDraftRequested = () => {}, onMutation = () => {}, onAgentIntent = () => {}, revision = 0} = $props();
   let frame=$state();
   let frameGeneration=$state(0);
   let port=$state.raw();
@@ -39,6 +40,13 @@
     };
     // Opaque sandbox origin requires '*'; only this frame receives the port.
     frame.contentWindow.postMessage({type:'bot-dev-port'},'*',[channel.port2]);
+    /*
+     * The feature announcement travels with the port: this host carries the
+     * agent intent into the conversation but has no funding surface of its
+     * own — a canvas that asks for top-up hears 'unsupported', and the ⋯ row
+     * never offers what is not announced.
+     */
+    frame.contentWindow.postMessage(gadgetHostFeaturesMessage(['agent-intent']),'*');
     // Host-observed changes (agent saves, delivered images) reach the canvas
     // as the same events its subscriber already handles.
     // Every (re)open tells the canvas `reconnected` so it reconciles what it
@@ -79,6 +87,12 @@
   }
   function receiveGrant(event){
     if(!frame || event.source!==frame.contentWindow)return;
+    // The conversation hand-off and the funding ask live beside the door
+    // protocol on the same frame channel — neither is a grant request.
+    const intent=parseGadgetAgentIntentMessage(event.data);
+    if(intent){onAgentIntent(intent);return;}
+    const topup=parseGadgetTopupMessage(event.data);
+    if(topup){frame.contentWindow?.postMessage(gadgetTopupResultMessage({requestId:topup.requestId,outcome:'unsupported'}),'*');return;}
     const grant=parseGadgetGrantDoorMessage(event.data);
     const activate=grant?null:parseGadgetActivateDoorMessage(event.data);
     const request=grant ?? activate;

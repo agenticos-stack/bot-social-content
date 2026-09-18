@@ -36,6 +36,13 @@ import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rp
 import { createMediaStage } from "./preview-media.js";
 import { createImageAcceptance } from "./image-acceptance.js";
 import { newGrantRequestId, parseGadgetDoorsChangedMessage, parseGadgetGrantResultMessage } from "../../grant-request.js";
+import {
+  gadgetAgentIntentMessage,
+  gadgetTopupMessage,
+  newTopupRequestId,
+  parseGadgetHostFeaturesMessage,
+  parseGadgetTopupResultMessage
+} from "../../agent-intent.js";
 import { renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
 import {
@@ -59,7 +66,8 @@ import {
   renderOutputPanel,
   renderPublishControls,
   renderReferencePanel,
-  revisionEntryFor
+  revisionEntryFor,
+  REGEN_SUGGESTION_KEYS
 } from "./drawer.js";
 import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
 import {
@@ -330,17 +338,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-slot-acts { display: flex; flex-wrap: wrap; gap: 6px; }
 .sl-slot-acts .sl-primary, .sl-slot-acts .sl-secondary { min-height: 30px; padding: 0 11px; font-size: 11.5px; }
 /* Every action on an existing picture lives ON the picture: one ⋯ opens the
-   merged menu. It reveals on hover and :focus-within, stays visible while
-   its menu is open, and is always visible on coarse pointers. */
+   merged menu. The chip rests visible — legible on any image and on touch
+   screens that have no hover to reveal it. */
 .sl-addwrap-pic { position: absolute; top: 8px; left: 8px; z-index: 3; }
 /* The menu drops from the ⋯ inside the panel's own scroller: cap it to the
    space below the trigger and let it scroll internally, so the Remove row is
    never clipped off the sheet on a short viewport. */
 .sl-addwrap-pic .sl-menu { max-height: calc(100dvh - 300px); overflow-y: auto; overscroll-behavior: contain; }
-.sl-picbtn { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--sl-radius-control); background: rgba(255,255,255,.96); color: var(--sl-ink); font-size: 15px; font-weight: 700; line-height: 1; box-shadow: var(--sl-e-1); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
-.sl-slot-media:hover .sl-picbtn, .sl-slot-media:focus-within .sl-picbtn, .sl-addwrap-pic:has(.sl-menu) .sl-picbtn { opacity: 1; pointer-events: auto; }
+/* The ⋯ chip is legible at rest on any image — a solid surface, a dark
+   glyph, the e-1 shadow — never a hover-only scrim over the picture. */
+.sl-picbtn { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-ink); font-size: 15px; font-weight: 700; line-height: 1; box-shadow: var(--sl-e-1); cursor: pointer; }
+.sl-picbtn:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-slot-media .sl-picbtn:disabled { opacity: .5; }
-@media (hover: none) { .sl-picbtn { opacity: 1; pointer-events: auto; } }
 @media (prefers-reduced-motion: reduce) { .sl-picbtn { transition: none; } }
 /* The empty slot is the add control — a dashed placeholder the exact size of
    the picture that will replace it, so the panel never jumps when one lands. */
@@ -366,26 +375,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-menu-sub.sl-menu-warn { color: var(--sl-warning); }
 .sl-menu-item.sl-menu-danger .sl-menu-lead { color: var(--sl-danger); }
 .sl-menu-sep { height: 1px; background: var(--sl-line); margin: 5px 4px; }
-/* The regenerate conversation under the strip: chips name the change, the
-   plan line restates it with the price, and Generate files once — never a
-   blind rerun, never a loop. */
-.sl-regen { margin-top: 12px; padding: 12px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface); display: flex; flex-direction: column; gap: 9px; }
-.sl-regen-ask { margin: 0; font-size: 13px; font-weight: 600; color: var(--sl-ink); }
-.sl-regen-sub { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
-.sl-regen-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-.sl-regen-chip { min-height: 30px; padding: 0 11px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-chip); background: transparent; font-size: 11.5px; color: var(--sl-ink-2); cursor: pointer; }
-.sl-regen-chip[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; border-color: var(--sl-ink); }
-.sl-regen-other { min-height: 56px; }
-.sl-regen-plan { border-top: 1px solid var(--sl-line); padding-top: 9px; display: flex; flex-direction: column; gap: 6px; }
-.sl-regen-plan-line { margin: 0; font-size: 12.5px; color: var(--sl-ink); font-weight: 600; }
-.sl-regen-cost { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
-.sl-regen-acts { display: flex; align-items: center; gap: 9px; }
-.sl-regen-acts .sl-grow, .sl-drawer-footer-actions .sl-grow { flex: 1; }
+.sl-drawer-footer-actions .sl-grow { flex: 1; }
+/* The 增值 row on a credits-paused run: the funding action in place, not a
+   dead-end sentence. A host with no top-up surface leaves it disabled with
+   the reason; topped_up resumes the paused run on its own. */
+.sl-topup { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface-2); }
+.sl-topup-note { margin: 0; flex: 1; font-size: 11.5px; color: var(--sl-ink-2); line-height: 1.4; }
+.sl-topup-btn { flex: none; }
 /* The image brief on the Instructions tab — a flat block, not a
-   collapsible: price line first, then the fields it prices. */
+   collapsible: the fields a Generate ask is made under. */
 .sl-brieftab { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
 .sl-brieftab > * { margin-block: 0; }
-.sl-brief-price { margin: 0; }
 .sl-brief-switch, .sl-brief-save { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; font-weight: 600; color: var(--sl-ink); cursor: pointer; }
 .sl-brief-switch input, .sl-brief-save input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
 .sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
@@ -1136,10 +1136,40 @@ function App() {
    * request's late reply) cannot start work here.
    */
   const pendingDoorRequests = new Map();
+  /*
+   * What the host announced it can carry — the agent-intent hand-off and
+   * the top-up ask. A canvas hears it once at load (and again if the host
+   * re-announces); until then nothing is assumed. The regenerate row and
+   * the 增值 affordance stay visible but disabled with the reason, never
+   * replaced by an inline fallback — the conversation IS the surface.
+   */
+  const hostFeatures = new Set();
+  const hostFeatureListeners = new Set();
+  const pendingTopupRequests = new Map();
   // A sandboxed canvas always has a window to listen on; guarded so the
   // client still boots where there is none (unit shims, a detached render).
   if (typeof window.addEventListener === "function") window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
+    // The host's contract announcement: re-render any open drawer so the
+    // row it governs flips between offered and disabled-with-reason.
+    const features = parseGadgetHostFeaturesMessage(event.data);
+    if (features) {
+      hostFeatures.clear();
+      for (const key of features.features) hostFeatures.add(key);
+      for (const notify of hostFeatureListeners) notify();
+      return;
+    }
+    // A top-up ask's answer, correlated by request id; the drawer's handler
+    // owns what "topped_up" does next (the paused run resumes on its own).
+    const topup = parseGadgetTopupResultMessage(event.data);
+    if (topup?.requestId) {
+      const pending = pendingTopupRequests.get(topup.requestId);
+      if (!pending) return;
+      pendingTopupRequests.delete(topup.requestId);
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.resolve({ outcome: topup.outcome, message: topup.message });
+      return;
+    }
     // F2: an unprompted "something about this door may have changed" notice
     // — Studio's own access popover, not a reply to anything this canvas
     // asked (those go through gadget:grant-result below, correlated by
@@ -1501,13 +1531,85 @@ function App() {
         saveOneOff: stored.saveOneOff === true
       };
     };
+    /**
+     * The ⋯ row's whole job: hand THIS image to the host's conversation. The
+     * intent carries enough context — post, item, media id, the brief's ratio
+     * and reference basis, a thumbnail of what is on screen, and the one-tap
+     * answers already in the owner's language — that the conversation never
+     * asks which image is meant. The canvas posts it and its layout does not
+     * move; the host owns what the conversation does next. Nothing here runs
+     * a generation — filing stays the durable requestGeneration the agent
+     * submits after the owner approves the plan.
+     */
+    const postAgentIntent = (item) => {
+      if (!hostFeatures.has("agent-intent")) return;
+      const brief = imageBriefOf(item);
+      try {
+        window.parent.postMessage(gadgetAgentIntentMessage({
+          intent: "image.regenerate",
+          post: { batchId: batch.id, batchItemId: item.id, title: item.title ?? null },
+          image: {
+            mediaId: item.generatedImage?.id ?? null,
+            aspectRatio: brief.ratio,
+            references: brief.useSource ? "source" : "none",
+            thumbnail: intentThumbnail()
+          },
+          suggestedReplies: REGEN_SUGGESTION_KEYS.map((key) => t(locale, key)),
+          locale
+        }), "*");
+      } catch (error) {
+        console.error("agent intent could not be posted", error);
+      }
+    };
+    /**
+     * A small JPEG of the picture on screen so the conversation's intent
+     * card shows the actual image being discussed — drawn from the rendered
+     * <img>, never fetched again. When it cannot be drawn (still loading, a
+     * shim without canvas) the card simply renders without it.
+     */
+    const intentThumbnail = () => {
+      try {
+        const img = batchDialog.querySelector?.(".sl-output-frame-accepted .sl-pc-canvas");
+        if (!img?.naturalWidth || !img?.naturalHeight) return null;
+        const scale = Math.min(1, 160 / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.72);
+      } catch {
+        return null;
+      }
+    };
+    /**
+     * The 增值 ask on a credits-paused run. The host owns the funding surface;
+     * this canvas asks and hears the answer. `topped_up` resumes the paused
+     * run on its own — the drawer's handler calls retryStart, which re-files
+     * the SAME request (mark's needs + brief + run instructions), so nothing
+     * the owner already agreed to is re-asked or re-decided.
+     */
+    const requestTopup = (item) => {
+      const requestId = newTopupRequestId();
+      const reply = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          if (!pendingTopupRequests.delete(requestId)) return;
+          resolve({ outcome: "unconfirmed", message: null });
+        }, 120_000);
+        pendingTopupRequests.set(requestId, { resolve, timer });
+      });
+      window.parent.postMessage(gadgetTopupMessage({
+        post: { batchId: batch.id, batchItemId: item.id, title: item.title ?? null },
+        requestId
+      }), "*");
+      return reply;
+    };
     /*
      * Per-post sheet state that is NOT content and never saved: the add
-     * menu, the regenerate conversation draft, the publish picker's open
-     * state, the transient destination picks, and the schedule field's
-     * chosen local time. Like the buffers, one entry per post.
+     * menu, the publish picker's open state, the transient destination
+     * picks, the schedule field's chosen local time, and the top-up ask's
+     * in-flight/outcome flags. Like the buffers, one entry per post.
      */
-    const drawerUi = new Map(); // batchItemId -> { menuOpen?, regen?, destOpen?, picking?, scheduledAt?, picked?, candidateDismissed? }
+    const drawerUi = new Map(); // batchItemId -> { menuOpen?, menuAnchor?, destOpen?, picking?, scheduledAt?, picked?, candidateDismissed?, topupPending?, topupDone?, topupCancelled? }
     const uiOf = (id) => drawerUi.get(id) ?? {};
     const patchUi = (id, patch) => drawerUi.set(id, { ...uiOf(id), ...patch });
     // Every change to a buffered field bumps that field's edit version, so a
@@ -2569,7 +2671,7 @@ function App() {
         if (postMenu.confirm === entry.id) {
           return el("div", { class: "sl-rowconfirm" }, [
             el("span", { class: "sl-pm-grow" }, t(locale, "drawerRemovePostQ", { name: postNameOf(entry) })),
-            el("button", { type: "button", class: "sl-pm-no", onclick: () => { postMenu.confirm = null; renderPostSelector(); } }, t(locale, "drawerRegenCancel")),
+            el("button", { type: "button", class: "sl-pm-no", onclick: () => { postMenu.confirm = null; renderPostSelector(); } }, t(locale, "drawerDecisionCancel")),
             el("button", { type: "button", class: "sl-pm-yes", onclick: () => removePost(entry) }, t(locale, "drawerHoverRemove"))
           ]);
         }
@@ -2868,6 +2970,42 @@ function App() {
           resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
+          /*
+           * THE 增值 ASK. A run paused on credits gets its funding action in
+           * place — no dead-end sentence. The host owns the top-up surface;
+           * this row asks and hears the answer. `topped_up` re-files the SAME
+           * request (retryStart), so the paused run resumes on its own and the
+           * owner is never asked to ask again. A host with no top-up surface
+           * leaves the row disabled with the reason.
+           */
+          display === "insufficient_credits"
+            ? el("div", { class: "sl-topup", role: "group" }, [
+                el("p", { class: "sl-topup-note" }, t(locale,
+                  ui.topupDone ? "drawerTopupDone" : ui.topupCancelled ? "drawerTopupCancelled" : "drawerTopupResumeNote")),
+                ui.topupDone
+                  ? null
+                  : el("button", {
+                      type: "button", class: "sl-primary sl-sm sl-topup-btn",
+                      disabled: ui.topupPending === true || !hostFeatures.has("topup"),
+                      title: hostFeatures.has("topup") ? null : t(locale, "drawerTopupUnsupported"),
+                      onclick: async () => {
+                        if (uiOf(item.id).topupPending === true || !hostFeatures.has("topup")) return;
+                        patchUi(item.id, { topupPending: true, topupCancelled: false });
+                        redrawFooter();
+                        const reply = await requestTopup(item);
+                        if (!live) return;
+                        if (reply.outcome === "topped_up") {
+                          patchUi(item.id, { topupPending: false, topupDone: true });
+                          redrawPreserving();
+                          void retryStart(item);
+                        } else {
+                          patchUi(item.id, { topupPending: false, topupCancelled: reply.outcome === "cancelled" });
+                          redrawPreserving();
+                        }
+                      }
+                    }, t(locale, ui.topupPending === true ? "drawerTopupWorking" : "drawerTopupAction"))
+              ])
+            : null,
           // The publish row sits in the sheet foot per the accepted mockup —
           // the destination picker visible on every tab, above the actions.
           // What is picked here IS what submitForReview files.
@@ -3141,12 +3279,6 @@ function App() {
           stateLabel: (outcome) => publicationStateSummary(locale, outcome)
         });
       } else {
-        // A sent conversation's "generating" note clears once the request
-        // resolves — the candidate beside the slot IS the answer.
-        const ui = uiOf(item.id);
-        if (ui.regen?.sent && (!generationMark(item.generation)?.needs.image || item.generatedCandidate)) {
-          patchUi(item.id, { regen: null });
-        }
         panel = renderOutputPanel(locale, item, {
           editable,
           saving,
@@ -3215,7 +3347,7 @@ function App() {
           strip: {
             menuOpen: uiOf(item.id).menuOpen === true,
             menuAnchor: uiOf(item.id).menuAnchor ?? null,
-            regen: uiOf(item.id).regen ?? null,
+            agentIntent: hostFeatures.has("agent-intent"),
             candidateDismissed: uiOf(item.id).candidateDismissed ?? null,
             onToggleMenu: (anchor) => {
               const ui = uiOf(item.id);
@@ -3237,42 +3369,14 @@ function App() {
             onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); redraw(); void requestPart(item, "image"); },
             onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); redraw(); pickOwnerUpload(item); },
             onMenuAdoptSource: () => { patchUi(item.id, { menuOpen: false }); redraw(); void applyVisual(item, { acceptedVisualMode: "keep_original" }); },
-            onRegenOpen: (slot) => {
-              patchUi(item.id, { regen: { slot, notes: [], other: "", otherOpen: false, sent: false }, menuOpen: false });
+            // Regenerate is a conversation hand-off: the intent carries this
+            // image's context to the host, which opens the chat. The menu
+            // closes and the layout does not move — the drawer keeps its state
+            // for when the owner returns.
+            onRegenIntent: () => {
+              patchUi(item.id, { menuOpen: false });
               redraw();
-            },
-            onRegenChip: (key) => {
-              const regen = uiOf(item.id).regen;
-              if (!regen) return;
-              const notes = regen.notes.includes(key) ? regen.notes.filter((entry) => entry !== key) : [...regen.notes, key];
-              patchUi(item.id, { regen: { ...regen, notes } });
-              redraw();
-            },
-            onRegenToggleOther: () => {
-              const regen = uiOf(item.id).regen;
-              if (regen) patchUi(item.id, { regen: { ...regen, otherOpen: true } });
-              redraw();
-            },
-            onRegenOtherInput: (value) => {
-              const regen = uiOf(item.id).regen;
-              if (regen) patchUi(item.id, { regen: { ...regen, other: value } });
-            },
-            onRegenOtherBlur: () => redraw(),
-            onRegenCancel: () => { patchUi(item.id, { regen: null }); redraw(); },
-            onRegenSubmit: async () => {
-              const regen = uiOf(item.id).regen;
-              if (!regen || regen.sent) return;
-              const correction = [...regen.notes.map((key) => t(locale, key)), ...(regen.other?.trim() ? [regen.other.trim()] : [])].join("; ");
-              if (!correction) return;
-              const sent = await requestPart(item, "image", correction);
-              if (!live) return;
-              // Only a still-open conversation for the same slot is marked
-              // sent; a cancel during the request must not resurrect it.
-              const current = uiOf(item.id).regen;
-              if (current && current.slot === regen.slot && !current.sent) {
-                patchUi(item.id, { regen: sent ? { ...current, sent: true } : current });
-                redraw();
-              }
+              postAgentIntent(item);
             },
             onRemoveSlot: () => {
               patchUi(item.id, { menuOpen: false });
@@ -3351,6 +3455,7 @@ function App() {
       if (!live) return;
       live = false;
       readToken += 1;
+      hostFeatureListeners.delete(redrawPreserving);
       for (const held of stages.values()) held.stage.dispose();
       stages.clear();
       for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
@@ -3358,6 +3463,9 @@ function App() {
       if (drawerSession === session) drawerSession = null;
     };
 
+    // A host-features announcement that lands mid-drawer flips the ⋯ row
+    // between offered and disabled-with-reason; the open sheet re-reads it.
+    hostFeatureListeners.add(redrawPreserving);
     redraw();
 
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [

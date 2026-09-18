@@ -16,6 +16,7 @@ import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/s
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
 import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, sourceImageReferences } from "../../src/model.js";
+import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
 type AnyRec = Record<string, any>;
@@ -57,10 +58,10 @@ const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: 
 // picture lands, generation goes through the ⋯ menu's Regenerate… ask.
 const imageless = { generatedImage: null, acceptedVisualMode: null };
 
-function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; takenSourceIds?: string[] } = {}) {
+function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; takenSourceIds?: string[]; hostFeatures?: Set<string> } = {}) {
   installMinimalDom();
   const db: AnyRec = { id: "b", items: options.items ?? [post()] };
-  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [] };
+  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [], posts: [] };
   const responses: AnyRec = { requestGeneration: [], saveInstructionOverrides: null };
   const held: Array<(value: AnyRec) => void> = [];
   let holdReads = 0;
@@ -91,7 +92,17 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     publicationStateSummary: (_locale: string, outcome: string) => outcome,
     confirmUnsavedNavigation: async () => { calls.guards++; return "keep"; },
     GadgetSubscriber: class {},
-    window: { addEventListener() {} }
+    // The host-contract seam: the module-level listener never runs under
+    // extraction, so tests seed capabilities here and read what the canvas
+    // posted to window.parent.
+    hostFeatures: options.hostFeatures ?? new Set(["agent-intent", "topup"]),
+    hostFeatureListeners: new Set(),
+    pendingTopupRequests: new Map(),
+    gadgetAgentIntentMessage, gadgetTopupMessage, parseGadgetTopupResultMessage, newTopupRequestId,
+    window: {
+      addEventListener() {},
+      parent: { postMessage(message: AnyRec) { calls.posts.push(message); } }
+    }
   };
   scope.rpc = {
     getBatch: (_id: string) => {
@@ -192,18 +203,15 @@ async function openPicMenu(r: AnyRec) {
   await flushAsyncWork();
 }
 /**
- * The regenerate conversation end to end: ⋯ → Regenerate…, name the
- * correction (a chip), press Generate. Returns the dispatch promise, which
- * stays pending while a decision dialog waits inside the request.
+ * The ⋯ row's whole job: post the image's intent to the host — the
+ * conversation, the plan and the filing all live there now.
  */
-async function startRegen(r: AnyRec, chip = "drawerRegenC1") {
+async function pressRegenIntent(r: AnyRec) {
   await openPicMenu(r);
   const row = menuButton(r.dialog(), t("en", "drawerPicRegen"));
   if (!row) throw new Error("Regenerate row missing in: " + labels(r.dialog()).join(" | "));
   await row.dispatchEvent({ type: "click" });
   await flushAsyncWork();
-  await click(r.dialog(), t("en", chip));
-  return press(r.dialog(), t("en", "drawerRegenGo"));
 }
 /** Opens the empty slot's add menu: the dashed add-place tile is the only
  *  add trigger — a bare Generate exists only while there is no picture. */
@@ -1109,18 +1117,109 @@ describe("the image brief on the Instructions tab", () => {
     }]]);
   });
 
-  it("sends the regenerate conversation's correction as the run layer", async () => {
+  it("posts the image's agent intent — the correction and the filing are the host's", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
-    const done = await startRegen(r); // "Too dark" chip, then Generate
+    await pressRegenIntent(r);
+    // One gadget:agent-intent to window.parent, naming this exact image:
+    // batch item, the brief's own ratio/reference mode, a thumbnail and the
+    // suggested replies the host's chat renders as one-tap answers.
+    expect(r.calls.requests).toHaveLength(0);
+    expect(r.calls.posts).toHaveLength(1);
+    const message = r.calls.posts[0];
+    expect(message.type).toBe("gadget:agent-intent");
+    expect(message.intent).toBe("image.regenerate");
+    expect(message.post).toMatchObject({ batchId: "b", batchItemId: "a" });
+    expect(message.image.aspectRatio).toBe("4:5");
+    expect(message.image.references).toBe("source");
+    expect(message.image.mediaId).toBe("gm_a");
+    expect(message.suggestedReplies.length).toBeGreaterThan(0);
+    // The canvas never files on this path — nothing for the run layer to be.
+    expect(r.calls.instructionWrites).toHaveLength(0);
+  });
+
+  it("the ⋯ Regenerate… row is disabled with the reason on a host that cannot carry it", async () => {
+    const r = rig({ hostFeatures: new Set() });
+    await r.open({ id: "b", itemId: "a" });
+    await openPicMenu(r);
+    const row = menuButton(r.dialog(), t("en", "drawerPicRegen"));
+    expect(row.disabled).toBe(true);
+    expect(row.textContent).toContain(t("en", "drawerPicRegenOff"));
+    await row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.posts).toHaveLength(0);
+  });
+
+  it("a credits-paused run offers a correlated top-up; topped_up resumes the same request", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })] });
+    await r.open({ id: "b", itemId: "a" });
+    // The pause reads in place — no dead-end sentence, the ask is here.
+    expect(r.dialog().textContent).toContain(t("en", "drawerInsufficientCredits"));
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    expect(row).toBeTruthy();
+    expect(row.disabled).toBe(false);
+    const done = row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    // One correlated gadget:topup ask — the host owns the funding surface.
+    expect(r.calls.posts).toHaveLength(1);
+    expect(r.calls.posts[0].type).toBe("gadget:topup");
+    expect(r.calls.posts[0].post).toMatchObject({ batchId: "b", batchItemId: "a" });
+    const requestId = r.calls.posts[0].requestId;
+    expect(r.scope.pendingTopupRequests.has(requestId)).toBe(true);
+    // The host's answer, correlated by request id: topped_up re-files the
+    // SAME outstanding needs — the paused run resumes on its own.
+    const pending = r.scope.pendingTopupRequests.get(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve({ outcome: "topped_up", message: null });
     await done;
     await flushAsyncWork();
-    expect(r.calls.instructionWrites).toHaveLength(0);
-    expect(r.calls.requests).toEqual([["b", ["a"], {
-      needs: { image: true },
-      image: { references: "source", aspectRatio: "4:5" },
-      instructions: { image: "Too dark" }
-    }]]);
+    expect(r.calls.requests).toHaveLength(1);
+    expect(r.calls.requests[0][0]).toBe("b");
+    expect(r.calls.requests[0][1]).toEqual(["a"]);
+    expect(r.calls.requests[0][2]).toMatchObject({ replace: true, needs: { image: true, caption: false } });
+  });
+
+  it("a cancelled top-up resumes nothing — the run stays paused and says so", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })] });
+    await r.open({ id: "b", itemId: "a" });
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    const done = row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    const requestId = r.calls.posts[0].requestId;
+    const pending = r.scope.pendingTopupRequests.get(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve({ outcome: "cancelled", message: null });
+    await done;
+    await flushAsyncWork();
+    // Nothing re-filed; the row returns and the note says the ask was closed.
+    expect(r.calls.requests).toHaveLength(0);
+    expect(r.dialog().textContent).toContain(t("en", "drawerTopupCancelled"));
+  });
+
+  it("a host with no top-up surface disables the row with the reason", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })], hostFeatures: new Set(["agent-intent"]) });
+    await r.open({ id: "b", itemId: "a" });
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    expect(row.disabled).toBe(true);
+    await row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.posts).toHaveLength(0);
+    expect(r.calls.requests).toHaveLength(0);
   });
 
   it("announces the translated refusal when the server reports reference_unavailable", async () => {

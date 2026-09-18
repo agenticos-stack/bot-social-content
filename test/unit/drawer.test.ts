@@ -240,16 +240,21 @@ describe("Output section", () => {
 
   it("swaps the generate row's brief for the no-caption warning — a soft gate, not a block", () => {
     // An image made before the text exists is likely to be made again once
-    // the brief changes: the row stays pressable and says what it spends.
+    // the brief changes: the row stays pressable and names the quality risk —
+    // never a price, which the owner never weighs.
     const view = output(post({ caption: "", generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
     const row = buttonNamed(view.root, "Generate a new image")!;
     expect(row.disabled).toBe(false);
     const warn = all(row, (e) => String(e.className).split(" ").includes("sl-menu-warn"))[0];
     expect(warn?.textContent).toContain("No caption yet");
     expect(row.textContent).not.toContain("priced as");
-    // A post that does have a caption keeps the brief summary.
+    // A post that does have a caption keeps the brief summary — basis and
+    // ratio, with no spend named anywhere.
     const captioned = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
-    expect(buttonNamed(captioned.root, "Generate a new image")!.textContent).toContain("priced as an edit");
+    const captionRow = buttonNamed(captioned.root, "Generate a new image")!;
+    expect(captionRow.textContent).toContain("From the post's image");
+    expect(captionRow.textContent).toContain("4:5");
+    expect(captionRow.textContent).not.toContain("priced as");
   });
 
   it("shows the chosen upload and adopting it calls onAdoptUpload", async () => {
@@ -310,27 +315,25 @@ describe("Output section", () => {
     expect(caption.getAttribute("title")).toContain("Already requested");
   });
 
-  it("regenerate is a conversation: name the change, see plan and price, then generate once", async () => {
-    const submits: number[] = [];
-    const regen = { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: true, sent: false };
-    const view = output(post(), {
-      imageBrief: { useSource: true, ratio: "4:5", oneOff: "", saveOneOff: false },
-      strip: { regen, onRegenSubmit: () => submits.push(1), onRegenChip: () => {}, onRegenCancel: () => {} }
-    });
-    expect(view.root.textContent).toContain("What should change about image 1?");
-    // The plan restates the named correction, the ratio and the spend.
-    expect(view.root.textContent).toContain("Image 1 · Too dark · 4:5");
-    expect(view.root.textContent).toContain("One generation");
-    await buttonNamed(view.root, "Generate")!.dispatchEvent({ type: "click" });
-    expect(submits).toEqual([1]);
-    // Chips not yet pressed → nothing is filed; the ask stands alone.
-    const empty = output(post(), { strip: { regen: { slot: 1, notes: [], other: "", otherOpen: false, sent: false } } });
-    expect(empty.root.textContent).toContain("Name one thing to change before generating.");
-    expect(buttonNamed(empty.root, "Generate")).toBeUndefined();
-    // A sent request reads as running — never a second submit.
-    const sent = output(post(), { strip: { regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: true } } });
-    expect(sent.root.textContent).toContain("Generating image 1.");
-    expect(buttonNamed(sent.root, "Generate")).toBeUndefined();
+  it("the ⋯ Regenerate… row hands the image to the host's conversation — or says why it cannot", async () => {
+    const slots: number[] = [];
+    const view = output(post(), { strip: { menuOpen: true, agentIntent: true, onRegenIntent: (slot: number) => slots.push(slot) } });
+    const row = buttonNamed(view.root, "Regenerate…")!;
+    expect(row.disabled).toBe(false);
+    expect(row.textContent).toContain("Say what should change in the conversation");
+    await row.dispatchEvent({ type: "click" });
+    expect(slots).toEqual([1]);
+    // A host that never announced the contract: the row stays visible but
+    // disabled, naming the reason — no inline fallback ever renders.
+    const off = output(post(), { strip: { menuOpen: true, agentIntent: false } });
+    const dead = buttonNamed(off.root, "Regenerate…")!;
+    expect(dead.disabled).toBe(true);
+    expect(dead.textContent).toContain("This workspace can't open the conversation.");
+    expect(all(off.root, (e) => String(e.className).split(" ").includes("sl-regen"))).toHaveLength(0);
+    expect(off.root.textContent).not.toContain("What should change about image");
+    // Funding is never weighed in the drawer — no price copy anywhere.
+    expect(view.root.textContent).not.toContain("credit");
+    expect(view.root.textContent).not.toContain("One generation");
   });
 
   it("has no visual-mode radios: no text poster, no source photo as output", () => {
@@ -384,16 +387,16 @@ describe("Output section", () => {
     const root = renderOutputPanel("zh-HK", post() as never, {
       editable: true,
       buffers: {},
-      strip: { menuOpen: true, regen: { slot: 1, notes: ["drawerRegenC1"], other: "", otherOpen: false, sent: false } }
+      strip: { menuOpen: true, agentIntent: true }
     } as never);
     // The picture's ⋯ menu — regenerate is the conversation, not a blind retry.
     expect(root.textContent).toContain("重新生成…");
+    expect(root.textContent).toContain("在對話說明要改之處");
     expect(root.textContent).toContain("上載替換…");
     expect(root.textContent).toContain("改用原帖圖片");
     expect(root.textContent).toContain("檢視");
     expect(root.textContent).toContain("移除圖片");
     expect(root.textContent).toContain("重新撰寫文案");
-    expect(root.textContent).toContain("第 1 張要改甚麼？");
     // No image yet — the dashed tile carries the add menu.
     const empty = renderOutputPanel("zh-HK", post({ generatedImage: null, acceptedVisualMode: null }) as never, {
       editable: true,
@@ -596,7 +599,7 @@ describe("Instructions section", () => {
     expect(history.textContent).toContain("Image instruction: Outdoor photo");
   });
 
-  it("carries the generation brief — price, reference toggle, ratio, and no run layer", async () => {
+  it("carries the generation brief — reference toggle, ratio, and no run layer or price", async () => {
     const patched: Record<string, unknown>[] = [];
     const root = renderInstructionsPanel("en", post() as never, {
       editable: true,
@@ -606,8 +609,8 @@ describe("Instructions section", () => {
       imageRefsAvailable: true,
       onPatchImageBrief: (patch: Record<string, unknown>) => patched.push(patch)
     } as never);
-    // The price line leads the fields.
-    expect(root.textContent).toContain("priced as an edit");
+    // Funding is never a field here — no price line anywhere in the brief.
+    expect(root.textContent).not.toContain("priced as");
     expect(root.textContent).toContain("Start from the post's image");
     const ratios = all(root, (e) => String(e.className).split(" ").includes("sl-brief-ratio"));
     expect(ratios.map((r) => String(r.textContent))).toEqual(["Match the post (4:5)", "Square (1:1)", "Story (9:16)"]);

@@ -358,7 +358,12 @@ function imageSlots(item) {
   return [{ index: 1, image, legacy }];
 }
 
-const REGEN_CHIPS = ["drawerRegenC1", "drawerRegenC2", "drawerRegenC3", "drawerRegenC4", "drawerRegenC5"];
+/**
+ * The one-tap answers the regenerate conversation offers — the client's copy
+ * keys, resolved to the owner's language and carried on the agent intent so
+ * any host can render the same chips without knowing this gadget's strings.
+ */
+export const REGEN_SUGGESTION_KEYS = Object.freeze(["drawerRegenC1", "drawerRegenC2", "drawerRegenC3", "drawerRegenC4", "drawerRegenC5"]);
 
 /*
  * ONE SHAPE FOR BOTH TABS. Every column opens with the same label row — the
@@ -381,11 +386,10 @@ function columnLabel(text, action, id = null) {
  * imageRefsAvailable?: bool, uploadPreview?: { name },
  * captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use"),
  * strip?: { menuOpen, menuAnchor ("place" = empty slot's add menu, "pic" = the
- *   picture's ⋯ menu), regen, candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
- *   onMenuUpload(), onMenuAdoptSource(), onRegenOpen(n), onRegenChip(key),
- *   onRegenOtherInput(value), onRegenOtherBlur(), onRegenToggleOther(),
- *   onRegenSubmit(), onRegenCancel(), onRemoveSlot(n), onViewSlot(n),
- *   onDismissCandidate() } }`.
+ *   picture's ⋯ menu), agentIntent (host can carry an image intent into the
+ *   conversation), candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
+ *   onMenuUpload(), onMenuAdoptSource(), onRegenIntent(n), onRemoveSlot(n),
+ *   onViewSlot(n), onDismissCandidate() } }`.
  *
  * `buffers` = `{ caption?, altText?, imageId?, visualMode?, imageSource?,
  * instructions?, imageBrief? }` — `imageBrief` stages the NEXT Generate ask;
@@ -475,17 +479,18 @@ export function renderOutputPanel(locale, item, ctx) {
     ]);
   // The menu's Generate row carries the same pending honesty the old segment
   // did: a requested part names itself, another pending part is named too.
-  // With no caption yet the brief summary steps aside for the cost argument —
-  // an image made before the text exists is likely to be made again once the
-  // brief changes. Generate stays available; the note says what it spends.
+  // Its sub names the brief — basis and ratio — never a price: the owner does
+  // not weigh image cost; a paused run asks for a top-up, not a decision.
+  // The no-caption note stays for the same reason it always did — an image
+  // drawn before the words exist usually needs another pass — as quality
+  // copy, with nothing to spend named in it.
   const captionEmpty = !String(buffers.caption ?? item.caption ?? "").trim();
   const generateItem = menuRow(t(locale, "drawerAddGenerate"),
     captionEmpty
       ? t(locale, "drawerAddNoCaption")
       : t(locale, "drawerAddGenerateSub", {
           ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
-          ratio: brief.ratio,
-          price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")
+          ratio: brief.ratio
         }),
     () => strip.onMenuGenerate?.(), false, captionEmpty);
   if (imageBusy) {
@@ -551,16 +556,25 @@ export function renderOutputPanel(locale, item, ctx) {
 
   /*
    * THE ⋯ ON THE PICTURE. Once a picture exists every image action is
-   * something done to THAT picture: regenerate (the feedback conversation —
-   * never a direct generate, since a blind rerun of the same brief returns
-   * the same picture for the same price), upload a replacement, adopt the
-   * source photo, view, remove. The button reveals on hover and
-   * :focus-within, stays visible while its menu is open, and is always
-   * visible under @media (hover: none).
+   * something done to THAT picture: regenerate (hands the image's context to
+   * the host's conversation — never a direct generate, since a blind rerun of
+   * the same brief returns the same picture), upload a replacement, adopt the
+   * source photo, view, remove. The chip is legible at rest on any image —
+   * solid surface, dark glyph, a small shadow — not a hover scrim.
+   *
+   * Regenerate is only offered when the host announced it can carry an agent
+   * intent into the conversation (`strip.agentIntent`). On a host that never
+   * said so, the row stays visible but disabled, naming the reason — there is
+   * no inline fallback, because the conversation IS the regenerate surface.
    */
   const picMenuFor = (slot) =>
     el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerImgActions") }, [
-      menuRow(t(locale, "drawerPicRegen"), t(locale, "drawerPicRegenSub"), () => strip.onRegenOpen?.(slot.index)),
+      menuRow(
+        t(locale, "drawerPicRegen"),
+        strip.agentIntent ? t(locale, "drawerPicRegenSub") : t(locale, "drawerPicRegenOff"),
+        () => strip.onRegenIntent?.(slot.index),
+        !strip.agentIntent
+      ),
       menuRow(t(locale, "drawerPicUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
       menuRow(
         t(locale, "drawerPicSource"),
@@ -619,62 +633,12 @@ export function renderOutputPanel(locale, item, ctx) {
     : null;
 
   /*
-   * REGENERATE IS A CONVERSATION, not a blind rerun: name what should change
-   * (a chip or your own words), see the plan and the price it will spend, then
-   * Generate — and it generates once, never on a loop. Nothing is filed until
-   * the owner says what is wrong.
+   * NO INLINE REGENERATE PANEL. The correction conversation lives in the
+   * host's chat — the ⋯ row posts a gadget:agent-intent carrying this image's
+   * context and the drawer never re-runs a brief itself. A canvas whose host
+   * never announced the contract shows the row disabled with the reason; it
+   * does not grow a second regenerate surface here.
    */
-  const regen = strip.regen ?? null;
-  const regenPanel = (() => {
-    if (!editable || !regen) return null;
-    if (regen.sent) {
-      return el("div", { class: "sl-regen", role: "status" }, [
-        el("p", { class: "sl-regen-ask" }, t(locale, "drawerRegenRunning", { n: regen.slot })),
-        el("p", { class: "sl-regen-sub" }, t(locale, "drawerRegenRunningSub"))
-      ]);
-    }
-    const named = regen.notes.length > 0 || Boolean(regen.other?.trim());
-    const correction = [...regen.notes.map((key) => t(locale, key)), ...(regen.other?.trim() ? [regen.other.trim()] : [])];
-    const other = regen.otherOpen
-      ? (() => {
-          const area = el("textarea", {
-            id: "sl-regen-other",
-            class: "sl-regen-other",
-            rows: "2",
-            placeholder: t(locale, "drawerRegenOtherPh"),
-            "aria-label": t(locale, "drawerRegenOther")
-          });
-          area.value = regen.other ?? "";
-          area.addEventListener("input", () => strip.onRegenOtherInput?.(area.value));
-          // Re-render on blur: the plan line appears once something is named.
-          area.addEventListener("blur", () => strip.onRegenOtherBlur?.());
-          return area;
-        })()
-      : el("button", { type: "button", class: "sl-brief-link", onclick: () => strip.onRegenToggleOther?.() }, t(locale, "drawerRegenOther"));
-    return el("div", { class: "sl-regen" }, [
-      el("p", { class: "sl-regen-ask" }, t(locale, "drawerRegenAsk", { n: regen.slot })),
-      el("p", { class: "sl-regen-sub" }, t(locale, "drawerRegenSub")),
-      el("div", { class: "sl-regen-chips", role: "group" }, REGEN_CHIPS.map((key) =>
-        el("button", {
-          type: "button",
-          class: "sl-regen-chip",
-          "aria-pressed": regen.notes.includes(key) ? "true" : "false",
-          onclick: () => strip.onRegenChip?.(key)
-        }, t(locale, key)))),
-      other,
-      named
-        ? el("div", { class: "sl-regen-plan" }, [
-            el("p", { class: "sl-regen-plan-line" }, t(locale, "drawerRegenPlan", { n: regen.slot, notes: correction.join(" · "), ratio: brief.ratio })),
-            el("p", { class: "sl-regen-cost" }, t(locale, "drawerRegenCost", { price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew") })),
-            el("div", { class: "sl-regen-acts" }, [
-              el("button", { type: "button", class: "sl-primary sl-regen-go", disabled: ctx.saving || null, onclick: () => strip.onRegenSubmit?.() }, t(locale, "drawerRegenGo")),
-              el("span", { class: "sl-grow" }),
-              el("button", { type: "button", class: "sl-secondary", onclick: () => strip.onRegenCancel?.() }, t(locale, "drawerRegenCancel"))
-            ])
-          ])
-        : el("p", { class: "sl-regen-sub sl-regen-need" }, t(locale, "drawerRegenNeedMore"))
-    ]);
-  })();
 
   // A part the platform confirmed was never submitted is not "waiting for the
   // agent": the footer says saved-but-not-submitted, and this line agrees
@@ -806,8 +770,7 @@ export function renderOutputPanel(locale, item, ctx) {
         el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot].filter(Boolean)),
         provenance,
         imageStatusLine,
-        uploadBlock,
-        regenPanel
+        uploadBlock
       ]),
       el("section", { class: "sl-cols-side", "aria-labelledby": "sl-output-caption-title" }, [
         columnLabel(t(locale, "drawerOutputCaption"), rewriteAction, "sl-output-caption-title"),
@@ -987,8 +950,9 @@ export function renderReferencePanel(locale, item, ctx = {}) {
  * The generation settings a Generate ask is made under — the resolved brief
  * (the owner's staged choices over the configured defaults) sits on the
  * Instructions tab with the instructions it amends, per the accepted mockup:
- * price line first, then the reference toggle, the ratio, and the one-off
- * instruction the next ask carries once.
+ * the reference toggle, the ratio, and the one-off instruction the next ask
+ * carries once. No price line — the owner does not weigh image cost; the
+ * funding surface is the top-up a paused run asks for.
  */
 function renderBriefControls(locale, ctx) {
   const brief = ctx.imageBrief;
@@ -996,7 +960,6 @@ function renderBriefControls(locale, ctx) {
   const patch = (part) => ctx.onPatchImageBrief?.(part);
   const changed = () => ctx.onBriefChanged?.();
   const body = el("div", { class: "sl-brieftab" });
-  body.appendChild(el("p", { class: "sl-field-note sl-brief-price" }, t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")));
   body.appendChild(el("label", { class: "sl-brief-switch" }, [
     el("input", {
       type: "checkbox",
