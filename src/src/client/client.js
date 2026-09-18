@@ -1380,23 +1380,25 @@ function App() {
      * the tray's Clear are where a selection is taken back, and this drawer is
      * open on the post you are deciding about.
      */
-    const actions = el("footer", { class: "sl-preview-actions" });
+    const actions = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
     const drawActions = (isSelected) => replace(actions, [
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-primary",
-          onclick: async () => {
-            if (!activePreviewItem.selected) {
-              await handleSelect(item.id, true);
-              activePreviewItem = { ...activePreviewItem, selected: true };
+      el("div", { class: "sl-drawer-footer-actions" }, [
+        el(
+          "button",
+          {
+            type: "button",
+            class: "sl-primary",
+            onclick: async () => {
+              if (!activePreviewItem.selected) {
+                await handleSelect(item.id, true);
+                activePreviewItem = { ...activePreviewItem, selected: true };
+              }
+              closePreview();
             }
-            closePreview();
-          }
-        },
-        isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
-      )
+          },
+          isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
+        )
+      ])
     ]);
     drawActions(!!item.selected);
 
