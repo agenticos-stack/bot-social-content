@@ -2,15 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
-import {pathToFileURL} from 'node:url';
-import {resolve} from 'node:path';
+import {encodeBytes} from '@agenticos-dev/bot-testkit/rpc-bytes';
 import {createSocialRuntime} from '../scripts/local-runtime.mjs';
 import {createConnectedApi} from '../scripts/connected-api.mjs';
 import {SOCIAL_DOOR_METHODS} from '../scripts/local-rpc-contract.mjs';
 
-test('connected host: empty setup, fetch, select, save poster and carry now/schedule to the publisher', {skip:!process.env.BOT_SDK_SOURCE}, async()=>{
+test('connected host: empty setup, fetch, select, save poster and carry now/schedule to the publisher', async()=>{
   // Real gadget, transport and SQLite. Only provider effects are fixtures.
-  const {encodeBytes}=await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE,'packages/testkit/src/rpc-bytes.js')));
   // The manifest owns the module list — a gadget source the test forgets to
   // load fails inside the isolate as "No such module", not at the file read.
   const manifest=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8'));
@@ -36,7 +34,7 @@ test('connected host: empty setup, fetch, select, save poster and carry now/sche
     if(key==='social' && method==='readStatus')return {state:'review_requested',targets:[{destinationBinding:'crb_test_destination',label:'Test destination',outcome:'scheduled',detail:'scheduled'}]};
     throw new Error('Unexpected fixture door '+key+'.'+method);
   }};
-  const runtime=await createSocialRuntime({files,sdkSource:process.env.BOT_SDK_SOURCE,origins:[origin],doors,seedFixtures:false});
+  const runtime=await createSocialRuntime({files,origins:[origin],doors,seedFixtures:false});
   const bff=createConnectedApi({apiOrigin:'http://127.0.0.1:8789',frontendOrigin:origin,development:{call:request=>runtime.handle(new Request(origin+'/local-rpc',{method:'POST',headers:{origin,'content-type':'application/json','x-bot-local-session':runtime.token},body:request.body,duplex:'half'}))}});
   const call=async(method,args=[])=>{
     const response=await bff(new Request(origin+'/api/dev/rpc',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify({method,args:encodeBytes(args)})}));
