@@ -660,19 +660,14 @@ describe("a request whose turn ended with work outstanding", () => {
     );
     await openDrawer(document);
     await click(buttonText(document.body, "Check status"));
-    // The image part's control is the strip's add menu: add-place/quiet ＋ → Generate row.
-    await click(findAll(document.body, (element) => {
+    // The re-ask is the footer's Retry: while the request's mark still reads
+    // as running the strip offers no add control, so no second ask — and no
+    // silent replacement — can leave it.
+    expect(findAll(document.body, (element) => {
       const cls = String(element.className ?? "").split(" ");
-      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot") || element.getAttribute?.("aria-label") === "Add image");
-    })[0]);
-    await click(
-      findAll(
-        document.body,
-        (element) =>
-          element.getAttribute?.("role") === "menuitem" &&
-          String(element.textContent ?? "").startsWith("Generate a new image")
-      )[0]
-    );
+      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-addquiet") || cls.includes("sl-addslot"));
+    })).toHaveLength(0);
+    await click(buttonText(document.body, "Retry"));
     const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };
     expect(sent?.needs).toMatchObject({ image: true, caption: true });
     expect(sent?.replace).not.toBe(true);

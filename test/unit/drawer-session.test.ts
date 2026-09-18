@@ -519,19 +519,16 @@ describe("one outstanding request per post", () => {
     expect(r.calls.requests).toHaveLength(0);
   });
 
-  it("a new post's initial request (both parts) is replaced only explicitly", async () => {
+  it("a new post's initial request (both parts) is never doubled — the add control hides while it runs", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    await openAddMenu(r);
-    const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
-    // The outstanding ask marks the row but never disables it — the press still asks first.
-    expect(generate.disabled).not.toBe(true);
-    const done = generate.dispatchEvent({ type: "click" });
-    await flushAsyncWork();
-    await click(r.scope.leaveDialog, "Replace the pending image request");
-    await done;
-    await flushAsyncWork();
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
+    // While a slot is generating there is nothing to add to: no trigger, so
+    // no second ask — and no silent replacement — can leave the strip. A
+    // refusal the server still reports gets the same explicit decision (next test).
+    const trigger = buttons(r.dialog()).find((b) =>
+      String(b.className ?? "").split(" ").some((c) => c === "sl-addquiet" || c === "sl-addplace" || c === "sl-addslot"));
+    expect(trigger).toBeUndefined();
+    expect(r.calls.requests).toHaveLength(0);
   });
 
   it("answers a generation_pending refusal with the same explicit decision", async () => {
@@ -1051,8 +1048,6 @@ describe("R4: a stream reconnect reconciles missed updates", () => {
 // made under, beside the instructions it amends.
 const briefBlock = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brieftab"))[0] as any;
 const briefSwitch = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-switch"))[0] as any;
-const briefOnceArea = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brief-once"))[0] as any;
-const briefSave = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-save"))[0] as any;
 
 describe("the image brief on the Instructions tab", () => {
   it("carries the generation settings, and warns when no usable reference exists", async () => {
@@ -1079,49 +1074,21 @@ describe("the image brief on the Instructions tab", () => {
     expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "none", aspectRatio: "4:5" } }]]);
   });
 
-  it("sends the picked ratio and an unsaved one-off as the run layer, then clears it", async () => {
+  it("sends the picked ratio — the Instructions tab carries no run layer of its own", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await click(r.dialog(), t("en", "drawerRatioStory"));
-    await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
-    const area = briefOnceArea(r.dialog());
-    area.value = "Bottle facing the camera";
-    await area.dispatchEvent({ type: "input" });
+    // The per-run entry point is gone: a correction for one run belongs to
+    // the regenerate conversation, which sends it as the run layer (next test).
+    expect(labels(r.dialog())).not.toContain("Adjust for this run");
     await click(r.dialog(), t("en", "drawerTabOutput"));
     await pressGenerate(r);
     await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(r.calls.requests).toEqual([["b", ["a"], {
       needs: { image: true },
-      image: { references: "source", aspectRatio: "9:16" },
-      instructions: { image: "Bottle facing the camera" }
-    }]]);
-    // The consumed one-off does not silently ride the next ask.
-    await click(r.dialog(), t("en", "drawerTabInstructions"));
-    expect(briefOnceArea(r.dialog())?.value ?? "").toBe("");
-  });
-
-  it("saves the one-off as the post instruction first when the box is checked", async () => {
-    const r = rig();
-    await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), t("en", "drawerTabInstructions"));
-    await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
-    const area = briefOnceArea(r.dialog());
-    area.value = "Bottle facing the camera";
-    await area.dispatchEvent({ type: "input" });
-    briefSave(r.dialog()).checked = true;
-    await briefSave(r.dialog()).dispatchEvent({ type: "change" });
-    await click(r.dialog(), t("en", "drawerTabOutput"));
-    await pressGenerate(r);
-    await flushAsyncWork();
-    // The instruction write precedes the request, and the request carries no
-    // run layer — what was saved is what runs.
-    expect(r.calls.sequence.slice(0, 2)).toEqual(["instructions", "request"]);
-    expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Bottle facing the camera" }]);
-    expect(r.calls.requests).toEqual([["b", ["a"], {
-      needs: { image: true },
-      image: { references: "source", aspectRatio: "4:5" }
+      image: { references: "source", aspectRatio: "9:16" }
     }]]);
   });
 

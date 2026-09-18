@@ -302,9 +302,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    tile ends the row. */
 /* ONE COLUMN PAIR FOR THE WHOLE SHEET. 帖文 and 參考 share the same media
    column width, so switching tabs does not reflow the panel under the cursor. */
-.sl-cols { display: grid; grid-template-columns: var(--sl-colW, 176px) minmax(0, 1fr); gap: 16px; align-items: start; }
+/* The columns share the row's height (stretch, not start): on a post whose
+ * media side is short — a skeleton or a placeholder — the caption side
+ * growing past it read as a half-empty panel. The caption textarea grows
+ * into the space; a generating skeleton fills its column to the bottom. */
+.sl-cols { display: grid; grid-template-columns: var(--sl-colW, 176px) minmax(0, 1fr); gap: 16px; align-items: stretch; }
 .sl-cols-media { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sl-cols-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sl-cols-side .sl-drawer-composer { flex: 1; display: flex; flex-direction: column; }
+.sl-cols-side .sl-drawer-composer .sl-drawer-caption { flex: 1; min-height: 0; }
+.sl-cols-media .sl-strip:has(.sl-output-frame-skel) { flex: 1; }
+.sl-cols-media .sl-slot:has(.sl-output-frame-skel) { flex: 1; }
+.sl-cols-media .sl-slot-media:has(.sl-output-frame-skel) { flex: 1; display: flex; flex-direction: column; }
+.sl-output-frame.sl-output-frame-skel { aspect-ratio: auto; height: 100%; }
 @media (max-width: 520px) { .sl-cols { grid-template-columns: minmax(0, 1fr); } }
 /* Every column opens with the same label row — the label on the left, its
    one quiet action on the right. */
@@ -343,14 +353,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-addslot { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); font-size: 22px; font-weight: 300; cursor: pointer; }
 .sl-addslot:hover:not(:disabled) { border-color: var(--sl-ink); color: var(--sl-ink); }
 .sl-addslot:disabled { opacity: .45; }
-/* The menu renders in flow under the strip — absolute positioning clipped it
-   inside the drawer's scroll port. */
-.sl-menu { display: flex; flex-direction: column; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
+/* The add menu is a POPOVER on its control, not a block inside the media
+ * column — trapped in a 176px column every row wrapped to three lines. It
+ * sizes to its own content and may overhang the column. .sl-addwrap is the
+ * anchor; the -end modifier marks a control that hugs the column's right
+ * edge, and under 520px (single column, full-width label) its menu flips to
+ * the right edge so it stays inside the sheet. */
+.sl-addwrap { position: relative; display: block; }
+.sl-menu { position: absolute; z-index: 40; left: 0; top: calc(100% + 6px); display: flex; flex-direction: column; width: max-content; min-width: 238px; max-width: 300px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
+@media (max-width: 520px) { .sl-addwrap-end .sl-menu { left: auto; right: 0; } }
 .sl-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--sl-radius-control); background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--sl-ink); }
 .sl-menu-item:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-menu-item:disabled { opacity: .55; cursor: not-allowed; }
 .sl-menu-lead { font-size: 12.5px; font-weight: 600; }
 .sl-menu-sub { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
+.sl-menu-sub.sl-menu-warn { color: var(--sl-warning); }
 .sl-menu-sep { height: 1px; background: var(--sl-line); margin: 5px 4px; }
 /* The regenerate conversation under the strip: chips name the change, the
    plan line restates it with the price, and Generate files once — never a
@@ -532,6 +549,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    the restrained brand variant for creation calls-to-action. The doubled
    selectors outrank the shell's bot-button[data-variant] rules. */
 .sl-primary, .sl-secondary, .sl-brand { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+/* sm — the compact variant for row-level actions (adopt, use-candidate). */
+.sl-primary.sl-sm, .sl-secondary.sl-sm { min-height: 28px; padding: 0 10px; font-size: 11.5px; }
 /* Dialogs are appended to body, not .sl-app — both roots are covered. */
 .sl-app .sl-primary.sl-primary, .sl-preview-dialog .sl-primary.sl-primary { border: 1px solid var(--sl-ink); background: var(--sl-ink); color: var(--sl-surface); }
 .sl-app .sl-primary.sl-primary:hover:not(:disabled), .sl-preview-dialog .sl-primary.sl-primary:hover:not(:disabled) { background: #36363d; border-color: #36363d; }
@@ -815,6 +834,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
 .sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
 .sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+/* The source facts read as one quiet line, not a definition list stacked in a
+ * column — the <dl> stays because the pairing is right for a screen reader. */
+.sl-drawer-facts.sl-drawer-facts-line { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; background: transparent; border: 0; font-size: 11px; }
+.sl-drawer-facts-line .sl-fact { display: inline-flex; gap: 5px; padding: 0; background: transparent; }
+.sl-drawer-facts-line .sl-fact dt { font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--sl-muted); }
+.sl-drawer-facts-line .sl-fact dd { font-size: 11px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-preview-who { display: flex; flex-direction: column; gap: 1px; }
 .sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
 .sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
@@ -1053,7 +1078,15 @@ function App() {
   let drawerSession = null; // { requestClose, refresh, dispose, previous } for the open drawer
   batchDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
+    // An open add-image popover takes the first Escape; the sheet asks next.
+    if (drawerSession?.closeAddMenu?.(true)) return;
     drawerSession?.requestClose();
+  });
+  batchDialog.addEventListener("click", (event) => {
+    // The add-image popover closes on any click outside its control and
+    // menu; the sheet itself never closes on a stray click.
+    if (event.target?.closest?.(".sl-addwrap")) return;
+    drawerSession?.closeAddMenu?.(false);
   });
   batchDialog.addEventListener("close", () => {
     const session = drawerSession;
@@ -1989,6 +2022,26 @@ function App() {
       batchDialog.close();
     };
 
+    /*
+     * The add-image menu is a popover on its control: Escape closes the menu
+     * and puts focus back on that control — it never reaches the sheet. A
+     * click anywhere else closes it too, and the click itself owns the focus.
+     */
+    const closeAddMenu = (focusTrigger) => {
+      const item = activeItem();
+      if (!item || uiOf(item.id).menuOpen !== true) return false;
+      const anchor = uiOf(item.id).menuAnchor;
+      patchUi(item.id, { menuOpen: false });
+      redraw();
+      if (focusTrigger) {
+        const control = anchor
+          ? bodyEl.querySelector(`.sl-addwrap[data-addanchor="${anchor}"] > button`)
+          : bodyEl.querySelector(".sl-addwrap > button");
+        control?.focus?.();
+      }
+      return true;
+    };
+
     const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
 
     /*
@@ -2550,7 +2603,7 @@ function App() {
           onclick: () => { postMenu.picking = true; loadPickSources(); }
         }, [
           el("span", { class: "sl-pm-tick" }, "＋"),
-          el("span", { class: "sl-pm-grow" }, [t(locale, "drawerAddPost"), el("span", { class: "sl-pm-sub" }, t(locale, "drawerAddPostSub"))])
+          el("span", { class: "sl-pm-grow" }, t(locale, "drawerAddPost"))
         ])
       ])]);
     };
@@ -3147,18 +3200,29 @@ function App() {
            */
           strip: {
             menuOpen: uiOf(item.id).menuOpen === true,
+            menuAnchor: uiOf(item.id).menuAnchor ?? null,
             regen: uiOf(item.id).regen ?? null,
             candidateDismissed: uiOf(item.id).candidateDismissed ?? null,
-            onToggleMenu: () => {
-              patchUi(item.id, { menuOpen: uiOf(item.id).menuOpen !== true });
+            onToggleMenu: (anchor) => {
+              const ui = uiOf(item.id);
+              // Re-clicking the control that owns the open menu closes it;
+              // clicking another moves the one menu there is to it.
+              const closing = ui.menuOpen === true && ui.menuAnchor === anchor;
+              patchUi(item.id, closing ? { menuOpen: false } : { menuOpen: true, menuAnchor: anchor });
               redraw();
-              // The menu renders in flow under the strip: bring it into the
-              // scroll viewport, or a short drawer leaves it below the fold.
-              bodyEl.querySelector(".sl-menu")?.scrollIntoView?.({ block: "nearest" });
+              if (closing) {
+                bodyEl.querySelector(`.sl-addwrap[data-addanchor="${anchor}"] > button`)?.focus?.();
+              } else {
+                // A popover below the fold is invisible: bring its control
+                // into the scroll viewport first.
+                bodyEl.querySelector(".sl-menu")?.scrollIntoView?.({ block: "nearest" });
+              }
             },
-            onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); void requestPart(item, "image"); },
-            onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); pickOwnerUpload(item); },
-            onMenuAdoptSource: () => { patchUi(item.id, { menuOpen: false }); void applyVisual(item, { acceptedVisualMode: "keep_original" }); },
+            // A chosen row closes the popover immediately — the action's own
+            // redraw comes later (or not at all, when the ask is refused).
+            onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); redraw(); void requestPart(item, "image"); },
+            onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); redraw(); pickOwnerUpload(item); },
+            onMenuAdoptSource: () => { patchUi(item.id, { menuOpen: false }); redraw(); void applyVisual(item, { acceptedVisualMode: "keep_original" }); },
             onRegenOpen: (slot) => {
               patchUi(item.id, { regen: { slot, notes: [], other: "", otherOpen: false, sent: false }, menuOpen: false });
               redraw();
@@ -3303,7 +3367,7 @@ function App() {
     batchDialog.setAttribute("aria-labelledby", "sl-drawer-title");
     // The shared dialog's close/cancel listeners delegate here — one
     // registration, one session, see buildPreviewDialog above.
-    session = { requestClose, refresh, dispose, previous, batchId: batch.id };
+    session = { requestClose, refresh, dispose, previous, batchId: batch.id, closeAddMenu };
     // Opening another post ends the previous drawer session: its reads and
     // stages must not outlive it.
     if (drawerSession && drawerSession !== session) drawerSession.dispose?.();

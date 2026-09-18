@@ -380,7 +380,7 @@ function columnLabel(text, action, id = null) {
  * imageBrief?: { useSource, ratio, oneOffOpen, oneOff, saveOneOff },
  * imageRefsAvailable?: bool, uploadPreview?: { name },
  * captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use"),
- * strip?: { menuOpen, regen, candidateDismissed, onToggleMenu(), onMenuGenerate(),
+ * strip?: { menuOpen, menuAnchor, regen, candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
  *   onMenuUpload(), onMenuAdoptSource(), onRegenOpen(n), onRegenChip(key),
  *   onRegenOtherInput(value), onRegenOtherBlur(), onRegenToggleOther(),
  *   onRegenSubmit(), onRegenCancel(), onRemoveSlot(n), onViewSlot(n),
@@ -506,7 +506,7 @@ export function renderOutputPanel(locale, item, ctx) {
           ? el("div", { class: "sl-slot-acts" }, [
               staged === candidate.id
                 ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
-                : el("button", { type: "button", class: "sl-primary sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
+                : el("button", { type: "button", class: "sl-primary sl-sm sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
               staged === candidate.id ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.() }, t(locale, "drawerKeepCurrentShort"))
             ].filter(Boolean))
           : null
@@ -515,21 +515,30 @@ export function renderOutputPanel(locale, item, ctx) {
 
   // One menu holds every way a picture joins the set — generate under the
   // resolved brief (its row says so), upload, or adopt the post's own picture
-  // where one exists. It renders STATICALLY under the strip, never absolute:
-  // a floating menu clipped inside the drawer's scroll port and could fall
-  // behind the tile that opened it.
-  const menuRow = (title, sub, onclick, disabled = false) =>
+  // where one exists. It is a POPOVER anchored to its control, never a block
+  // in the column: trapped in the 176px media column every row wrapped to
+  // three lines. `.sl-addwrap` is the anchor; the menu sizes to its own
+  // content (238–300px) and overhangs the column.
+  const menuRow = (title, sub, onclick, disabled = false, warn = false) =>
     el("button", { type: "button", role: "menuitem", class: "sl-menu-item", disabled: disabled || null, onclick }, [
       el("span", { class: "sl-menu-lead" }, title),
-      sub ? el("span", { class: "sl-menu-sub" }, sub) : null
+      sub ? el("span", { class: `sl-menu-sub${warn ? " sl-menu-warn" : ""}` }, sub) : null
     ]);
   // The menu's Generate row carries the same pending honesty the old segment
   // did: a requested part names itself, another pending part is named too.
-  const generateItem = menuRow(t(locale, "drawerAddGenerate"), t(locale, "drawerAddGenerateSub", {
-    ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
-    ratio: brief.ratio,
-    price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")
-  }), () => strip.onMenuGenerate?.());
+  // With no caption yet the brief summary steps aside for the cost argument —
+  // an image made before the text exists is likely to be made again once the
+  // brief changes. Generate stays available; the note says what it spends.
+  const captionEmpty = !String(buffers.caption ?? item.caption ?? "").trim();
+  const generateItem = menuRow(t(locale, "drawerAddGenerate"),
+    captionEmpty
+      ? t(locale, "drawerAddNoCaption")
+      : t(locale, "drawerAddGenerateSub", {
+          ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
+          ratio: brief.ratio,
+          price: t(locale, brief.useSource ? "drawerBriefPricedEdit" : "drawerBriefPricedNew")
+        }),
+    () => strip.onMenuGenerate?.(), false, captionEmpty);
   if (imageBusy) {
     generateItem.setAttribute("title", unsubmitted ? t(locale, "drawerRequestNotSubmitted") : t(locale, "drawerPartAlreadyRequested"));
     generateItem.setAttribute("data-requested", "true");
@@ -550,6 +559,17 @@ export function renderOutputPanel(locale, item, ctx) {
         )
       ])
     : null;
+  // The control and its popover travel together — the menu is anchored to
+  // whichever control opened it, sized by its own content, never the column.
+  // `end` keeps a right-edge control's menu inside the sheet once the
+  // columns collapse to one (narrow): it flips the anchor under 520px.
+  // `menuAnchor` names the control that owns the open menu; when state does
+  // not say (older callers), it belongs to the first control rendered.
+  const addWrap = (control, anchor, end = false) =>
+    el("span", { class: `sl-addwrap${end ? " sl-addwrap-end" : ""}`, "data-addanchor": anchor }, [
+      control,
+      addMenu && menuAnchor === anchor ? addMenu : null
+    ].filter(Boolean));
 
   /*
    * THE EMPTY SLOT IS THE ADD CONTROL, and it is the size of the picture that
@@ -560,45 +580,51 @@ export function renderOutputPanel(locale, item, ctx) {
    * label takes over; a generating slot keeps its skeleton instead.
    */
   const emptyEditable = editable && !slots.some(hasPicture) && !overlayBusy && !showCandidate;
+  const quietVisible = editable && !emptyEditable && !overlayBusy;
+  // The menu belongs to the control that opened it — the click names its
+  // anchor. Without a name (older callers) it is the first control rendered.
+  const menuAnchor = strip.menuAnchor ?? (emptyEditable ? "place" : quietVisible ? "quiet" : "slot");
+  const expanded = (anchor) => (strip.menuOpen && menuAnchor === anchor ? "true" : "false");
   const addPlace = emptyEditable
-    ? el("button", {
+    ? addWrap(el("button", {
         type: "button",
         class: "sl-addplace",
         "aria-haspopup": "menu",
-        "aria-expanded": strip.menuOpen ? "true" : "false",
+        "aria-expanded": expanded("place"),
         disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.()
+        onclick: () => strip.onToggleMenu?.("place")
       }, [
         el("span", { class: "sl-addplace-plus" }, "＋"),
         el("span", null, t(locale, "drawerAddImage")),
         el("span", { class: "sl-addplace-hint" }, t(locale, "drawerAddPlaceHint"))
-      ])
+      ]), "place")
     : null;
-  // The quiet way to add a picture once the placeholder is gone — it stays
-  // on the label while a request generates (the menu rows still carry the
-  // pending honesty), and never doubles as a second tile.
-  const quietAdd = editable && !emptyEditable
-    ? el("button", {
+  // The quiet way to add a picture once the placeholder is gone — and it is
+  // NOT offered while a slot is generating: there is nothing to add to yet,
+  // and a second ask during a live one is the double spend the regenerate
+  // conversation exists to prevent.
+  const quietAdd = quietVisible
+    ? addWrap(el("button", {
         type: "button",
         class: "sl-addquiet",
         "aria-haspopup": "menu",
-        "aria-expanded": strip.menuOpen ? "true" : "false",
+        "aria-expanded": expanded("quiet"),
         disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.()
-      }, t(locale, "drawerAddFirst"))
+        onclick: () => strip.onToggleMenu?.("quiet")
+      }, t(locale, "drawerAddFirst")), "quiet", true)
     : null;
   // A real second tile is the ordered-set affordance — Phase 2 only, never on
   // a post that holds one picture.
   const addSlot = editable && isSet && slots.length < 10
-    ? el("button", {
+    ? addWrap(el("button", {
         type: "button",
         class: "sl-addslot",
         "aria-label": t(locale, "drawerAddImage"),
         "aria-haspopup": "menu",
-        "aria-expanded": strip.menuOpen ? "true" : "false",
+        "aria-expanded": expanded("slot"),
         disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.()
-      }, "＋")
+        onclick: () => strip.onToggleMenu?.("slot")
+      }, "＋"), "slot", true)
     : null;
 
   /*
@@ -787,7 +813,6 @@ export function renderOutputPanel(locale, item, ctx) {
         columnLabel(t(locale, "drawerImageSet"), quietAdd, "sl-output-images-title"),
         addPlace,
         el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot, addSlot].filter(Boolean)),
-        addMenu,
         provenance,
         imageStatusLine,
         uploadBlock,
@@ -795,8 +820,11 @@ export function renderOutputPanel(locale, item, ctx) {
       ]),
       el("section", { class: "sl-cols-side", "aria-labelledby": "sl-output-caption-title" }, [
         columnLabel(t(locale, "drawerOutputCaption"), rewriteAction, "sl-output-caption-title"),
-        capState === "requested" && unsubmitted
-          ? el("p", { class: "sl-field-note sl-part-status", role: "status" }, t(locale, "drawerRequestNotSubmitted"))
+        capState === "requested"
+          ? el("p", { class: "sl-field-note sl-part-status", role: "status" },
+              unsubmitted
+                ? t(locale, "drawerRequestNotSubmitted")
+                : t(locale, item.caption?.trim() ? "drawerCaptionRequestedKeep" : "drawerCaptionRequested"))
           : null,
         ...captionBody,
         altField
@@ -929,10 +957,10 @@ export function renderReferencePanel(locale, item, ctx = {}) {
         ctx.editable
           ? el("button", {
               type: "button",
-              class: "sl-secondary sl-ref-adopt",
+              class: "sl-secondary sl-sm sl-ref-adopt",
               disabled: adoptDisabled || null,
               onclick: () => ctx.onAdoptSource?.()
-            }, t(locale, "drawerAddSource"))
+            }, t(locale, "drawerUseOriginal"))
           : null
       ].filter(Boolean)),
       el("div", { class: "sl-cols-side" }, [
@@ -944,10 +972,15 @@ export function renderReferencePanel(locale, item, ctx = {}) {
           "sl-reference-text-title"
         ),
         el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, source.text || t(locale, "inboxNoSource")),
-        el("dl", { class: "sl-drawer-facts" }, [
+        // One quiet line, still a <dl>: the pairing is right for a screen
+        // reader; it just stopped pretending to be a data table.
+        el("dl", { class: "sl-drawer-facts sl-drawer-facts-line" }, [
           el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceAccount")), el("dd", null, handle || t(locale, "stateUnknown"))]),
           source.sourceLabel && source.sourceLabel !== handle
             ? el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerReferenceWatch")), el("dd", null, source.sourceLabel)])
+            : null,
+          source.publishedAt
+            ? el("div", { class: "sl-fact" }, [el("dt", null, t(locale, "drawerPosted")), el("dd", null, String(source.publishedAt).slice(0, 10))])
             : null
         ])
       ])
@@ -999,42 +1032,15 @@ function renderBriefControls(locale, ctx) {
         onclick: () => { patch({ ratio: value }); changed(); }
       }, t(locale, key)))
   ]));
-  if (brief.oneOffOpen || brief.oneOff.trim()) {
-    const area = el("textarea", {
-      id: "sl-brief-once",
-      class: "sl-drawer-caption sl-brief-once",
-      rows: "2",
-      placeholder: t(locale, "drawerBriefOncePlaceholder"),
-      "aria-label": t(locale, "drawerBriefOnceLabel"),
-      readonly: ctx.saving || null
-    });
-    area.value = brief.oneOff;
-    area.addEventListener("input", () => patch({ oneOff: area.value }));
-    // The in-effect note re-reads the buffer on redraw — a blur is when a
-    // typing pause becomes the stated ask.
-    area.addEventListener("blur", () => changed());
-    body.appendChild(el("div", { class: "sl-brief-once-wrap" }, [
-      area,
-      el("p", { class: "sl-field-note" }, t(locale, "drawerBriefOnceSub")),
-      el("label", { class: "sl-brief-save" }, [
-        el("input", {
-          type: "checkbox",
-          checked: brief.saveOneOff || null,
-          disabled: ctx.saving || null,
-          onchange: (event) => patch({ saveOneOff: event.currentTarget.checked })
-        }),
-        el("span", null, t(locale, "drawerBriefOnceSave"))
-      ])
-    ]));
-  } else {
-    body.appendChild(el("button", {
-      type: "button",
-      class: "sl-brief-link",
-      disabled: ctx.saving || null,
-      onclick: () => { patch({ oneOffOpen: true }); changed(); }
-    }, t(locale, "drawerBriefOnceOpen")));
-  }
-  const liveLayer = brief.oneOff.trim() ? "run" : (ctx.item?.effectiveInstructions?.image?.source ?? "default");
+  /*
+   * NO "ADJUST FOR THIS RUN" FIELD HERE. A correction for a single run
+   * belongs to the moment the owner asks for that run — the regenerate
+   * conversation collects it, states the plan and spends once. A second
+   * field here invited a correction nothing was about to act on. The
+   * `runInstructions` contract is untouched: it still travels on the
+   * request the regenerate conversation submits.
+   */
+  const liveLayer = ctx.item?.effectiveInstructions?.image?.source ?? "default";
   body.appendChild(el("p", { class: "sl-field-note sl-brief-in-effect" },
     `${t(locale, "drawerBriefInEffect")} ${instructionSourceName(locale, liveLayer)}`));
   return body;

@@ -93,7 +93,7 @@ describe("Output section", () => {
     expect(view.root.textContent).not.toContain("Cover");
     expect(view.root.textContent).toContain("New image");
 
-    await buttonNamed(view.root, "Use this image")!.dispatchEvent({ type: "click" });
+    await buttonNamed(view.root, "Use")!.dispatchEvent({ type: "click" });
     expect(view.staged).toEqual(["gm_b"]);
 
     expect(revisionEntryFor(item as never, { imageId: "gm_b" })).toEqual({
@@ -233,6 +233,20 @@ describe("Output section", () => {
     expect(adopt.textContent).toContain("no usable picture");
   });
 
+  it("swaps the generate row's brief for the no-caption warning — a soft gate, not a block", () => {
+    // An image made before the text exists is likely to be made again once
+    // the brief changes: the row stays pressable and says what it spends.
+    const view = output(post({ caption: "" }), { strip: { menuOpen: true } });
+    const row = buttonNamed(view.root, "Generate a new image")!;
+    expect(row.disabled).toBe(false);
+    const warn = all(row, (e) => String(e.className).split(" ").includes("sl-menu-warn"))[0];
+    expect(warn?.textContent).toContain("No caption yet");
+    expect(row.textContent).not.toContain("priced as");
+    // A post that does have a caption keeps the brief summary.
+    const captioned = output(post(), { strip: { menuOpen: true } });
+    expect(buttonNamed(captioned.root, "Generate a new image")!.textContent).toContain("priced as an edit");
+  });
+
   it("shows the chosen upload and adopting it calls onAdoptUpload", async () => {
     const adopted: string[] = [];
     const view = output(post(), {
@@ -241,7 +255,7 @@ describe("Output section", () => {
       onAdoptUpload: () => adopted.push("upload")
     });
     expect(view.root.textContent).toContain("weekend-tray.jpg");
-    await buttonNamed(view.root, "Use this image")!.dispatchEvent({ type: "click" });
+    await buttonNamed(view.root, "Use")!.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["upload"]);
   });
 
@@ -263,19 +277,32 @@ describe("Output section", () => {
     expect(view.parts).toEqual(["image", "caption"]);
   });
 
-  it("marks only the requested part as waiting, and neither control replaces it silently", () => {
+  it("offers no second ask while the image request runs — the add control is absent, not hidden", () => {
     const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }), { strip: { menuOpen: true } });
     expect(view.root.textContent).not.toContain("waiting for the agent");
     expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
-    const image = buttonNamed(view.root, "Generate a new image")!;
+    // There is nothing to add to while a slot is generating: no trigger, so
+    // the menu has no anchor and no Generate row exists to double the spend.
+    expect(all(view.root, (e) => ["sl-addplace", "sl-addquiet", "sl-addslot"].some((c) => String(e.className).split(" ").includes(c)))).toHaveLength(0);
+    expect(buttonNamed(view.root, "Generate a new image")).toBeUndefined();
+    // The caption side still names what is outstanding rather than looking
+    // like an unfilled form.
     const caption = buttonNamed(view.root, "Rewrite caption")!;
-    expect(image.disabled).toBe(false);
-    expect(image.getAttribute("data-requested")).toBe("true");
-    expect(image.getAttribute("title")).toContain("Already requested");
     expect(caption.disabled).toBe(false);
     expect(caption.getAttribute("data-pending")).toBe("image");
     expect(caption.getAttribute("title")).toContain("image request is still pending");
     expect(view.loads).toEqual(["gm_a"]);
+  });
+
+  it("keeps the generate row honest while the other part is pending — marked, still pressable", () => {
+    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }), { strip: { menuOpen: true } });
+    const image = buttonNamed(view.root, "Generate a new image")!;
+    expect(image.disabled).toBe(false);
+    expect(image.getAttribute("data-pending")).toBe("caption");
+    expect(image.getAttribute("title")).toContain("caption request is still pending");
+    const caption = buttonNamed(view.root, "Rewrite caption")!;
+    expect(caption.getAttribute("data-requested")).toBe("true");
+    expect(caption.getAttribute("title")).toContain("Already requested");
   });
 
   it("regenerate is a conversation: name the change, see plan and price, then generate once", async () => {
@@ -469,7 +496,7 @@ describe("Reference section", () => {
       onAdoptSource: () => adopted.push("reference")
     } as never);
     expect(root.textContent).toContain("Source image");
-    const adopt = buttonNamed(root, "Use the post's own picture")!;
+    const adopt = buttonNamed(root, "Use original")!;
     await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
     // The Post tab's add menu carries the same choice, the same rule.
@@ -485,7 +512,7 @@ describe("Reference section", () => {
     const adoptedAlready = renderReferencePanel("en", post({ sourceItem, acceptedVisualMode: "keep_original" }) as never, {
       editable: true, imageRefsAvailable: true, onAdoptSource: () => adopted.push("again")
     } as never);
-    expect(buttonNamed(adoptedAlready, "Use the post's own picture")!.disabled).toBe(true);
+    expect(buttonNamed(adoptedAlready, "Use original")!.disabled).toBe(true);
   });
 });
 
@@ -552,25 +579,25 @@ describe("Instructions section", () => {
     expect(history.textContent).toContain("Image instruction: Outdoor photo");
   });
 
-  it("carries the generation brief — price, reference toggle, ratio, this-run instruction", async () => {
+  it("carries the generation brief — price, reference toggle, ratio, and no run layer", async () => {
     const patched: Record<string, unknown>[] = [];
     const root = renderInstructionsPanel("en", post() as never, {
       editable: true,
       buffers: {},
       policy: {},
-      imageBrief: { useSource: true, ratio: "4:5", oneOffOpen: true, oneOff: "Warmer light", saveOneOff: false },
+      imageBrief: { useSource: true, ratio: "4:5", oneOff: "", saveOneOff: false },
       imageRefsAvailable: true,
       onPatchImageBrief: (patch: Record<string, unknown>) => patched.push(patch)
     } as never);
     // The price line leads the fields.
     expect(root.textContent).toContain("priced as an edit");
     expect(root.textContent).toContain("Start from the post's image");
-    // The ratio chips and the this-run field with its save-as-post offer.
     const ratios = all(root, (e) => String(e.className).split(" ").includes("sl-brief-ratio"));
     expect(ratios.map((r) => String(r.textContent))).toEqual(["Match the post (4:5)", "Square (1:1)", "Story (9:16)"]);
-    const once = all(root, (e) => e.getAttribute("id") === "sl-brief-once")[0] as Node & { value: string };
-    expect(once.value).toBe("Warmer light");
-    expect(root.textContent).toContain("Also save as this post's instruction");
+    // A per-run correction is the regenerate conversation's, not a field that
+    // waits here for a request that may never be asked.
+    expect(all(root, (e) => e.getAttribute("id") === "sl-brief-once")).toHaveLength(0);
+    expect(root.textContent).not.toContain("Adjust for this run");
     expect(root.textContent).toContain("In effect:");
     await ratios[1].dispatchEvent({ type: "click" });
     expect(patched).toEqual([{ ratio: "1:1" }]);
