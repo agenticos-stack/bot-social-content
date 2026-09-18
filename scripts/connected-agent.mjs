@@ -94,6 +94,15 @@ export async function createConnectedAgent({
    * reads.
    */
   serverSource: initialServerSource,
+  /**
+   * The policy terms this source declares (`manifest.json`'s
+   * `metadata.policy`) — the same `GadgetPolicyTermsV1` an installed or
+   * uploaded archive declares. A development registration has no `gadgets`
+   * row for the platform's funding resolver to read, so the terms travel on
+   * the registration itself; without them a metered door call fails its
+   * funding lookup rather than resolving the declared payer.
+   */
+  policy: initialPolicy,
   callLocal,
   now = Date.now,
   fetchImpl = fetch,
@@ -126,7 +135,7 @@ export async function createConnectedAgent({
   const sessionPath = resolve(stateDirectory, SESSION_FILE);
 
   function registrationMetadata() {
-    return { title, sourceHash, methods, requirements, ...(typeof serverSource === 'string' ? { serverSource } : {}) };
+    return { title, sourceHash, methods, requirements, ...(typeof serverSource === 'string' ? { serverSource } : {}), ...(initialPolicy ? { policy: initialPolicy } : {}) };
   }
 
   const events = [];

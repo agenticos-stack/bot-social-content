@@ -10,7 +10,17 @@
       "name": "AgenticOS Platform",
       "id": "platform@agenticos.hk"
     },
-    "version": 1
+    "version": 1,
+    "policy": {
+      "schemaVersion": 1,
+      "funding": { "allowed": ["owner"], "default": "owner" },
+      "chat": {
+        "capabilities": ["disabled", "optional", "required"],
+        "defaultCapability": "optional",
+        "defaultPresentation": "collapsed"
+      },
+      "source": { "inspect": "member", "modify": "member", "codeNav": "hidden" }
+    }
   },
   "storageSchemaVersion": 19,
   "files": [

@@ -100,6 +100,9 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors,
+    // The testkit went generic (sdk #31): the loopback hostname list it once
+    // hardcoded — including this host's gateway name — is now caller-supplied.
+    allowedHostnames: ['localhost', '127.0.0.1', 'social.localhost'],
     maxRequestBytes: LOCAL_RPC_MAX_BYTES,
     seed: seedFixtures ? [{method:'seedLocal',args:[]}] : [],
     allowedMethods: connectedDoors || !seedFixtures ? [...browsing, ...needsDoors] : browsing });

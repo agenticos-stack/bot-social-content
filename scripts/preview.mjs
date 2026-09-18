@@ -66,11 +66,16 @@ async function readSourceFiles() {
 }
 
 let archive;
+let declaredPolicy;
 if (connectedModes.has(mode)) {
   archive={files:await readSourceFiles()};
+  // Connected mode skips the archive, so the declared terms the registration
+  // must carry come from the manifest the files were read against.
+  declaredPolicy=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8')).metadata?.policy;
 } else {
   const bytes = await readFile(new URL("../dist/social-content.gadget", import.meta.url));
   archive = await readBlueprintArchive(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  declaredPolicy = archive.metadata?.policy;
 }
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
@@ -250,7 +255,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           }
         }
       };
-      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_CONTENT_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_CONTENT_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:archive.files['server.js'],policy:declaredPolicy,callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();

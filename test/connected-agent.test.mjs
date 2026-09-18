@@ -422,6 +422,40 @@ test('registers the source server.js so the platform scans its reads, and re-sen
   });
 });
 
+test('registers the declared policy terms so the platform resolves funding, and re-sends them on reload', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const policy = {
+      schemaVersion: 1,
+      funding: { allowed: ['owner'], default: 'owner' },
+      chat: { capabilities: ['disabled', 'optional', 'required'], defaultCapability: 'optional', defaultPresentation: 'collapsed' },
+      source: { inspect: 'member', modify: 'member', codeNav: 'hidden' }
+    };
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods, policy,
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    assert.deepEqual(transport.stubs[0].registered.policy, policy);
+    await agent.reload({ sourceHash: 'b'.repeat(64) });
+    assert.deepEqual(transport.stubs[0].registered.policy, policy, 'a reload re-declares the same terms');
+    agent.close();
+  });
+});
+
+test('omits policy from the registration when the source declares none', async () => {
+  await withStateDirectory(async (stateDirectory) => {
+    const transport = createFakeTransport({ now: () => 1_000_000 });
+    const agent = await createConnectedAgent({
+      apiOrigin, frontendOrigin, cookie: 'session=alice', stateDirectory, title: 'Social Content dev',
+      sourceHash, methods,
+      callLocal: async () => ({}), now: () => 1_000_000, ...transport
+    });
+    assert.equal('policy' in transport.stubs[0].registered, false);
+    agent.close();
+  });
+});
+
 test('projects a granted family member with the connector methods the platform reports', async () => {
   await withStateDirectory(async (stateDirectory) => {
     const hooks = {
