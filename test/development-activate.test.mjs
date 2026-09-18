@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createConnectedApi } from '../scripts/connected-api.mjs';
 import { createDevelopmentSessions } from '../scripts/development-session.mjs';
-import { refuse } from '../scripts/door-certainty.mjs';
+import { refuse } from '@agenticos-dev/bot-devkit/doors';
 
 const origin = 'http://127.0.0.1:17931';
 

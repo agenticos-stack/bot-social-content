@@ -53,7 +53,7 @@ export function createWizardState() {
     publishChoices: {}, // batchItemId -> { bindings: string[], intent: { publishMode, ... } }
     publishErrors: {}, // batchItemId -> { code, message } from the last submit refusal
     submittingByItem: {},
-    error: null // the message of the most recent refusal (see isRefusal/refusalMessage below), cleared on the next attempt
+    error: null // the message of the most recent refusal (see isRefusalResult/refusalMessage below), cleared on the next attempt
   };
 }
 
@@ -66,13 +66,13 @@ export function createWizardState() {
  * Durable Object's output gate), so the client checks `ok` explicitly
  * instead of relying on a caught exception.
  */
-export function isRefusal(result) {
+export function isRefusalResult(result) {
   return Boolean(result) && typeof result === "object" && result.ok === false;
 }
 
 /** The human-readable text for a refusal, whichever of the two shapes above it used. */
 export function refusalMessage(result) {
-  if (!isRefusal(result)) return null;
+  if (!isRefusalResult(result)) return null;
   if (typeof result.message === "string" && result.message) return result.message;
   if (Array.isArray(result.issues) && result.issues.length) return result.issues.map((issue) => issue.message).join(" ");
   return null;

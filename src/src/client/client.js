@@ -79,7 +79,7 @@ import {
   draftFromConfig,
   createWizardState,
   goToStep as goToWizardStep,
-  isRefusal,
+  isRefusalResult,
   publicationStateSummary,
   refusalMessage,
   renderPublish,
@@ -3009,7 +3009,7 @@ function App() {
       // createBatch answers an expected refusal (no items, an existing
       // active localization) as a value, not a throw — see server.js's
       // header note.
-      if (isRefusal(batch)) {
+      if (isRefusalResult(batch)) {
         if (batch.code === "duplicate_active") {
           collectionState = setNotice(collectionState, {
             message: refusalMessage(batch),
@@ -3188,7 +3188,7 @@ function App() {
   };
   const settleAcceptance = async (id, saved) => {
     if (!saved) return;
-    if (isRefusal(saved)) {
+    if (isRefusalResult(saved)) {
       wizard = setPublishError(wizard, id, { code: saved.code, message: refusalMessage(saved) });
     } else {
       wizard = setPublishError(wizard, id, null);
@@ -3257,7 +3257,7 @@ function App() {
           intent: choice.intent,
           createNewVersion
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, id, { code: result.code, message: refusalMessage(result) });
         } else {
           // The filing landed — read back the item and its publication rows
@@ -3341,7 +3341,7 @@ function App() {
           expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0,
           destinationBindings: [destinationBinding]
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, itemId, { code: result.code, message: refusalMessage(result) });
         } else {
           const state = await rpc.readPublishState(itemId);

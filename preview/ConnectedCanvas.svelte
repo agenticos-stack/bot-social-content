@@ -2,8 +2,8 @@
   import {onDestroy} from 'svelte';
   import {LOCAL_RPC_MAX_BYTES} from '../scripts/local-rpc-contract.mjs';
   import {canvasGrantPersistToAgent, gadgetGrantResultMessage, parseGadgetActivateDoorMessage, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
-  import {grantReceiptOutcome} from '../scripts/grant-receipt.mjs';
-  import {attachHostEvents} from '../scripts/host-events.mjs';
+  import {grantReceiptOutcome} from '@agenticos-dev/bot-devkit/doors';
+  import {attachHostEvents} from '@agenticos-dev/bot-devkit/host-events';
   import {SOCIAL_LOCALIZATION_DEFINITION} from '../definition.ts';
   let {onDraftRequested = () => {}, onMutation = () => {}, revision = 0} = $props();
   let frame=$state();

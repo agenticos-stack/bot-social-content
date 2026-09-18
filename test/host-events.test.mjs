@@ -1,7 +1,7 @@
 // Audit b7de9dd R4: the host stream reconciles on every (re)open, once per port.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { attachHostEvents } from '../scripts/host-events.mjs';
+import { attachHostEvents } from '@agenticos-dev/bot-devkit/host-events';
 
 function fakeEventSource() {
   const instances = [];

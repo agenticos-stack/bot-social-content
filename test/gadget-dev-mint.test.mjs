@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertDeveloperKey, describeExpiry, mintGadgetDevSession, readDeveloperKey } from '../scripts/gadget-dev-mint.mjs';
+import { assertDeveloperKey, describeExpiry, mintGadgetDevSession, readDeveloperKey } from '@agenticos-dev/bot-devkit/session';
 
 const KEY = 'ag_mcp_' + 'a'.repeat(64);
 const ORIGIN = 'https://api.agenticos.hk';
@@ -30,9 +30,9 @@ test('reads a key from the environment, or reports none', () => {
 test('refuses a key that is not shaped like one, before any request', () => {
   // A mistyped key and an expired one both answer 401; only one of them is
   // worth re-copying, so the shape is checked locally.
-  assert.throws(() => assertDeveloperKey('hunter2'), /gadget_dev\.session/);
-  assert.throws(() => assertDeveloperKey('ag_mcp_short'), /gadget_dev\.session/);
-  assert.doesNotThrow(() => assertDeveloperKey(KEY));
+  assert.throws(() => assertDeveloperKey('hunter2', 'SOCIAL_CONTENT_DEV_KEY'), /gadget_dev\.session/);
+  assert.throws(() => assertDeveloperKey('ag_mcp_short', 'SOCIAL_CONTENT_DEV_KEY'), /gadget_dev\.session/);
+  assert.doesNotThrow(() => assertDeveloperKey(KEY, 'SOCIAL_CONTENT_DEV_KEY'));
 });
 
 test('mints with the key as a bearer, and asks for this gadget', async () => {

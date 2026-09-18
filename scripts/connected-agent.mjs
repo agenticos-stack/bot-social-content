@@ -8,8 +8,8 @@ import {
   assertLocalApiOrigin,
   assertLocalFrontendOrigin,
   assertRemoteApiOrigin
-} from './platform-origin.mjs';
-import { refuse } from './door-certainty.mjs';
+} from '@agenticos-dev/bot-devkit/origins';
+import { refuse } from '@agenticos-dev/bot-devkit/doors';
 
 const SESSION_FILE = 'agent-session.json';
 const MAX_MESSAGE_LENGTH = 16_000;
@@ -104,10 +104,10 @@ export async function createConnectedAgent({
   if (remote) {
     if (cookie) throw new Error('A gadget-dev token cannot be combined with a session cookie.');
     assertRemoteApiOrigin(apiOrigin);
-    assertGadgetDevWorkspaceId(boundWorkspaceId);
+    assertGadgetDevWorkspaceId(boundWorkspaceId, 'SOCIAL_CONTENT_DEV_WORKSPACE_ID');
   } else {
     assertLocalApiOrigin(apiOrigin);
-    assertLocalFrontendOrigin(frontendOrigin);
+    assertLocalFrontendOrigin(frontendOrigin, ['social.localhost']);
   }
   /*
    * What the platform's registration is pinned to. Mutable, because a reload
