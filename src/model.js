@@ -1695,6 +1695,20 @@ export function itemPresentation({ state, revision = 0, generation = null, publi
   return { phase, deliveries };
 }
 
+/**
+ * A post that was sent — a filing exists that is not bound-only, superseded
+ * or failed — cannot be removed from the batch. Both item shapes answer it:
+ * the board's summary item carries `deliveries` (liveDeliveries already
+ * excludes superseded/failed and marks bound-only `outcome: "bound"`), the
+ * drawer's full item carries raw `publications`.
+ */
+export function postFiled(item) {
+  if (Array.isArray(item?.deliveries)) {
+    return item.deliveries.some((entry) => entry?.outcome !== "bound");
+  }
+  return (item?.publications ?? []).some((pub) => !["bound", "superseded", "failed"].includes(pub?.state));
+}
+
 /** Which inbox filter a phase belongs to; `all`/`new` handled by the caller. */
 export const PHASE_FILTERS = Object.freeze({
   drafts: Object.freeze(["queued", "regenerating", "draft"]),

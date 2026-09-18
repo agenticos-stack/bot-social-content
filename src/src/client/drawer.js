@@ -411,6 +411,12 @@ export function renderOutputPanel(locale, item, ctx) {
   const refsAvailable = ctx.imageRefsAvailable === true;
   const showCandidate = Boolean(candidate && candidate.ready === true && strip.candidateDismissed !== candidate.id);
   const uploadPreview = ctx.uploadPreview ?? null;
+  // How many images the source post actually carries — the honesty line
+  // counts every image-kind child, not only the ones reachable as https
+  // references (that subset is what the brief uses, not what the post has).
+  const sourceImageCount = (item.sourceItem?.media ?? []).filter(
+    (media) => media?.kind === "image" || media?.kind === "carousel_child"
+  ).length;
 
   // One request at a time per post: while a part is outstanding, the OTHER
   // part's affordance says what is pending — never a silent replace.
@@ -768,6 +774,12 @@ export function renderOutputPanel(locale, item, ctx) {
         columnLabel(t(locale, "drawerImageSet"), null, "sl-output-images-title"),
         addPlace,
         el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot].filter(Boolean)),
+        // The honest interim line: a multi-image source feeds every child
+        // into ONE generated image today — the drawer says so until pages
+        // exist to hold them (Phase B). Single-image sources say nothing.
+        sourceImageCount > 1
+          ? el("p", { class: "sl-field-note" }, t(locale, "drawerSourceImagesNote", { n: sourceImageCount }))
+          : null,
         provenance,
         imageStatusLine,
         uploadBlock

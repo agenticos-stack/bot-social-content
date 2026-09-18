@@ -20,6 +20,7 @@ import {
   draftOrigin,
   ledgerFromProtectedOverrides,
   normalizeLedger,
+  postFiled,
   usesGroundedValidation,
   validateGrounded,
   validateDraft,
@@ -844,3 +845,25 @@ describe("a video keeps its poster frame", () => {
   });
 });
 
+
+// postFiled is the ONE filed check — the board's summary items carry
+// `deliveries`, the drawer's full items carry `publications`; both shapes
+// answer the same question so no surface re-derives it.
+describe("postFiled", () => {
+  it("a bound-only summary item is still a draft", () => {
+    expect(postFiled({ deliveries: [{ outcome: "bound" }] })).toBe(false);
+    expect(postFiled({ deliveries: [] })).toBe(false);
+    expect(postFiled({})).toBe(false);
+  });
+
+  it("any non-bound delivery outcome means the post left draft", () => {
+    expect(postFiled({ deliveries: [{ outcome: "bound" }, { outcome: "submitted" }] })).toBe(true);
+    expect(postFiled({ deliveries: [{ outcome: "failed" }] })).toBe(true);
+  });
+
+  it("full items read publications — bound/superseded/failed keep it a draft", () => {
+    expect(postFiled({ publications: [{ state: "bound" }, { state: "superseded" }, { state: "failed" }] })).toBe(false);
+    expect(postFiled({ publications: [{ state: "bound" }, { state: "review_requested" }] })).toBe(true);
+    expect(postFiled({ publications: [] })).toBe(false);
+  });
+});

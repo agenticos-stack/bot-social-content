@@ -15,7 +15,7 @@ import { t } from "../../src/src/client/i18n.js";
 import * as inbox from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, sourceImageReferences } from "../../src/model.js";
+import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences } from "../../src/model.js";
 import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
@@ -29,7 +29,7 @@ if (start < 0 || end < 0) throw new Error("drawer-session.test.ts harness bounda
 const { rig, post } = new Function(
   "deps",
   `with(deps){${stripTypeScriptTypes(harness.slice(start, end))};return {rig, post};}`
-)({ source, dom, drawers, t, ...inbox, setNotice, createMediaStage, builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, sourceImageReferences, findAll, flushAsyncWork, installMinimalDom, recordDispatch: async () => {}, gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage }) as {
+)({ source, dom, drawers, t, ...inbox, setNotice, createMediaStage, builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, findAll, flushAsyncWork, installMinimalDom, recordDispatch: async () => {}, gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage }) as {
   rig: (options?: AnyRec) => AnyRec;
   post: (id?: string, overrides?: AnyRec) => AnyRec;
 };

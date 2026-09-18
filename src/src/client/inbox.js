@@ -6,7 +6,7 @@
 // filter membership, count and drawer all read the shared `itemPresentation`
 // roll-up from `model.js` — one policy, so a filed or published item can
 // never fall through to "drafting" again.
-import { generationDisplayStage, generationMark, itemPresentation, PHASE_FILTERS } from "../../model.js";
+import { generationDisplayStage, generationMark, itemPresentation, PHASE_FILTERS, postFiled } from "../../model.js";
 import { el, relativeLabel } from "./dom.js";
 import { t } from "./i18n.js";
 import { fillCovers, providerGlyph, renderPostCard, sourceLabel } from "./post-card.js";
@@ -28,8 +28,21 @@ export function createInboxState() {
     // items and not batches: `{ [batchItemId]: { batchId, itemId, revision } }`.
     // `revision` is the revision observed at select time, refreshed as
     // summaries land; eligibility is re-read before any review.
-    selected: {}
+    selected: {},
+    // One card ⋯ open at a time: `{ batchItemId, confirm }` — `confirm`
+    // swaps the menu's Remove row for the in-place question.
+    cardMenu: null
   };
+}
+
+export function setCardMenu(state, batchItemId) {
+  return { ...state, cardMenu: batchItemId ? { batchItemId, confirm: false } : null };
+}
+export function setCardMenuConfirm(state, batchItemId) {
+  return { ...state, cardMenu: batchItemId ? { batchItemId, confirm: true } : null };
+}
+export function clearCardMenu(state) {
+  return state.cardMenu ? { ...state, cardMenu: null } : state;
 }
 
 export function setInboxSourceItems(state, sourceItems) {
@@ -370,6 +383,18 @@ function itemCard(locale, batch, item, state, ctx, covers) {
   const snapshot = waiting ? waitingLabel : item.caption ?? item.sourceText ?? "";
   const title = snapshot.split("\n")[0].slice(0, 90) || t(locale, "inboxNoSource");
   const selected = Boolean(state?.selected?.[item.batchItemId]);
+  /*
+   * The card's ⋯ is the post's action menu — today: remove. Removing a post
+   * lives here, not in the drawer (the drawer is ONE post): the same rule a
+   * drawer's selector enforced — editable, never filed, never the last post —
+   * and the same in-place confirm that names the post it removes.
+   */
+  const menuState = state?.cardMenu?.batchItemId === item.batchItemId ? state.cardMenu : null;
+  const itemCount = Array.isArray(batch.items) ? batch.items.length : 0;
+  const removable = isEditableItem(item) && !postFiled(item) && itemCount > 1;
+  const removeBlock = !isEditableItem(item) || postFiled(item)
+    ? t(locale, "drawerRemovePostSent")
+    : itemCount <= 1 ? t(locale, "drawerRemovePostLast") : null;
   // The cover is the ACCEPTED OUTPUT when the projection names one. `null`
   // means the server says there is none yet; `undefined` means this
   // projection does not report it, so nothing is claimed either way and the
@@ -396,6 +421,24 @@ function itemCard(locale, batch, item, state, ctx, covers) {
     chip: itemChip(locale, batch, item),
     selectable: true,
     selected,
+    menu: {
+      label: t(locale, "cardPostActions"),
+      open: menuState != null,
+      confirm: menuState?.confirm === true,
+      onToggle: () => ctx.handlers.onCardMenu?.(menuState ? null : item.batchItemId),
+      rows: [{
+        title: t(locale, "drawerHoverRemove"),
+        danger: true,
+        disabled: !removable,
+        reason: removable ? null : removeBlock,
+        onSelect: () => ctx.handlers.onCardMenuConfirm?.(item.batchItemId)
+      }],
+      confirmBody: t(locale, "drawerRemovePostQ", { name: title }),
+      confirmNo: t(locale, "drawerDecisionCancel"),
+      confirmYes: t(locale, "drawerHoverRemove"),
+      onCancel: () => ctx.handlers.onCardMenuCancel?.(item.batchItemId),
+      onConfirm: () => ctx.handlers.onRemoveItem?.(batch, item)
+    },
     onSelect: () =>
       ctx.handlers.onSelectItem(item.batchItemId, {
         batchId: batch.id,
