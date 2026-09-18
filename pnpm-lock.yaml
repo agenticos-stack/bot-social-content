@@ -126,8 +126,8 @@ importers:
         specifier: 0.2.3
         version: 0.2.3(svelte@5.56.3)
       '@agenticos-dev/bot-testkit':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.1.1
+        version: 0.1.1
       '@fontsource-variable/geist':
         specifier: 5.2.9
         version: 5.2.9
@@ -173,8 +173,8 @@ packages:
     peerDependencies:
       svelte: ^5.56.3
 
-  '@agenticos-dev/bot-testkit@0.1.0':
-    resolution: {integrity: sha512-iJU0r2k2Flh9HYiI36hTFyP5z7KbEtd9UgAQq+3DwB21fYq71mkgt+Z2/F/dTN8+DFCWDogiwrYtwhaKAO2ncg==}
+  '@agenticos-dev/bot-testkit@0.1.1':
+    resolution: {integrity: sha512-TXkHweTX1gBLizO3Opn8b0QIy4/pv2PheIBYVin8LKqBotNmnfMWdbNnNlXMMXDrkzK9P7hv0mWj4JTcsYQmdA==}
     engines: {node: '>=22.17'}
 
   '@cloudflare/workerd-darwin-64@1.20260702.1':
@@ -1099,7 +1099,7 @@ snapshots:
     dependencies:
       svelte: 5.56.3
 
-  '@agenticos-dev/bot-testkit@0.1.0':
+  '@agenticos-dev/bot-testkit@0.1.1':
     dependencies:
       miniflare: 4.20260702.0
     transitivePeerDependencies:

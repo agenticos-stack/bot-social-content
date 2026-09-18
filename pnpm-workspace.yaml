@@ -8,4 +8,4 @@ minimumReleaseAgeExclude:
   - '@agenticos-dev/bot-sdk@0.1.0 || 0.2.3'
   - '@agenticos-dev/bot-shell@0.2.1 || 0.2.2 || 0.2.3'
   - '@agenticos-dev/bot-devkit@0.2.3'
-  - '@agenticos-dev/bot-testkit@0.1.0'
+  - '@agenticos-dev/bot-testkit@0.1.0 || 0.1.1'
