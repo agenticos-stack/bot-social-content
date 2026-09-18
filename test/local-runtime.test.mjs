@@ -5,10 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSocialRuntime, browserBridge } from '../scripts/local-runtime.mjs';
 import { runInNewContext } from 'node:vm';
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { DECODE_BYTES_SOURCE } from '@agenticos-dev/bot-testkit/rpc-bytes';
 
-test('real Social Content SQLite selection and capability refusal', {skip: !process.env.BOT_SDK_SOURCE}, async () => {
+test('real Social Content SQLite selection and capability refusal', async () => {
   // The manifest owns the module list — a gadget source the test forgets to
   // load fails inside the isolate as "No such module", not at the file read.
   const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
@@ -16,7 +15,7 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
   const files = Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(new URL('../src/'+name, import.meta.url), 'utf8')])));
   const origin = 'http://localhost:17921';
   const root = await mkdtemp(join(tmpdir(),'social-persistence-test-'));
-  const options = {files, sdkSource: process.env.BOT_SDK_SOURCE, origins:[origin],stateDirectory:join(root,'state')};
+  const options = {files, origins:[origin],stateDirectory:join(root,'state')};
   let session;
   const call = async (method, args = []) => session.handle(new Request(origin+'/local-rpc', {
     method:'POST', headers:{origin,'content-type':'application/json','x-bot-local-session':session.token},body:JSON.stringify({method,args})
@@ -35,7 +34,6 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
         assert.equal(options.credentials, 'omit');
         return session.handle(new Request(origin+url, {...options,headers:{...options.headers,origin}}));
       }};
-    const { DECODE_BYTES_SOURCE } = await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE, 'packages/testkit/src/rpc-bytes.js')));
     runInNewContext(browserBridge(session.token, DECODE_BYTES_SOURCE), browser);
     const filtered = await browser.gadget.listItems({filter:'all',query:'no matching source'});
     assert.equal(filtered.items.length, 0);
@@ -81,7 +79,7 @@ test('real Social Content SQLite selection and capability refusal', {skip: !proc
   } finally { await session?.dispose(); await rm(root,{recursive:true,force:true}); }
 });
 
-test('browser bridge carries image bytes to generated and derived image saves', {skip: !process.env.BOT_SDK_SOURCE}, async () => {
+test('browser bridge carries image bytes to generated and derived image saves', async () => {
   const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
   const names = manifest.files.filter(name => name.endsWith('.js') && name !== 'client.js');
   const files = Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(new URL('../src/'+name, import.meta.url), 'utf8')])));
@@ -89,11 +87,10 @@ test('browser bridge carries image bytes to generated and derived image saves', 
   const root = await mkdtemp(join(tmpdir(),'social-bytes-test-'));
   let session;
   try {
-    session = await createSocialRuntime({files, sdkSource: process.env.BOT_SDK_SOURCE, origins:[origin], stateDirectory:join(root,'state')});
+    session = await createSocialRuntime({files, origins:[origin], stateDirectory:join(root,'state')});
     const sent = [];
     const browser = {location:{origin}, btoa, parent:{postMessage(){}},
       fetch: async (url, options) => { sent.push(options.body.length); return session.handle(new Request(origin+url, {...options,headers:{...options.headers,origin}})); }};
-    const { DECODE_BYTES_SOURCE } = await import(pathToFileURL(resolve(process.env.BOT_SDK_SOURCE, 'packages/testkit/src/rpc-bytes.js')));
     runInNewContext(browserBridge(session.token, DECODE_BYTES_SOURCE), browser);
     const gadget = browser.gadget;
     const created = await gadget.createBatch({itemIds:['fixture-0'], destinationBindings:['LOCAL_DRAFT']});
