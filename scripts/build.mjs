@@ -1,133 +1,75 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { writeBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
-import { validateGadgetDefinition } from "@agenticos-dev/bot-contract";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
+import {
+  buildPackage as buildGadgetPackage,
+  assertPackedImports,
+  assertStorageSchemaDeclaration
+} from "@agenticos-dev/bot-devkit";
+import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { buildClient } from "./client.mjs";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
 export const packageRoot = new URL("../", import.meta.url);
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+export { assertPackedImports, assertStorageSchemaDeclaration };
 
 /**
- * The storage schema this code expects, declared as data the host can read.
+ * Byte budgets — a regression trips the build, and the only way past one is a
+ * deliberate bump here, in the diff.
  *
- * A restore to older code is only safe when that code understands the storage
- * it will find: `migrate()` never runs down, so code written for schema N
- * reading storage at N+k silently sees empty columns. The host decides from
- * `storageSchemaVersion` inside the archive's own `manifest.json` — every
- * code-log revision carries the one it was built with — and never parses
- * `storage.js`. This check is what keeps that declaration honest: a migration
- * bump without the manifest fails the build instead of shipping a lie.
- */
-export function assertStorageSchemaDeclaration(manifest, current = CURRENT_SCHEMA_VERSION) {
-  const declared = manifest?.storageSchemaVersion;
-  if (!Number.isSafeInteger(declared) || declared < 0) {
-    throw new Error("manifest.json must declare storageSchemaVersion as a non-negative integer.");
-  }
-  if (declared !== current) {
-    throw new Error(
-      `manifest.json declares storageSchemaVersion ${declared}, but storage.js migrates to ${current}. Update the manifest with the migration.`
-    );
-  }
-  if (!manifest.files?.includes("manifest.json")) {
-    throw new Error("manifest.json must ship inside the archive so each code revision carries its storageSchemaVersion.");
-  }
-  return declared;
-}
-
-/**
- * Every relative module a packed file imports must itself be packed.
- *
- * The archive is flat and the platform loads exactly its members, so a module
- * added under `src/` but missing from `manifest.json` builds, passes every
- * unit test that imports it from disk, and then fails at load with `No such
- * module` the first time the gadget starts. That shipped once (grant-request.js).
- * A lexical scan is enough here: a static `from "./x.js"` or `import("./x.js")`
- * is the only way these modules reach each other.
- */
-export function assertPackedImports(files) {
-  const missing = [];
-  for (const [name, text] of Object.entries(files)) {
-    if (!name.endsWith(".js") || name === "client.js") continue;
-    for (const match of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s*)["']\.\/([^"']+)["']/gm)) {
-      if (!Object.hasOwn(files, match[1])) missing.push(`${name} imports ./${match[1]}`);
-    }
-  }
-  if (missing.length) throw new Error(`Archive is missing imported modules; add them to manifest.json: ${missing.join("; ")}.`);
-}
-
-/**
- * Byte budgets, measured against the host's own limits — a regression trips the
- * build, and the only way past one is a deliberate bump here, in the diff.
- *
- * `CLIENT_JS_BYTE_BUDGET` is the gadget-authoring store's per-file read
- * ceiling (api `FILE_RESULT_BYTE_BUDGET`, 156,000 bytes): a client.js read
- * past it comes back without its tail lines, and an `editGadgetFile` composed
- * against that trim writes a canvas that renders blank. This canvas is
- * ALREADY over that line — the budget is pinned at the measured size so the
- * bundle cannot grow silently.
- *
- * Pinned at 292,813 — the measured post-adoption floor. Moving the reducers,
- * RPC/chunk mechanics, drawer choice, toaster and DOM builders to
+ * `CLIENT_JS_BYTE_BUDGET` is NOT the gadget-authoring store's 156,000-byte
+ * read ceiling: this canvas is already over that line (the authoring path is
+ * tracked as its own hazard). It is a ratchet pinned at the measured
+ * post-adoption floor so the bundle cannot grow silently. Moving the
+ * reducers, RPC/chunk mechanics, drawer choice, toaster and DOM builders to
  * @agenticos-dev/bot-shell cost +496B over a fresh HEAD build (292,317): the
  * shared helpers carry the generality both canvases need, and this canvas's
  * local copies were already the tighter node-side variants. The constants the
  * package ships for a canvas that uses its default chrome (bot-toast-card,
  * bot-drawer-sheet) are dead literals here — this canvas re-skins them with
  * its `sl-*` classes — and the wrappers that preserve those contracts are the
- * rest of it. Any further growth trips the build and is reviewed in the diff.
+ * rest of it.
+ *
+ * The 327,342 floor adds the drawer-v3 line on top of that adoption — the
+ * post selector, the one-post drawer and the carousel page rail — measured
+ * at the staging merge.
  *
  * `ARCHIVE_BYTE_BUDGET` freezes today's `.gadget` so feature work cannot grow
  * the artifact silently. Bump it only when the growth is the change being
  * reviewed.
  */
-export const CLIENT_JS_BYTE_BUDGET = 292_813;
-// Post-adoption floor; the compressed delta tracks the same client.js growth.
-export const ARCHIVE_BYTE_BUDGET = 219_329;
+export const CLIENT_JS_BYTE_BUDGET = 327_342;
+export const ARCHIVE_BYTE_BUDGET = 248_138;
 
-export async function buildPackage({ outputDir = new URL("dist/", packageRoot), maxBytes = ARCHIVE_BYTE_BUDGET } = {}) {
-  const manifestText = await readFile(new URL("manifest.json", packageRoot), "utf8");
-  const manifest = JSON.parse(manifestText);
-  const checked = validateGadgetDefinition(SOCIAL_LOCALIZATION_DEFINITION);
-  if (!checked.ok || checked.definition?.key !== manifest.blueprintKey) throw new Error("Package definition is invalid or conflicts with the manifest key.");
-  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) throw new Error("maxBytes must be a positive integer.");
-  assertStorageSchemaDeclaration(manifest);
-  const files = {};
-  for (const name of manifest.files) {
-    if (!/^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$/.test(name) || Object.hasOwn(files, name)) throw new Error("Invalid or duplicate flat archive member.");
-    files[name] =
-      name === "client.js"
-        ? await buildClient()
-        : name === "manifest.json"
-          ? manifestText
-          : await readFile(new URL(`src/${name}`, packageRoot), "utf8");
-  }
-  assertPackedImports(files);
-  const clientBytes = Buffer.byteLength(files["client.js"], "utf8");
-  if (clientBytes > CLIENT_JS_BYTE_BUDGET) {
-    throw new Error(`client.js is ${clientBytes} bytes; the authoring read trims at 156,000 and a trimmed canvas renders blank.`);
-  }
-  const metadata = { ...manifest.metadata, gadgetDefinition: checked.definition };
-  const bytes = Buffer.from(await writeBlueprintArchive({ metadata, files }));
-  if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error(`Archive is ${bytes.length} bytes; host limit is ${maxBytes}.`);
-  const release = {
-    schemaVersion: "ai-agent-package-release.v1", blueprintKey: manifest.blueprintKey,
-    artifact: manifest.artifact, sha256: sha256(bytes), byteSize: bytes.length, clientBytes,
-    definition: checked.definition,
-    files: Object.fromEntries(Object.entries(files).map(([name, text]) => [name, sha256(text)]))
-  };
-  await mkdir(outputDir, { recursive: true });
-  const outputPath = outputDir instanceof URL ? fileURLToPath(outputDir) : outputDir;
-  await writeFile(resolve(outputPath, manifest.artifact), bytes);
-  await writeFile(resolve(outputPath, "release.json"), `${JSON.stringify(release, null, 2)}\n`);
-  return { bytes, files, release };
+/** Members that are built rather than read from src/: the bundled client and the manifest itself. */
+const generatedMembers = {
+  "client.js": () => buildClient(),
+  "manifest.json": async () => readFile(new URL("manifest.json", packageRoot), "utf8")
+};
+
+export async function buildGadget({ outputDir = new URL("dist/", packageRoot), maxBytes = ARCHIVE_BYTE_BUDGET } = {}) {
+  return buildGadgetPackage(fileURLToPath(packageRoot), {
+    definition: SOCIAL_CONTENT_DEFINITION,
+    generatedMembers,
+    storageSchemaVersion: CURRENT_SCHEMA_VERSION,
+    budgets: {
+      clientJs: {
+        limit: CLIENT_JS_BYTE_BUDGET,
+        reason: "size ratchet at the measured post-adoption floor — the bundle already exceeds the authoring store's 156,000-byte read ceiling (tracked as its own hazard); growth is reviewed in the diff"
+      },
+      archive: {
+        limit: maxBytes,
+        reason: "freezes the .gadget so feature work cannot grow the artifact silently — bump only when the growth is the change being reviewed"
+      }
+    },
+    outputDir: outputDir instanceof URL ? fileURLToPath(outputDir) : outputDir
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { release } = await buildPackage();
+  const { release } = await buildGadget();
   console.log(
     `${release.artifact}: ${release.byteSize} bytes (client.js ${release.clientBytes} bytes), sha256 ${release.sha256}`
   );

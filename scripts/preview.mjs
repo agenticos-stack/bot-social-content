@@ -6,21 +6,21 @@ import { watch } from "node:fs";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { build } from 'esbuild';
 import { compile } from 'svelte/compiler';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
 import { SOCIAL_DOOR_METHODS } from './local-rpc-contract.mjs';
 import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
-import { SOCIAL_LOCALIZATION_DEFINITION } from '../definition.ts';
+import { SOCIAL_CONTENT_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
-import { createDoorRuntime } from './door-runtime.mjs';
+import { createDoorRuntime } from '@agenticos-dev/bot-devkit/doors';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
-import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from './platform-origin.mjs';
-import { describeExpiry, mintGadgetDevSession, readDeveloperKey } from './gadget-dev-mint.mjs';
+import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from '@agenticos-dev/bot-devkit/origins';
+import { describeExpiry, mintGadgetDevSession, readDeveloperKey } from '@agenticos-dev/bot-devkit/session';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
@@ -66,15 +66,19 @@ async function readSourceFiles() {
 }
 
 let archive;
+let declaredPolicy;
 if (connectedModes.has(mode)) {
   archive={files:await readSourceFiles()};
+  // Connected mode skips the archive, so the declared terms the registration
+  // must carry come from the manifest the files were read against.
+  declaredPolicy=JSON.parse(await readFile(new URL('../manifest.json',import.meta.url),'utf8')).metadata?.policy;
 } else {
   const bytes = await readFile(new URL("../dist/social-content.gadget", import.meta.url));
   archive = await readBlueprintArchive(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  declaredPolicy = archive.metadata?.policy;
 }
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
-const overlay = process.env.BOT_SDK_SOURCE;
 if (!['fixture', 'local-runtime', 'connected', 'connected-prod'].includes(mode)) throw new Error('Unknown preview mode');
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
 const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN || process.env.AGENTICOS_API_ORIGIN;
@@ -102,8 +106,9 @@ if (remote) {
     const minted = await mintGadgetDevSession({
       apiOrigin,
       developerKey,
-      gadgetKey: SOCIAL_LOCALIZATION_DEFINITION.key,
-      title: SOCIAL_LOCALIZATION_DEFINITION.title
+      envVar: 'SOCIAL_CONTENT_DEV_KEY',
+      gadgetKey: SOCIAL_CONTENT_DEFINITION.key,
+      title: SOCIAL_CONTENT_DEFINITION.title
     });
     devToken = minted.devToken;
     devWorkspaceId = minted.workspaceId;
@@ -113,7 +118,7 @@ if (remote) {
   } else if (!devToken) {
     throw new Error('Set SOCIAL_CONTENT_DEV_KEY to a personal access token with the gadget_dev.session scope, or SOCIAL_CONTENT_DEV_TOKEN to a token already minted.');
   }
-  assertGadgetDevWorkspaceId(devWorkspaceId);
+  assertGadgetDevWorkspaceId(devWorkspaceId, 'SOCIAL_CONTENT_DEV_WORKSPACE_ID');
 }
 /**
  * Which methods this gadget calls on each door.
@@ -141,7 +146,7 @@ function doorMethodsByEnvKey() {
 }
 
 const connectedSourceHash = connectedModes.has(mode) ? sourceDigest(archive.files) : null;
-const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_LOCALIZATION_DEFINITION.key,origin:frontendOrigin,
+const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOCIAL_CONTENT_DEFINITION.key,origin:frontendOrigin,
   async authenticate(request){
     if (remote) return {userId:'gadget-dev',orgId:devWorkspaceId,devToken};
     const headers={cookie:request.headers.get('cookie') || '',accept:'application/json'};
@@ -250,7 +255,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           }
         }
       };
-      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_LOCALIZATION_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:archive.files['server.js'],callLocal:async(method,args)=>{
+      agent=await createConnectedAgent({apiOrigin,frontendOrigin,cookie:identity.cookie,devToken:identity.devToken,workspaceId:devWorkspaceId,stateDirectory:agentStateDirectory,title:SOCIAL_CONTENT_DEFINITION.title,sourceHash:connectedSourceHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:archive.files['server.js'],policy:declaredPolicy,callLocal:async(method,args)=>{
         await localReady;
         const result=await local.handle(new Request('http://127.0.0.1/local-rpc',{method:'POST',headers:{origin:frontendOrigin,'content-type':'application/json','x-bot-local-session':local.token},body:JSON.stringify({method,args}),duplex:'half'}));
         const payload=await result.json();
@@ -273,7 +278,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       // Absence is the documented, supported state; pass it as one.
       const startRuntime=async(files)=>{
         const before=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
-        try{return await createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
+        try{return await createSocialRuntime({files,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
         finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!before.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
       };
       local=await startRuntime(archive.files);
@@ -361,7 +366,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
           await previousReady;            // let in-flight calls finish on the old isolate
           await previous.dispose();       // releases the state lock; data stays
           local=await startRuntime(files);
-          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_LOCALIZATION_DEFINITION.requirements,serverSource:files['server.js']});
+          await agent.reload({sourceHash:nextHash,methods:socialMethodNames(),requirements:SOCIAL_CONTENT_DEFINITION.requirements,serverSource:files['server.js']});
           lastHash=nextHash;
           archive={files};
           console.log(`reloaded ${nextHash.slice(0,12)} — ${Object.keys(files).length} files`);
@@ -431,6 +436,20 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
         agent:{
           get info(){return agent.info;},
           handle:async(input,credential)=>{
+            /*
+             * The picture's ⋯ → Regenerate hand-off, mirrored on the draft
+             * wrapper: the canvas's intent becomes the seeded turn, with the
+             * gadget's own instructions attached (a plain `run` carries none).
+             * The seed says what to file and what never to do in-turn — the
+             * durable requestGeneration, never a generateImage mid-turn.
+             */
+            if(input?.operation==='regen-intent'){
+              const intent=input.intent;
+              const post=intent?.post??{}, image=intent?.image??{};
+              if(typeof post.batchItemId!=='string'||!post.batchItemId)throw new Error('An agent intent needs the batch item it names.');
+              const replies=Array.isArray(intent.suggestedReplies)&&intent.suggestedReplies.length?` The one-tap replies beside this message are: ${intent.suggestedReplies.map(entry=>`「${entry}」`).join(' ')}.`:'';
+              return agent.handle({operation:'run',message:`The owner pressed Regenerate on the image in the post "${typeof post.title==='string'&&post.title?post.title:'this post'}" (batch ${post.batchId}, batch item ${post.batchItemId}) in LOCAL_DEVELOPMENT — aspect ratio ${image.aspectRatio ?? 'the post\'s current'}, references ${image.references === 'source' ? 'the post\'s own image' : 'none'}${typeof image.mediaId==='string'&&image.mediaId?`, media ${image.mediaId}`:''}.${replies} The intent already names the image — ask what should change about THIS image in one or two short questions, never which one. When the change is named, file requestGeneration for this batch item through callGadgetMethod with needs {image:true,caption:false}, options.image {references:"${image.references ?? 'source'}",aspectRatio:"${image.aspectRatio ?? '4:5'}"}, and options.instructions.image carrying the correction. Never call generateImage or editImage in this turn. Follow the gadget instructions that accompany this message.`,instructions:archive.files['agent.md']},credential);
+            }
             if(input?.operation!=='draft')return agent.handle(input,credential);
             if(typeof input.batchId!=='string'||!/^batch_[a-z0-9]+$/.test(input.batchId))throw new Error('A draft batch is required.');
             await localReady;
@@ -458,22 +477,16 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
   }
 }):null;
 const connected = connectedModes.has(mode) ? createConnectedApi({apiOrigin, frontendOrigin, development, platform: remote ? 'remote' : 'local'}) : null;
-const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
+const tokensCss = await readFile(fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
 /*
  * The decoder for the host's binary envelope, from the SAME testkit that
  * encodes it. A source encoder paired with an installed decoder is two wire
  * formats that agree until one of them moves.
  *
- * Only the modes that actually run a local gadget have a host to decode from,
- * and those are exactly the modes that require BOT_SDK_SOURCE — the fixture
- * has no RPC at all, and this gadget does not depend on the testkit itself.
+ * Only the modes that actually run a local gadget have a host to decode
+ * from — the fixture has no RPC at all.
  */
-const DECODE_BYTES_SOURCE = overlay
-  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).DECODE_BYTES_SOURCE
-  : '';
-const ENCODE_BYTES_SOURCE = overlay
-  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).ENCODE_BYTES_SOURCE
-  : '';
+const { DECODE_BYTES_SOURCE, ENCODE_BYTES_SOURCE } = await import('@agenticos-dev/bot-testkit/rpc-bytes');
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
   ['geist', 'Geist Variable', '100 900'],
@@ -486,7 +499,6 @@ const brandCss = fontFaces.join('\n') + `\n@font-face{font-family:"CJK Sans Fall
 const bundle = await build({
   entryPoints: [fileURLToPath(new URL('../preview/main.js', import.meta.url))], bundle: true,
   write: false, format: 'esm', platform: 'browser', conditions: ['browser', 'svelte'],
-  alias: overlay ? { '@agenticos-dev/bot-shell/GadgetSplitView.svelte': resolve(overlay, 'packages/shell/GadgetSplitView.svelte') } : {},
   plugins: [{ name: 'svelte', setup(builder) { builder.onLoad({ filter: /\.svelte$/ }, async ({path}) => ({
     contents: compile(await readFile(path, 'utf8'), { filename: path, generate: 'client', css: 'injected' }).js.code,
     loader: 'js', resolveDir: fileURLToPath(new URL('../preview/', import.meta.url))
@@ -494,7 +506,7 @@ const bundle = await build({
 });
 const signals = ['SIGINT', 'SIGTERM'];
 const priorSignalListeners = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
+const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files,
   stateDirectory: await prepareLocalState(),
   origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
 // Only the seeded runtime has a budget to report. Connected mode seeds nothing,
@@ -557,6 +569,36 @@ const server = createServer(async (request, response) => {
         ...(!['GET','HEAD'].includes(request.method) ? {body: Readable.toWeb(request), duplex: 'half'} : {})
       }));
       response.writeHead(result.status, Object.fromEntries(result.headers));
+      response.end(await result.text());
+    } catch { response.writeHead(500, {'Content-Type':'application/json'}).end('{"error":"local_transport_failed"}'); }
+    return;
+  }
+  /*
+   * The HOST's call into the local runtime — the conversation half of the
+   * workspace, not the sandboxed canvas. The canvas's own transport bakes
+   * the session token into its bridge; the host cannot mint it, so this
+   * route injects the same credential server-side for the one method the
+   * regenerate conversation files. Anything else is refused at the door —
+   * the workspace host is not a second full RPC client.
+   */
+  if (runtime && url.pathname === '/dev-local-rpc' && request.method === 'POST') {
+    try {
+      let text = '';
+      for await (const chunk of request) text += chunk;
+      const body = JSON.parse(text || '{}');
+      const method = typeof body?.method === 'string' ? body.method : '';
+      if (method !== 'requestGeneration') { response.writeHead(405, {'Content-Type':'application/json'}).end('{"error":"method_not_allowed"}'); return; }
+      const result = await runtime.handle(new Request('http://127.0.0.1/local-rpc', {
+        method: 'POST',
+        /*
+         * The caller's own origin is the honest one to forward — it is in the
+         * runtime's allowed list (the gateway name or the loopback), while a
+         * configured frontendOrigin may be unset in local-runtime mode.
+         */
+        headers: { origin: request.headers.origin ?? frontendOrigin, 'content-type': 'application/json', 'x-bot-local-session': runtime.token },
+        body: JSON.stringify({ method, args: Array.isArray(body?.args) ? body.args : [] }), duplex: 'half'
+      }));
+      response.writeHead(result.status, { 'Content-Type': 'application/json' });
       response.end(await result.text());
     } catch { response.writeHead(500, {'Content-Type':'application/json'}).end('{"error":"local_transport_failed"}'); }
     return;

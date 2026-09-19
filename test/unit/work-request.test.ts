@@ -219,7 +219,7 @@ describe("what a scan asks for", () => {
     expect(gadget.workRequestFor(unknown, gadget.storage.getConfig())).toBeNull();
   });
 
-  it("asks for nothing when those items already have an active localization", () => {
+  it("asks for nothing when those items already have an active draft", () => {
     // The second scan of the same finding is not a second piece of work.
     const { gadget } = gadgetWith("on_new");
     expect(gadget.workRequestFor(found, gadget.storage.getConfig())).not.toBeNull();
@@ -237,7 +237,7 @@ describe("opening a batch versus announcing one", () => {
       destinationBindings: ["FB_MAIN"]
     });
     expect(notices).toHaveLength(1);
-    expect(notices[0].title).toContain("ready to localize");
+    expect(notices[0].title).toContain("ready to draft");
   });
 
   it("does not announce a batch a scan opened", () => {
@@ -393,9 +393,9 @@ describe("a canvas request the platform can file", () => {
       items: [
         {
           itemId: "instagram:IG_MAIN:p1",
+          pageId: "pg_src_m_p1",
           parts: { caption: false, image: true },
-          imagePrompt: "A bowl of congee with scallions",
-          captionPrompt: "Write a caption"
+          imagePrompt: "A bowl of congee with scallions"
         }
       ]
     });

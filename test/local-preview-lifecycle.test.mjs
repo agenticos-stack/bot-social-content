@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-test('preview SIGTERM releases state lock and fresh process reads saved draft', {skip:!process.env.BOT_SDK_SOURCE,timeout:20000}, async()=>{
+test('preview SIGTERM releases state lock and fresh process reads saved draft', {timeout:20000}, async()=>{
   const root=await mkdtemp(join(tmpdir(),'social-preview-lifecycle-'));
   const stateDirectory=join(root,'state');
   const reservation=createServer().listen(0,'127.0.0.1');

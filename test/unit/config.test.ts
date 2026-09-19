@@ -139,7 +139,7 @@ describe("normalizeConfig", () => {
 
   it("accepts the client's own toConfigPayload shape (src/client/steps.js) with no adapter", () => {
     // Named string cadence, lowercase `timezone`, `sourceLocale`/`targetLocale`,
-    // `notificationPolicy`, top-level `quietHours` — cc/social-localization-client PR #1483.
+    // `notificationPolicy`, top-level `quietHours` — cc/social-content-client PR #1483.
     const config = normalizeConfig({
       cadence: "daily",
       timezone: "Asia/Hong_Kong",

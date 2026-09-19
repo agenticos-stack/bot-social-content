@@ -1,4 +1,4 @@
-// Social Localization client — the source drawer's media stage.
+// Social Content client — the source drawer's media stage.
 //
 // Owns which frame of the post is showing, what each frame's read is doing
 // (fetching / held / refused, plus any recovery the owner started), and the

@@ -19,10 +19,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnectedAgent } from '../scripts/connected-agent.mjs';
-import { createDoorRuntime } from '../scripts/door-runtime.mjs';
+import { createDoorRuntime } from '@agenticos-dev/bot-devkit/doors';
 import { createDevelopmentSessions } from '../scripts/development-session.mjs';
 import { createConnectedApi } from '../scripts/connected-api.mjs';
-import { grantReceiptOutcome } from '../scripts/grant-receipt.mjs';
+import { grantReceiptOutcome } from '@agenticos-dev/bot-devkit/doors';
 
 const origin = 'http://127.0.0.1:17931';
 const apiOrigin = 'http://127.0.0.1:8789';

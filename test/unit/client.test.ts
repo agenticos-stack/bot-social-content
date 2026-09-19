@@ -1,4 +1,4 @@
-// TASK-203 / TEST-001-adjacent: node tests for the Social Localization
+// TASK-203 / TEST-001-adjacent: node tests for the Social Content
 // client. The pure parts (collection.js, steps.js, poster.js, i18n.js) are
 // plain-object logic and are tested directly; the bundled client.js is
 // smoke-loaded into a hand-rolled DOM (see tests/_helpers/minimal-dom.ts —
@@ -30,6 +30,7 @@ import {
   newCount,
   selectedCount,
   selectedIds,
+  setContinuing,
   setFilter,
   setItems,
   setNotice,
@@ -57,24 +58,24 @@ import {
   toConfigPayload,
   updateDraft
 } from "../../src/src/client/steps.js";
-import { createInboxState, clearInboxSelection, drawerAction, drawerProjection, groupSourcesWithBatches, inboxSelectionCount, renderInbox, selectedInboxItems, setInboxFilter, setInboxSummaries, toggleInboxItem, visibleBatchSummaries, visibleInboxItems } from "../../src/src/client/inbox.js";
+import { createInboxState, clearCardMenu, clearInboxSelection, drawerAction, drawerProjection, groupSourcesWithBatches, inboxSelectionCount, renderInbox, selectedInboxItems, setCardMenu, setCardMenuConfirm, setInboxFilter, setInboxSummaries, toggleInboxItem, visibleBatchSummaries, visibleInboxItems } from "../../src/src/client/inbox.js";
 import { suggestProtectedTerms } from "../../src/src/client/steps.js";
 import { LOCALES, STRINGS, t } from "../../src/src/client/i18n.js";
 import { normalizeConfig } from "../../src/config.js";
 import { findAll, flushAsyncWork, hasClass, installMinimalDom } from "./_helpers/minimal-dom";
 
-it("keeps the Social Content product name in both interface locales", () => {
+it("keeps the product name in both interface locales", () => {
   expect(t("en", "appTitle")).toBe("Social Content");
-  expect(t("zh-HK", "appTitle")).toBe("Social Content");
+  expect(t("zh-HK", "appTitle")).toBe("社交內容");
   expect(t("en", "setupTitle")).toBe("Set up Social Content");
-  expect(t("zh-HK", "setupTitle")).toBe("設定 Social Content");
+  expect(t("zh-HK", "setupTitle")).toBe("設定社交內容");
 });
 
 /**
  * Spoken-form particles that must never appear in this blueprint's own
  * zh-HK product copy (GUD-002) — the same list model.js's
- * `validateLocalization` rejects a draft for, and the one
- * `tests/social-localization-model.test.ts` already scans model.js's own
+ * `validateDraft` rejects a draft for, and the one
+ * `tests/social-content-model.test.ts` already scans model.js's own
  * `messages` with. Kept here rather than imported so this test does not
  * depend on model.js or i18n.js re-exporting an internal list.
  */
@@ -192,7 +193,7 @@ describe("collection.js state", () => {
     expect(state.notice).toBeNull();
 
     state = setNotice(state, {
-      message: "instagram:IG_MAIN:p1 already has an active localization for FB_MAIN in batch batch_1 (item bi_1).",
+      message: "instagram:IG_MAIN:p1 already has an active draft for FB_MAIN in batch batch_1 (item bi_1).",
       actionLabel: "Create a new version"
     });
     expect(state.notice?.message).toContain("batch_1");
@@ -212,7 +213,7 @@ describe("collection.js state", () => {
  * With no destination configured, Continue was enabled; pressing it refused
  * with `batch_needs_destinations`, and that refusal went to `console.log` and
  * nowhere else. On screen: nothing at all. Reproduced against the live gadget
- * on 2026-09-10 — "[social-localization] Refresh failed: createBatch needs at
+ * on 2026-09-10 — "[social-content] Refresh failed: createBatch needs at
  * least one destination binding."
  */
 describe("the selection tray, when nothing is set up to publish to", () => {
@@ -264,6 +265,30 @@ describe("the selection tray, when nothing is set up to publish to", () => {
     const labels = tray({ destinations: [{ binding: "IG_MAIN" }] });
     expect(labels.join(" ")).toContain("Draft 1 post");
     expect(labels.join(" ")).not.toContain("post(s)");
+  });
+
+  /*
+   * THE PRESS IS ACKNOWLEDGED. createBatch used to run with the tray button
+   * untouched — no pending label, no disabled state, and a thrown failure
+   * died at console.error. While the call is in flight the action holds a
+   * "Drafting…" label and cannot be pressed twice.
+   */
+  it("holds a pending label and refuses a second press while a draft is in flight", () => {
+    installMinimalDom();
+    const root = (globalThis as unknown as { document: { createElement(tag: string): unknown } })
+      .document.createElement("div");
+    const state = setContinuing(
+      setItems(createCollectionState(), { items: [item] as never, nextCursor: null }),
+      true
+    );
+    renderCollection(root as never, state as never, {
+      locale: "en", sources: [], summary: { destinations: [{ binding: "IG_MAIN" }] },
+      handlers: { onSelect() {}, onOpen() {}, onMore() {}, onContinue() {}, onOpenSettings() {} }
+    } as never);
+    const button = findAll(root as never, (e: { tagName?: string; classList?: { contains(c: string): boolean } }) =>
+      e.tagName === "BUTTON" && e.classList?.contains("sl-brand"))[0] as { textContent?: string; disabled?: boolean };
+    expect(button.textContent).toContain("Drafting");
+    expect(button.disabled).toBe(true);
   });
 });
 
@@ -424,7 +449,7 @@ describe("suggestProtectedTerms", () => {
 });
 
 // ---------------------------------------------------------------------------
-// steps.js — Continue -> Localize, block issues gate Submit, expired approval
+// steps.js — Continue -> Draft, block issues gate Submit, expired approval
 // ---------------------------------------------------------------------------
 
 describe("steps.js transitions", () => {
@@ -539,6 +564,28 @@ describe("steps.js transitions", () => {
   });
 });
 
+// §9 — the Content card IS a post: per-item chips, per-item drawer
+// targeting, per-item selection across batches.
+const phaseBatch = (id: string, items: any[], extra: Record<string, unknown> = {}) => ({
+  id,
+  draftCount: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
+  items,
+  ...extra
+});
+const summaryItem = (batchItemId: string, patch: Record<string, unknown> = {}) => ({
+  batchItemId,
+  batchId: "b",
+  itemId: `src-${batchItemId}`,
+  state: "drafting",
+  revision: 1,
+  phase: "draft",
+  deliveries: [],
+  sourceLabel: "Account",
+  sourceText: "Source post text",
+  caption: "Saved caption",
+  ...patch
+});
+
 describe("inbox.js projections", () => {
   it("filters summaries while preserving independent full-facet totals", () => {
     let state = setInboxSummaries(createInboxState(), {
@@ -581,28 +628,6 @@ describe("inbox.js projections", () => {
     // `.sl-post-open` button — which opens the drawer for its batch.
     await buttons.find((button) => button.classList?.contains("sl-post-open"))?.dispatchEvent({ type: "click" });
     expect(calls).toEqual(["inspect:b1"]);
-  });
-
-  // §9 — the Content card IS a post: per-item chips, per-item drawer
-  // targeting, per-item selection across batches.
-  const phaseBatch = (id: string, items: any[], extra: Record<string, unknown> = {}) => ({
-    id,
-    draftCount: 0, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
-    items,
-    ...extra
-  });
-  const summaryItem = (batchItemId: string, patch: Record<string, unknown> = {}) => ({
-    batchItemId,
-    batchId: "b",
-    itemId: `src-${batchItemId}`,
-    state: "drafting",
-    revision: 1,
-    phase: "draft",
-    deliveries: [],
-    sourceLabel: "Account",
-    sourceText: "Source post text",
-    caption: "Saved caption",
-    ...patch
   });
 
   it("targets the drawer at the one clicked post, not its batch", () => {
@@ -716,6 +741,130 @@ describe("inbox.js projections", () => {
     expect(drawerAction({ phase: "scheduled" }).kind).toBe("schedule");
     expect(drawerAction({ phase: "published" }).kind).toBe("receipt");
     expect(drawerAction({ phase: "attention" }).kind).toBe("outcome");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The card's ⋯ — the post's actions live on the card that owns them. The
+// drawer is one post, so removal moved here; adding stays in Sources.
+// ---------------------------------------------------------------------------
+
+describe("the card ⋯ menu", () => {
+  const cardButton = (root: unknown, batchItemId: string) =>
+    findAll(root as never, (node: any) =>
+      String(node.className ?? "").split(" ").includes("sl-cardmenu") &&
+      node.getAttribute?.("data-cardmenu") === batchItemId
+    )[0] as any;
+  const board = (items: any[], extra: Record<string, unknown> = {}) =>
+    setInboxSummaries(createInboxState(), {
+      batches: [phaseBatch("b1", items, { draftCount: items.length, ...extra })],
+      totals: { batches: 1, items: items.length, drafts: items.length }
+    });
+  const mount = (state: any, calls: string[]) => {
+    installMinimalDom();
+    const root = document.createElement("main");
+    renderInbox(root, state, {
+      locale: "en",
+      handlers: {
+        onInspectBatch: () => {},
+        onSelectItem: () => {},
+        onInboxFilter: () => {},
+        onLoadMoreBatches: () => {},
+        onCardMenu: (id: string | null) => calls.push(`menu:${id}`),
+        onCardMenuConfirm: (id: string) => calls.push(`confirm:${id}`),
+        onCardMenuCancel: (id: string) => calls.push(`cancel:${id}`),
+        onRemoveItem: (batch: any, item: any) => calls.push(`remove:${batch.id}:${item.batchItemId}`)
+      }
+    });
+    return root;
+  };
+  const menuOf = (root: unknown, batchItemId: string) =>
+    findAll(root as never, (node: any) =>
+      String(node.className ?? "").split(" ").includes("sl-cardmenu-pop") &&
+      node.getAttribute?.("data-cardmenu") === batchItemId
+    )[0] as any;
+
+  it("the ⋯ opens the post's own menu, and Remove asks in place", async () => {
+    const calls: string[] = [];
+    let state = board([summaryItem("bi-1", { title: "First post" }), summaryItem("bi-2")]);
+    state = setCardMenu(state, "bi-1");
+    const root = mount(state, calls);
+    const wrap = cardButton(root, "bi-1");
+    expect(wrap).toBeTruthy();
+    const trigger = findAll(wrap as never, (node: any) => String(node.className ?? "").includes("sl-cardbtn"))[0];
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // The open menu names the one action it owns today.
+    const menu = menuOf(root, "bi-1");
+    expect(menu).toBeTruthy();
+    expect(String(menu.textContent)).toContain(t("en", "drawerHoverRemove"));
+    expect(String(menu.textContent)).not.toContain("Add a post from Sources");
+    const row = findAll(menu as never, (node: any) => node.tagName === "BUTTON")[0];
+    await row.dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["confirm:bi-1"]);
+  });
+
+  it("the in-place confirm names the post and reports batch + item to remove", async () => {
+    const calls: string[] = [];
+    let state = board([summaryItem("bi-1", { caption: "First post" }), summaryItem("bi-2")]);
+    state = setCardMenuConfirm(state, "bi-1");
+    const root = mount(state, calls);
+    const menu = menuOf(root, "bi-1");
+    expect(String(menu.textContent)).toContain(t("en", "drawerRemovePostQ", { name: "First post" }));
+    const buttons = findAll(menu as never, (node: any) => node.tagName === "BUTTON");
+    await buttons.find((b: any) => b.textContent === t("en", "drawerDecisionCancel")).dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["cancel:bi-1"]);
+    await buttons.find((b: any) => b.textContent === t("en", "drawerHoverRemove")).dispatchEvent({ type: "click" });
+    expect(calls).toEqual(["cancel:bi-1", "remove:b1:bi-1"]);
+  });
+
+  it("a filed post's Remove is disabled and says why", async () => {
+    const calls: string[] = [];
+    const filed = summaryItem("bi-1", { deliveries: [{ outcome: "submitted" }] });
+    let state = board([filed, summaryItem("bi-2")]);
+    state = setCardMenu(state, "bi-1");
+    const root = mount(state, calls);
+    const menu = menuOf(root, "bi-1");
+    const row = findAll(menu as never, (node: any) => node.tagName === "BUTTON")[0];
+    // The disabled attribute IS the contract — a real browser never fires
+    // click on it (the shim would, so it is not dispatched here).
+    expect(row.disabled).toBe(true);
+    expect(String(menu.textContent)).toContain(t("en", "drawerRemovePostSent"));
+  });
+
+  it("the last post's Remove is disabled and says why", async () => {
+    const calls: string[] = [];
+    let state = board([summaryItem("bi-1")]);
+    state = setCardMenu(state, "bi-1");
+    const root = mount(state, calls);
+    const menu = menuOf(root, "bi-1");
+    const row = findAll(menu as never, (node: any) => node.tagName === "BUTTON")[0];
+    expect(row.disabled).toBe(true);
+    expect(String(menu.textContent)).toContain(t("en", "drawerRemovePostLast"));
+  });
+
+  it("toggling the same ⋯ closes; clear is a no-op when nothing is open", () => {
+    let state = board([summaryItem("bi-1"), summaryItem("bi-2")]);
+    expect(state.cardMenu).toBeNull();
+    state = setCardMenu(state, "bi-1");
+    expect(state.cardMenu).toEqual({ batchItemId: "bi-1", confirm: false });
+    // The card's own toggle passes null to close.
+    state = setCardMenu(state, null);
+    expect(state.cardMenu).toBeNull();
+    expect(clearCardMenu(state)).toBe(state);
+    // Opening a second card's menu replaces the first — one menu at a time.
+    state = setCardMenu(setCardMenu(state, "bi-1"), "bi-2");
+    expect(state.cardMenu).toEqual({ batchItemId: "bi-2", confirm: false });
+  });
+
+  it("the ⋯ and its menu never open the drawer or tick the selection", async () => {
+    const calls: string[] = [];
+    let state = board([summaryItem("bi-1"), summaryItem("bi-2")]);
+    const root = mount(state, calls);
+    const wrap = cardButton(root, "bi-1");
+    const trigger = findAll(wrap as never, (node: any) => String(node.className ?? "").includes("sl-cardbtn"))[0];
+    const event = { type: "click", stopPropagation: () => calls.push("stopped") };
+    await trigger.dispatchEvent(event);
+    expect(calls).toEqual(["stopped", "menu:bi-1"]);
   });
 });
 
@@ -1106,12 +1255,12 @@ describe("bundled client.js smoke test", () => {
     expect(card).toBeTruthy();
     expect(card.textContent).toContain(item.text.split("\n")[0].slice(0, 90));
     expect(findAll(card, (element) => element.classList.contains("sl-state-chip")).map((c) => c.textContent)).toContain("Awaiting approval");
-    // The wizard's Localize step never opened.
+    // The wizard's Draft step never opened.
     expect(findAll(document.body, (element) => element.classList.contains("sl-zh-edit"))).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------
-  // Finding C (design-plans/evidence/social-localization-gadget-1/
+  // Finding C (design-plans/evidence/social-content-gadget-1/
   // verification.md): the local end-to-end browser walk showed the first-run
   // form's submit never persisting config — `summary().configured` stayed
   // `false` after clicking "開始監察來源" twice, and the identical payload

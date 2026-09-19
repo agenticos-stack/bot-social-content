@@ -1,6 +1,6 @@
-import { assertLocalApiOrigin, assertLocalFrontendOrigin, assertRemoteApiOrigin } from './platform-origin.mjs';
+import { assertLocalApiOrigin, assertLocalFrontendOrigin, assertRemoteApiOrigin } from '@agenticos-dev/bot-devkit/origins';
 import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
-import { doorFailureResponse } from './door-certainty.mjs';
+import { doorFailureResponse } from '@agenticos-dev/bot-devkit/doors';
 
 const localRoutes = new Map([
   ['/api/auth/get-session', ['GET']],
@@ -38,10 +38,10 @@ export function redactCredentials(value) {
 export function createConnectedApi({apiOrigin, frontendOrigin, development, fetcher = fetch, platform = 'local'}) {
   if (platform === 'remote') {
     assertRemoteApiOrigin(apiOrigin);
-    assertLocalFrontendOrigin(frontendOrigin);
+    assertLocalFrontendOrigin(frontendOrigin, ['social.localhost']);
   } else {
     assertLocalApiOrigin(apiOrigin);
-    assertLocalFrontendOrigin(frontendOrigin);
+    assertLocalFrontendOrigin(frontendOrigin, ['social.localhost']);
   }
   const routes = platform === 'remote' ? remoteRoutes : localRoutes;
   const unavailable = platform === 'remote' ? 'The production API is unavailable.' : 'The local API is unavailable.';

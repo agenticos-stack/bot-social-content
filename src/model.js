@@ -1,4 +1,4 @@
-// Social Localization blueprint — pure model.
+// Social Content blueprint — pure model.
 //
 // No imports beyond the platform (crypto.subtle for SHA-256 hashing). This
 // file has no I/O beyond reading the system clock and the platform crypto
@@ -46,7 +46,7 @@ const VISUAL_MODES = ["keep_original", "text_poster", "ai_refinement"];
 /**
  * Written zh-HK product copy must never contain these — see AGENTS.md and
  * studio/scripts/i18n-diff.mjs, whose register list this mirrors. Also used
- * by validateLocalization() to block a draft written in spoken Cantonese.
+ * by validateDraft() to block a draft written in spoken Cantonese.
  */
 const SPOKEN_FORM_TOKENS = ["嘅", "咗", "唔", "呢個", "邊個", "幾多", "睇", "喺", "嗰"];
 
@@ -593,7 +593,7 @@ export async function contentHash(item) {
 /**
  * SHA-256 hex over any JSON-serializable value. General-purpose sibling of
  * `contentHash()` (which is specifically the SourceItem field set) — used by
- * `server.js` to hash a localized VERSION (caption, poster layout,
+ * `server.js` to hash a drafted VERSION (caption, poster layout,
  * destination, origin reference) for SEC-005's "exact ... content hash is the
  * single input to approval preview, decision record, dispatcher, receipt and
  * audit".
@@ -756,7 +756,7 @@ function housePolicyIssues(trimmed, policy, limits) {
 }
 
 /**
- * Localization when the brief allows no copy changes and is not ai_refinement.
+ * Draft validation when the brief allows no copy changes and is not ai_refinement.
  * `ai_refinement` or any allowedChanges selects the grounding ledger path.
  */
 export function usesGroundedValidation(brief) {
@@ -1043,16 +1043,16 @@ export function validateGrounded({ source = {}, draft, ledger, policy = {}, limi
   return { ok: !issues.some((entry) => entry.severity === "block"), issues };
 }
 
-/** REQ-003: localization stays the no-allowed-changes path; derivation uses the ledger. */
+/** REQ-003: the plain draft stays the no-allowed-changes path; derivation uses the ledger. */
 export function validateRevisionDraft({ brief, ...rest } = {}) {
-  return usesGroundedValidation(brief) ? validateGrounded(rest) : validateLocalization(rest);
+  return usesGroundedValidation(brief) ? validateGrounded(rest) : validateDraft(rest);
 }
 
 /**
- * Validates a localized draft against the source item, the org's protection
+ * Validates a drafted post against the source item, the org's protection
  * policy and destination limits. Never rewrites the draft — only reports.
  */
-export function validateLocalization({ source = {}, draft, policy = {}, limits = {} } = {}) {
+export function validateDraft({ source = {}, draft, policy = {}, limits = {} } = {}) {
   const issues = [];
   const trimmed = typeof draft === "string" ? draft.trim() : "";
 
@@ -1280,11 +1280,13 @@ export function builtinImageInstruction(config) {
  * fail-closed case: the caller declares the reference anyway and the platform
  * refuses it, rather than silently generating without it.
  */
-export function sourceImageReferences(item) {
+export function sourceImageReferences(item, onlyIds = null) {
   const media = Array.isArray(item?.media) ? item.media : [];
+  const wanted = onlyIds instanceof Set ? onlyIds : null;
   const references = [];
   for (const entry of media) {
     if (entry?.kind !== "image" && entry?.kind !== "carousel_child") continue;
+    if (wanted && !wanted.has(entry?.id)) continue;
     const url = typeof entry.url === "string" ? entry.url : "";
     if (!url.startsWith("https://") || url.length > 2048) continue;
     const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
@@ -1292,6 +1294,260 @@ export function sourceImageReferences(item) {
     if (references.length >= MAX_IMAGE_REFERENCES) break;
   }
   return references;
+}
+
+/** One source media entry by id — the child a page is bound to. */
+export function sourceMediaEntry(item, mediaId) {
+  const media = Array.isArray(item?.media) ? item.media : [];
+  return media.find((entry) => typeof entry?.id === "string" && entry.id === mediaId) ?? null;
+}
+
+/**
+ * Source children the image pipeline does not carry — `kind: "video"`
+ * entries. A carousel drafted from a mixed source keeps only its image
+ * children, and the post must say which videos were not carried over.
+ */
+export function skippedSourceVideos(item) {
+  const media = Array.isArray(item?.media) ? item.media : [];
+  return media.filter((entry) => entry?.kind === "video");
+}
+
+// ---------------------------------------------------------------------------
+// Revision pages — the post's ordered list of filled-or-empty slots
+// ---------------------------------------------------------------------------
+
+/*
+ * `{ pageId, kind, mediaId, sourceMediaId, altText, mediaDigest,
+ *    mediaProvenance, mediaAcceptance }`
+ *
+ * One post is an ordered list of pages; one filled page publishes as a
+ * single image, two or more as a carousel. A page exists BEFORE it is filled
+ * — `kind: null` is a durable empty slot with its own id and place, which is
+ * what a generation or an upload is delivered into.
+ *
+ * `kind` says what fills the page:
+ * - "generated" — a generated_media row (an AI image or an upload);
+ *   `mediaId` is that row's id and the pin facts (`mediaDigest`,
+ *   `mediaProvenance`, `mediaAcceptance`) record exactly which asset was
+ *   reviewed, like the singular `accepted_generated_media_*` columns did.
+ * - "original" — one of THIS post's own source media entries; `mediaId` is
+ *   the source child's id (never another post's image).
+ * - "poster"   — the rendered text poster (resolved per revision, never a
+ *   stored id, so `mediaId` stays null).
+ * - null       — empty: nothing has filled this page yet.
+ *
+ * `sourceMediaId` binds the page to the source child it was born from — the
+ * default reference basis for its generation (page k takes child k, never
+ * the whole album) and the image it may adopt. A page the owner added has
+ * `sourceMediaId: null` — no reference until one is picked.
+ */
+export const REVISION_PAGE_KINDS = Object.freeze(["generated", "original", "poster"]);
+export const MAX_PAGES_PER_POST = MAX_MEDIA_PER_ITEM;
+
+function pageText(value, max) {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null;
+}
+
+function emptyRevisionPage(pageId, sourceMediaId = null) {
+  return {
+    pageId,
+    kind: null,
+    mediaId: null,
+    sourceMediaId,
+    altText: null,
+    mediaDigest: null,
+    mediaProvenance: null,
+    mediaAcceptance: null
+  };
+}
+
+/**
+ * Validate and normalize a caller-supplied page list. The list is never
+ * empty — a post always has at least one page — and holds at most
+ * `MAX_PAGES_PER_POST` entries. `kind: null` marks an empty page; a set kind
+ * requires the media it names (`generated`/`original` take `mediaId`,
+ * `poster` resolves the revision's own render and takes none).
+ */
+export function normalizeRevisionPages(input) {
+  if (!Array.isArray(input)) {
+    return { ok: false, code: "pages_invalid", message: "`pages` is an ordered list of page entries." };
+  }
+  if (!input.length) {
+    return { ok: false, code: "pages_invalid", message: "A post always has at least one page — remove pages, never the last one." };
+  }
+  if (input.length > MAX_PAGES_PER_POST) {
+    return { ok: false, code: "pages_invalid", message: `A post holds at most ${MAX_PAGES_PER_POST} pages.` };
+  }
+  const seen = new Set();
+  const pages = [];
+  for (const raw of input) {
+    const value = record(raw);
+    if (!value) {
+      return { ok: false, code: "pages_invalid", message: "Every page is an object." };
+    }
+    const pageId = pageText(value.pageId, 200);
+    if (!pageId) {
+      return { ok: false, code: "page_id_invalid", message: "Every page needs its own `pageId`." };
+    }
+    if (seen.has(pageId)) {
+      return { ok: false, code: "page_id_invalid", message: `Page id ${pageId} is used twice.` };
+    }
+    seen.add(pageId);
+    const kind = value.kind === undefined ? null : value.kind;
+    if (kind !== null && !REVISION_PAGE_KINDS.includes(kind)) {
+      return { ok: false, code: "page_kind_invalid", message: "A page is filled by a generated image, the post's own source image, or the text poster — or it is empty." };
+    }
+    const mediaId = pageText(value.mediaId, 200);
+    if (kind === "generated" && !mediaId) {
+      return { ok: false, code: "page_media_invalid", message: "A generated page names the image that fills it." };
+    }
+    if (kind === "original" && !mediaId) {
+      return { ok: false, code: "page_media_invalid", message: "A source page names the post's own source image that fills it." };
+    }
+    if (mediaId && (kind === null || kind === "poster")) {
+      return { ok: false, code: "page_media_invalid", message: "Only a generated or source page carries a media id." };
+    }
+    const generated = kind === "generated";
+    pages.push({
+      pageId,
+      kind,
+      mediaId: generated || kind === "original" ? mediaId : null,
+      sourceMediaId: pageText(value.sourceMediaId, 200),
+      altText: pageText(value.altText, MAX_ALT_TEXT_CHARS),
+      mediaDigest: generated ? pageText(value.mediaDigest, 200) : null,
+      mediaProvenance: generated && (value.mediaProvenance === "recorded" || value.mediaProvenance === "unknown") ? value.mediaProvenance : null,
+      mediaAcceptance:
+        generated && (value.mediaAcceptance === "generation" || value.mediaAcceptance === "owner_explicit")
+          ? value.mediaAcceptance
+          : null
+    });
+  }
+  return { ok: true, pages };
+}
+
+/**
+ * The page list a pre-pages revision becomes — migration 20's derivation,
+ * shared with the read fallback. The singular `accepted_generated_media_id`
+ * maps to one generated page; `keep_original` maps to one `original` page
+ * per source media entry (the exact set it would have shipped, videos
+ * included); `text_poster` maps to one poster page. A NULL mode keeps its
+ * ship-the-stored-poster behaviour: poster when `hasPoster`, else the source
+ * pages it would have fallen back to. The legacy `alt_text` lands on the
+ * first page.
+ */
+export function legacyRevisionPages(revision, sourceMedia = [], { hasPoster = false } = {}) {
+  const media = Array.isArray(sourceMedia) ? sourceMedia : [];
+  const altText = pageText(revision?.altText, MAX_ALT_TEXT_CHARS);
+  const stamp = `pg_leg_${typeof revision?.batchItemId === "string" ? revision.batchItemId : "item"}_${Number.isFinite(revision?.revision) ? revision.revision : 0}`;
+  const firstImageChild =
+    media.find((entry) => (entry?.kind === "image" || entry?.kind === "carousel_child") && typeof entry?.id === "string" && entry.id)?.id ??
+    null;
+  const mode = revision?.acceptedVisualMode ?? null;
+  const pin = typeof revision?.acceptedGeneratedMediaId === "string" ? revision.acceptedGeneratedMediaId : null;
+  const originalPages = () => {
+    const list = media
+      .filter((entry) => typeof entry?.id === "string" && entry.id)
+      .map((entry, index) => ({
+        ...emptyRevisionPage(`${stamp}_${index + 1}`, entry.id.slice(0, 200)),
+        kind: "original",
+        mediaId: entry.id.slice(0, 200),
+        altText: index === 0 ? altText : null
+      }));
+    return list.length ? list : [emptyRevisionPage(`${stamp}_1`)];
+  };
+  if (mode === "ai_refinement") {
+    if (!pin) return [emptyRevisionPage(`${stamp}_1`, firstImageChild)];
+    return [
+      {
+        pageId: `${stamp}_1`,
+        kind: "generated",
+        mediaId: pin.slice(0, 200),
+        sourceMediaId: firstImageChild,
+        altText,
+        mediaDigest: pageText(revision?.acceptedGeneratedMediaDigest, 200),
+        mediaProvenance:
+          revision?.acceptedGeneratedMediaProvenance === "recorded" || revision?.acceptedGeneratedMediaProvenance === "unknown"
+            ? revision.acceptedGeneratedMediaProvenance
+            : null,
+        mediaAcceptance:
+          revision?.acceptanceSource === "generation" || revision?.acceptanceSource === "owner_explicit"
+            ? revision.acceptanceSource
+            : null
+      }
+    ];
+  }
+  /*
+   * Non-empty `derivedMediaRefs` shipped under the pre-page packer whatever
+   * the mode said — they are generated pages now. An entry whose asset id is
+   * not a generated_media row still publishes through the page's own stored
+   * ref (the same fallback the packer applied).
+   */
+  const derivedRefs = Array.isArray(revision?.derivedMediaRefs) ? revision.derivedMediaRefs : [];
+  if (derivedRefs.length) {
+    return derivedRefs.map((ref, index) => ({
+      pageId: `${stamp}_${index + 1}`,
+      kind: "generated",
+      mediaId: typeof ref?.assetId === "string" && ref.assetId ? ref.assetId.slice(0, 200) : null,
+      sourceMediaId: firstImageChild,
+      altText: index === 0 ? altText : null,
+      mediaDigest: null,
+      mediaProvenance: null,
+      mediaAcceptance: null
+    }));
+  }
+  if (mode === "keep_original") return originalPages();
+  if (mode === "text_poster") {
+    return [{ ...emptyRevisionPage(`${stamp}_1`, firstImageChild), kind: "poster", altText }];
+  }
+  return hasPoster ? [{ ...emptyRevisionPage(`${stamp}_1`, firstImageChild), kind: "poster", altText }] : originalPages();
+}
+
+/**
+ * The page list a never-saved post presents: one EMPTY page per source image
+ * child, each bound to that child (`pg_src_<id>` — a stable id the stored
+ * list keeps verbatim, so a later save names the same pages). The page is
+ * empty rather than pre-adopted: filling it is the owner's (or the agent's)
+ * explicit choice. A source with no image children gets one unbound page.
+ */
+export function defaultRevisionPages(sourceItem) {
+  const media = Array.isArray(sourceItem?.media) ? sourceItem.media : [];
+  const pages = media
+    .filter((entry) => (entry?.kind === "image" || entry?.kind === "carousel_child") && typeof entry?.id === "string" && entry.id)
+    .map((entry) => emptyRevisionPage(`pg_src_${entry.id.slice(0, 160)}`, entry.id.slice(0, 200)));
+  return pages.length ? pages.slice(0, MAX_PAGES_PER_POST) : [emptyRevisionPage("pg_main")];
+}
+
+/**
+ * The effective ordered pages of a post: the revision's stored list; else —
+ * for a revision written before the column existed — the faithful list its
+ * legacy columns imply (`legacyRevisionPages`, given the source media and
+ * whether a poster was stored for that revision); else the source-derived
+ * default for a post that has never been saved.
+ */
+export function effectiveRevisionPages(revision, sourceItem, { hasPoster = false } = {}) {
+  if (Array.isArray(revision?.pages) && revision.pages.length) return revision.pages;
+  if (revision) return legacyRevisionPages(revision, sourceItem?.media, { hasPoster });
+  return defaultRevisionPages(sourceItem);
+}
+
+/**
+ * The legacy `accepted_visual_mode` a page list implies — written onto every
+ * new revision so old readers (and the column's own history) stay honest.
+ * A post whose pages are all source images reads `keep_original`, all-poster
+ * reads `text_poster`, and anything carrying a generated image reads
+ * `ai_refinement`. An all-empty list records no pick (NULL).
+ */
+export function visualModeFromPages(pages) {
+  const list = Array.isArray(pages) ? pages : [];
+  const kinds = new Set(list.map((page) => page?.kind ?? null));
+  kinds.delete(null);
+  if (!kinds.size) return null;
+  if (kinds.size === 1) {
+    if (kinds.has("original")) return "keep_original";
+    if (kinds.has("poster")) return "text_poster";
+    if (kinds.has("generated")) return "ai_refinement";
+  }
+  return kinds.has("generated") ? "ai_refinement" : kinds.has("poster") ? "text_poster" : "keep_original";
 }
 
 /** Which instruction layer a snapshot came from — the mark records it so the answer is never re-derived. */
@@ -1312,6 +1568,17 @@ function generationInstructionSources(value) {
  * ratio drops the whole brief rather than letting half of it describe the
  * request.
  */
+function generationReferenceList(value) {
+  const list = Array.isArray(value) ? value : [];
+  return list.slice(0, MAX_IMAGE_REFERENCES).flatMap((entry) => {
+    const url =
+      typeof entry?.url === "string" && entry.url.startsWith("https://") && entry.url.length <= 2048 ? entry.url : null;
+    if (!url) return [];
+    const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
+    return [id ? { id, url } : { url }];
+  });
+}
+
 function generationImageBrief(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const aspectRatio =
@@ -1319,18 +1586,34 @@ function generationImageBrief(value) {
   if (!aspectRatio) return undefined;
   const brief = { aspectRatio };
   if (value.references !== undefined) {
-    const list = Array.isArray(value.references) ? value.references : [];
-    brief.references = list.slice(0, MAX_IMAGE_REFERENCES).flatMap((entry) => {
-      const url =
-        typeof entry?.url === "string" && entry.url.startsWith("https://") && entry.url.length <= 2048
-          ? entry.url
-          : null;
-      if (!url) return [];
-      const id = typeof entry.id === "string" && entry.id ? entry.id.slice(0, 200) : null;
-      return [id ? { id, url } : { url }];
+    brief.references = generationReferenceList(value.references);
+  }
+  /*
+   * Per-page briefs — a carousel request names which page each reference
+   * set answers. `references` PRESENT on a page entry is the same
+   * declaration as on the flat brief: asked-for, even when empty.
+   */
+  if (Array.isArray(value.pages)) {
+    brief.pages = value.pages.flatMap((entry) => {
+      const page = record(entry);
+      const pageId = typeof page?.pageId === "string" && page.pageId ? page.pageId.slice(0, 200) : null;
+      if (!pageId) return [];
+      const out = { pageId };
+      if (page.references !== undefined) out.references = generationReferenceList(page.references);
+      return [out];
     });
   }
   return brief;
+}
+
+/** A mark's page list — the pages an image ask covers (absent = the whole post's image). */
+function generationImagePages(value) {
+  if (!Array.isArray(value)) return undefined;
+  const list = value
+    .filter((entry) => typeof entry === "string" && entry)
+    .map((entry) => entry.slice(0, 200))
+    .slice(0, MAX_PAGES_PER_POST);
+  return list.length ? list : undefined;
 }
 
 /**
@@ -1358,7 +1641,10 @@ export function generationMark(mark) {
   if (typeof mark === "object") {
     const needs = {
       caption: mark.needs?.caption !== false,
-      image: mark.needs?.image !== false
+      image: mark.needs?.image !== false,
+      // The pages still waiting on an image, when the ask named them. Absent
+      // means "the post's image" un-partitioned — a pre-carousel mark.
+      ...(generationImagePages(mark.needs?.imagePages) ? { imagePages: generationImagePages(mark.needs.imagePages) } : {})
     };
     return {
       id: typeof mark.id === "string" ? mark.id : null,
@@ -1368,7 +1654,13 @@ export function generationMark(mark) {
       // narrowest reading, so an old mark never authorizes more than it asks.
       scope:
         mark.scope && typeof mark.scope === "object"
-          ? { caption: mark.scope.caption === true, image: mark.scope.image === true }
+          ? {
+              caption: mark.scope.caption === true,
+              image: mark.scope.image === true,
+              // The pages this request asked to fill — regenerating page 2
+              // is not a claim on page 3.
+              ...(generationImagePages(mark.scope.imagePages) ? { imagePages: generationImagePages(mark.scope.imagePages) } : {})
+            }
           : { ...needs },
       needs,
       // When the request was made, and the effective instructions it was made
@@ -1695,6 +1987,20 @@ export function itemPresentation({ state, revision = 0, generation = null, publi
   return { phase, deliveries };
 }
 
+/**
+ * A post that was sent — a filing exists that is not bound-only, superseded
+ * or failed — cannot be removed from the batch. Both item shapes answer it:
+ * the board's summary item carries `deliveries` (liveDeliveries already
+ * excludes superseded/failed and marks bound-only `outcome: "bound"`), the
+ * drawer's full item carries raw `publications`.
+ */
+export function postFiled(item) {
+  if (Array.isArray(item?.deliveries)) {
+    return item.deliveries.some((entry) => entry?.outcome !== "bound");
+  }
+  return (item?.publications ?? []).some((pub) => !["bound", "superseded", "failed"].includes(pub?.state));
+}
+
 /** Which inbox filter a phase belongs to; `all`/`new` handled by the caller. */
 export const PHASE_FILTERS = Object.freeze({
   drafts: Object.freeze(["queued", "regenerating", "draft"]),
@@ -1708,7 +2014,7 @@ export const PHASE_FILTERS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 export const messages = {
-  emptyDraft: { en: "The localized caption is empty.", "zh-HK": "本地化文案為空。" },
+  emptyDraft: { en: "The post's caption is empty.", "zh-HK": "帖文文案為空。" },
   lowChineseShare: { en: "The draft does not read as written Chinese.", "zh-HK": "文案未見以書面中文撰寫。" },
   spokenFormDetected: {
     en: "The draft contains a spoken Cantonese expression; product copy must be written Chinese.",
@@ -1817,7 +2123,7 @@ function encodedLength(value) {
  * rather than the absence of one. TRUNCATION IS ALWAYS EXPLICIT: a reader who
  * does not check `truncated` still gets a correct export of what it holds,
  * and one who does can tell a complete export from a partial one — which is
- * the difference between "this organisation localized 40 posts" and "we
+ * the difference between "this organisation drafted 40 posts" and "we
  * showed you 40 of them".
  *
  * SHED ORDER IS REVISIONS, THEN BATCHES, THEN ITEMS. Revisions carry the text
@@ -1922,7 +2228,7 @@ export async function normalizeOpenInstagramPosts(page, source) {
      * Storing it produces an undated, imageless card an owner cannot act on
      * and cannot explain, and it would count as a "new item" on every scan
      * report. Anything carrying neither a time nor a single piece of media is
-     * not a post this gadget can localize.
+     * not a post this gadget can draft.
      *
      * Dropped WITH A REASON, not silently: `dropped` is what tells an owner
      * their scan saw twelve things and kept eleven.

@@ -1,4 +1,4 @@
-// Social Localization blueprint — every door call in one file.
+// Social Content blueprint — every door call in one file.
 //
 // `server.js` never reads `this.env.<door>` directly; it calls a function
 // here. A contract change on any door — the connector door's method naming
@@ -24,7 +24,7 @@
 // not a throw: `{ refused: true, code, message, authority? }`. `isDoorRefusal`
 // below is the one place that shape is recognised.
 //
-// ENV KEY CASING (Finding D, design-plans/evidence/social-localization-
+// ENV KEY CASING (Finding D, design-plans/evidence/social-content-
 // gadget-1/verification.md). `this.env`'s keys are never this blueprint's
 // to invent: the platform builds them from each door's own requirement key
 // through `gatekeeperEnvKey` (`workers/api/src/domains/gadgets/
@@ -33,7 +33,7 @@
 // per isolate from the `DOOR_SPEC` `gatekeeperEnv` builds, is what actually
 // turns a grant into `env.<key>`). This blueprint's three fixed capability
 // doors are declared with LOWERCASE requirement keys —
-// `modules/gadgets/src/definitions/social-localization.ts`'s
+// `modules/gadgets/src/definitions/social-content.ts`'s
 // `requirements`: `{ requirementKey: "social", kind: "capability" }`, and
 // likewise `"schedule"` / `"workspace"` — so `gatekeeperEnvKey` (identity
 // for a non-connector kind) resolves each to `env.social` / `env.schedule` /
@@ -374,14 +374,14 @@ function fetchRefusal(result) {
 export async function notify(env, payload) {
   const workspace = env && env.workspace;
   if (!workspace || typeof workspace.notify !== "function") {
-    console.warn("social-localization: workspace.notify is not granted; skipping", payload && payload.title);
+    console.warn("social-content: workspace.notify is not granted; skipping", payload && payload.title);
     return { outcome: "unknown", message: "The workspace door is not granted." };
   }
   try {
     await workspace.notify(payload);
     return { outcome: "confirmed" };
   } catch (error) {
-    console.warn("social-localization: workspace.notify failed:", errorMessage(error));
+    console.warn("social-content: workspace.notify failed:", errorMessage(error));
     return { outcome: "failed_safe", message: errorMessage(error) };
   }
 }

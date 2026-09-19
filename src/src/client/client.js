@@ -1,6 +1,6 @@
-// Social Localization client — the sandboxed gadget entry point (TASK-203).
+// Social Content client — the sandboxed gadget entry point (TASK-203).
 //
-// Bundled by scripts/pack-social-localization-client.mjs into the single
+// Bundled by scripts/pack-social-content-client.mjs into the single
 // `client.js` the archive ships (PAT-002). Runs inside the sandbox iframe
 // gadget-sandbox-html.ts composes: opaque origin, `connect-src 'none'`
 // (SEC-002), `globalThis.gadget` is the capnweb stub to this instance's
@@ -20,6 +20,7 @@ import {
   mergeScanResult,
   renderCollection,
   selectedIds,
+  setContinuing,
   setFilter,
   setItems,
   setLastCheckedAt,
@@ -35,12 +36,20 @@ import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rp
 import { createMediaStage } from "./preview-media.js";
 import { createImageAcceptance } from "./image-acceptance.js";
 import { newGrantRequestId, parseGadgetDoorsChangedMessage, parseGadgetGrantResultMessage } from "../../grant-request.js";
+import {
+  gadgetAgentIntentMessage,
+  gadgetTopupMessage,
+  newTopupRequestId,
+  parseGadgetHostFeaturesMessage,
+  parseGadgetTopupResultMessage
+} from "../../agent-intent.js";
 import { renderPosterImage } from "./poster.js";
 import { confirmReviewSubset, confirmUnsavedNavigation } from "./navigation.js";
 import {
   DRAWER_FOOTER_HINT_ID,
   captionConflictFor,
   confirmDrawerChoice,
+  destinationBlock,
   dirtyInstructionParts,
   dirtyParts,
   pendingParts,
@@ -50,22 +59,29 @@ import {
   instructionDefaultsOf,
   instructionPatchFor,
   publicationHint,
+  recordedBindings,
   renderDrawerTablist,
   renderHistoryPanel,
   renderInstructionsPanel,
   renderOutputPanel,
-  renderPublicationControls,
+  renderPublishControls,
   renderReferencePanel,
-  revisionEntryFor
+  revisionEntryFor,
+  pagesOfItem,
+  workingPages,
+  REGEN_SUGGESTION_KEYS
 } from "./drawer.js";
-import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, sourceImageReferences } from "../../model.js";
+import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, postFiled, sourceImageReferences } from "../../model.js";
 import {
   classifyReviewSelection,
+  clearCardMenu,
   clearInboxSelection,
   createInboxState,
   isEditableItem,
   renderInbox,
   selectedInboxItems,
+  setCardMenu,
+  setCardMenuConfirm,
   setInboxFilter,
   setInboxLoading,
   setInboxNotice,
@@ -79,7 +95,7 @@ import {
   draftFromConfig,
   createWizardState,
   goToStep as goToWizardStep,
-  isRefusal,
+  isRefusalResult,
   publicationStateSummary,
   refusalMessage,
   renderPublish,
@@ -293,34 +309,104 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-drawer-tablist [role="tab"][aria-selected="true"] { color: var(--sl-ink); border-bottom-color: var(--sl-ink); }
 .sl-drawer-meta { font-size: 10.5px; color: var(--sl-muted); letter-spacing: .02em; margin-bottom: 3px; }
 .sl-drawer-state { display: block; }
-.sl-output-compose { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 14px; align-items: start; }
-.sl-output-compose .sl-output-images { display: block; }
-.sl-output-compose .sl-output-frame,
-.sl-output-thumb { width: 128px; max-width: 128px; }
 .sl-output-copy { padding-top: 0; }
 .sl-output-copy h3 { margin-top: 0; }
-/* One joined segmented control, per the accepted mockup: the segment carries
-   the border and radius; the buttons inside share dividers, not chrome. */
-.sl-src-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-src-btn.sl-src-btn { min-height: 38px; padding: 0 8px; font-size: 12.5px; border: 0; border-right: 1px solid var(--sl-line); border-radius: 0; background: transparent; color: var(--sl-ink-2); font-weight: 600; }
-.sl-src-btn:last-child { border-right: 0; }
-.sl-src-btn[aria-pressed="true"] { background: var(--sl-surface-2); color: var(--sl-ink); font-weight: 600; }
-.sl-src-btn:disabled { opacity: .45; }
-.sl-src-btn:focus-visible { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
-/* The image brief: a quiet collapsible that belongs to the Generate source
-   only. Its summary line always names the resolved ask, so the collapsed
-   state is still honest about what a press would send. */
-.sl-brief { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-control); background: var(--sl-surface); }
-.sl-brief[open] { box-shadow: var(--sl-e-1); }
-.sl-brief > summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 0 12px; cursor: pointer; font-size: 12.5px; color: var(--sl-ink-2); }
-.sl-brief > summary::-webkit-details-marker { display: none; }
-.sl-brief-caret { color: var(--sl-ink-4); transition: transform .15s ease; }
-.sl-brief[open] > summary .sl-brief-caret { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .sl-brief-caret { transition: none; } }
-.sl-brief-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sl-brief-chip { flex-shrink: 0; padding: 3px 9px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-chip); background: transparent; color: var(--sl-ink-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
-.sl-brief-body { padding: 2px 12px 14px; display: flex; flex-direction: column; gap: 12px; }
-.sl-brief-body > * { margin-block: 0; }
+/* THE IMAGE STRIP — one slot per accepted picture (one today; the ordered
+   array is the Phase 2 contract). Fixed thumb, index on the frame, the cap
+   names slot 1 the cover; the candidate joins as a dashed slot and the +
+   tile ends the row. */
+/* ONE COLUMN PAIR FOR THE WHOLE SHEET. 帖文 and 參考 share the same media
+   column width, so switching tabs does not reflow the panel under the cursor. */
+/* The columns share the row's height (stretch, not start): on a post whose
+ * media side is short — a skeleton or a placeholder — the caption side
+ * growing past it read as a half-empty panel. The caption textarea grows
+ * into the space; a generating skeleton fills its column to the bottom. */
+.sl-cols { display: grid; grid-template-columns: var(--sl-colW, 176px) minmax(0, 1fr); gap: 16px; align-items: stretch; }
+.sl-cols-media { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sl-cols-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sl-cols-side .sl-drawer-composer { flex: 1; display: flex; flex-direction: column; }
+.sl-cols-side .sl-drawer-composer .sl-drawer-caption { flex: 1; min-height: 0; }
+.sl-cols-media .sl-strip:has(.sl-output-frame-skel) { flex: 1; }
+.sl-cols-media .sl-slot:has(.sl-output-frame-skel) { flex: 1; }
+.sl-cols-media .sl-slot-media:has(.sl-output-frame-skel) { flex: 1; display: flex; flex-direction: column; }
+.sl-output-frame.sl-output-frame-skel { aspect-ratio: auto; height: 100%; }
+@media (max-width: 520px) { .sl-cols { grid-template-columns: minmax(0, 1fr); } }
+/* Every column opens with the same label row — the label on the left, its
+   one quiet action on the right. */
+.sl-collabel { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.sl-collabel .sl-grow { flex: 1; min-width: 0; }
+.sl-strip { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.sl-slot { display: flex; flex-direction: column; gap: 5px; }
+.sl-slot-media { position: relative; }
+.sl-slot-cap { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
+.sl-slot-cap b { font-weight: 600; color: var(--sl-ink); }
+.sl-slot-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
+.sl-slot-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.sl-slot-acts .sl-primary, .sl-slot-acts .sl-secondary { min-height: 30px; padding: 0 11px; font-size: 11.5px; }
+/* Every action on an existing picture lives ON the picture: one ⋯ opens the
+   merged menu. The chip rests visible — legible on any image and on touch
+   screens that have no hover to reveal it. */
+.sl-addwrap-pic { position: absolute; top: 8px; left: 8px; z-index: 3; }
+/* The menu drops from the ⋯ inside the panel's own scroller: cap it to the
+   space below the trigger and let it scroll internally, so the Remove row is
+   never clipped off the sheet on a short viewport. */
+.sl-addwrap-pic .sl-menu { max-height: calc(100dvh - 300px); overflow-y: auto; overscroll-behavior: contain; }
+/* The ⋯ chip is legible at rest on any image — a solid surface, a dark
+   glyph, the e-1 shadow — never a hover-only scrim over the picture. */
+.sl-picbtn { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--sl-radius-control); background: var(--sl-surface); color: var(--sl-ink); font-size: 15px; font-weight: 700; line-height: 1; box-shadow: var(--sl-e-1); cursor: pointer; }
+.sl-picbtn:hover:not(:disabled) { background: var(--sl-hover); }
+.sl-slot-media .sl-picbtn:disabled { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .sl-picbtn { transition: none; } }
+/* The page number rides on the frame — an empty page names itself the way
+   the refusal does ("page 3 has no image" points at this slot). */
+.sl-slot-num { position: absolute; top: 8px; right: 8px; z-index: 2; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: rgba(255,255,255,.92); border: 1px solid var(--sl-line); color: var(--sl-ink-2); font-size: 11px; font-weight: 650; line-height: 20px; text-align: center; box-shadow: var(--sl-e-1); }
+/* An unfilled page: the same frame size as the picture that will fill it,
+   dashed — the slot that blocks filing until it has an image. */
+.sl-slot-frame-empty { border-style: dashed; border-color: var(--sl-line-strong); background: var(--sl-surface-2); display: flex; align-items: center; justify-content: center; }
+/* "Add a page" is the strip's only growth control — a quiet dashed tile the
+   size of a page, never a menu: growth is the one thing it does. */
+.sl-addpage { width: 100%; min-height: 44px; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 8px 10px; cursor: pointer; }
+.sl-addpage:hover:not(:disabled) { background: var(--sl-hover); color: var(--sl-ink); }
+.sl-addpage:disabled { opacity: .5; }
+.sl-pages-rule { margin: 0; }
+/* Per-page alt text fields stack under the caption — each labelled by page. */
+.sl-alt-group { display: flex; flex-direction: column; gap: 8px; }
+.sl-alt-group .sl-alt-text + .sl-alt-text { margin-top: 2px; }
+/* The empty slot is the add control — a dashed placeholder the exact size of
+   the picture that will replace it, so the panel never jumps when one lands. */
+.sl-addplace { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; text-align: center; padding: 10px; cursor: pointer; }
+.sl-addplace:hover:not(:disabled) { background: var(--sl-hover); color: var(--sl-ink); }
+.sl-addplace:disabled { opacity: .5; }
+.sl-addplace-plus { font-size: 20px; line-height: 1; font-weight: 400; }
+.sl-addplace-hint { font-size: 11px; font-weight: 400; color: var(--sl-ink-2); }
+/* The add menu is a POPOVER on its control, not a block inside the media
+ * column — trapped in a 176px column every row wrapped to three lines. It
+ * sizes to its own content and may overhang the column. .sl-addwrap is the
+ * anchor; the -end modifier marks a control that hugs the column's right
+ * edge, and under 520px (single column, full-width label) its menu flips to
+ * the right edge so it stays inside the sheet. */
+.sl-addwrap { position: relative; display: block; }
+.sl-menu { position: absolute; z-index: 40; left: 0; top: calc(100% + 6px); display: flex; flex-direction: column; width: max-content; min-width: 238px; max-width: 300px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); }
+@media (max-width: 520px) { .sl-addwrap-end .sl-menu { left: auto; right: 0; } }
+.sl-menu-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 10px; border: 0; border-radius: var(--sl-radius-control); background: transparent; text-align: left; cursor: pointer; font: inherit; color: var(--sl-ink); }
+.sl-menu-item:hover:not(:disabled) { background: var(--sl-hover); }
+.sl-menu-item:disabled { opacity: .55; cursor: not-allowed; }
+.sl-menu-lead { font-size: 12.5px; font-weight: 600; }
+.sl-menu-sub { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }
+.sl-menu-sub.sl-menu-warn { color: var(--sl-warning); }
+.sl-menu-item.sl-menu-danger .sl-menu-lead { color: var(--sl-danger); }
+.sl-menu-sep { height: 1px; background: var(--sl-line); margin: 5px 4px; }
+.sl-drawer-footer-actions .sl-grow { flex: 1; }
+/* The 增值 row on a credits-paused run: the funding action in place, not a
+   dead-end sentence. A host with no top-up surface leaves it disabled with
+   the reason; topped_up resumes the paused run on its own. */
+.sl-topup { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); background: var(--sl-surface-2); }
+.sl-topup-note { margin: 0; flex: 1; font-size: 11.5px; color: var(--sl-ink-2); line-height: 1.4; }
+.sl-topup-btn { flex: none; }
+/* The image brief on the Instructions tab — a flat block, not a
+   collapsible: the fields a Generate ask is made under. */
+.sl-brieftab { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
+.sl-brieftab > * { margin-block: 0; }
 .sl-brief-switch, .sl-brief-save { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; font-weight: 600; color: var(--sl-ink); cursor: pointer; }
 .sl-brief-switch input, .sl-brief-save input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
 .sl-brief-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 400; }
@@ -341,17 +427,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-upload-row { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 8px 10px; font-size: 12.5px; color: var(--sl-ink-2); }
 .sl-upload-row .sl-field-note { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; }
 .sl-upload-row .sl-primary { flex: 0 0 auto; min-height: 32px; padding: 0 11px; font-size: 11.5px; }
-.sl-output-images { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
 .sl-output-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .sl-output-frame { display: grid; place-items: center; aspect-ratio: 4 / 5; max-width: 100%; background: var(--sl-surface-2); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; padding: 0; position: relative; }
-@media (max-width: 420px) {
-  .sl-output-compose { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; }
-  .sl-output-compose .sl-output-frame,
-  .sl-output-thumb { width: 96px; max-width: 96px; }
-}
 .sl-output-frame img { width: 100%; height: 100%; object-fit: contain; }
 .sl-output-frame .sl-pc-media-empty { padding: 12px; text-align: center; }
-.sl-output-candidate .sl-output-frame { border-style: dashed; border-color: var(--sl-ink); }
 .sl-output-frame-skel::before { content: ""; position: absolute; inset: 0; background: rgba(255,255,255,.32); pointer-events: none; }
 .sl-output-frame-skel::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(255,255,255,0) 36%, rgba(255,255,255,.5) 50%, rgba(255,255,255,0) 64%); background-size: 220% 100%; animation: sl-skel-sweep 1.6s linear infinite; pointer-events: none; }
 /* The label wraps inside the frame — a nowrap pill in a 128px frame clipped
@@ -361,18 +440,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes sl-skel-sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) { .sl-output-frame-skel::after { animation: none; } }
 .sl-drawer-caption.sl-skel { color: transparent; }
-.sl-pub-dest { margin: 0; font-size: 11.5px; color: var(--sl-ink-2); }
-/* Publish timing is a joined segment like the source group above it: three
-   cells in one bordered strip, the checked one shaded. The radio input stays
-   real but invisible; the cell carries the state. */
-.sl-pub-radios { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); overflow: hidden; }
-.sl-pub-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 38px; margin: 0; padding: 0 8px; font-size: 12.5px; font-weight: 600; color: var(--sl-ink-2); border-right: 1px solid var(--sl-line); cursor: pointer; text-align: center; }
-.sl-pub-choice:last-child { border-right: 0; }
-.sl-pub-choice:has(input:checked) { background: var(--sl-surface-2); color: var(--sl-ink); }
-.sl-pub-choice:focus-within { outline: 2px solid var(--sl-focus); outline-offset: -2px; }
-.sl-pub-choice input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.sl-pub-when { display: grid; gap: 4px; font-size: 11.5px; color: var(--sl-ink-2); }
-.sl-pub-when input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
+/* The footer's publish row: "Publishes to" + a picker button whose face is
+   the current selection; the menu opens UPWARD off the foot. A destination
+   that cannot take the post says so on its own row. */
+.sl-dests { margin: 0; font-size: 12px; color: var(--sl-ink-2); display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.sl-destwrap { position: relative; display: inline-block; }
+.sl-destbtn { border: 0; background: transparent; padding: 0 2px; font: inherit; font-weight: 600; color: var(--sl-ink); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.sl-destbtn:hover:not(:disabled) { color: var(--sl-ink); }
+.sl-destbtn:disabled { color: var(--sl-ink-2); text-decoration: none; cursor: not-allowed; }
+.sl-destmenu { position: absolute; z-index: 6; bottom: calc(100% + 6px); left: 0; min-width: 240px; padding: 5px; background: var(--sl-surface); border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); box-shadow: var(--sl-e-2, 0 8px 24px rgba(0,0,0,.12)); display: flex; flex-direction: column; }
+.sl-destopt { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border-radius: var(--sl-radius-control); cursor: pointer; }
+.sl-destopt:hover { background: var(--sl-hover); }
+.sl-destopt input { margin-top: 2px; flex: none; width: 15px; height: 15px; accent-color: var(--sl-ink); }
+.sl-destopt-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 12.5px; color: var(--sl-ink); }
+.sl-dest-sub { font-size: 11px; color: var(--sl-ink-2); }
+.sl-dest-blocked { color: var(--sl-warning); }
+.sl-whenrow { display: flex; align-items: center; gap: 10px; }
+.sl-whenrow input { height: 38px; border: 1px solid var(--sl-line-strong); border-radius: var(--sl-radius-control); padding: 0 10px; font: inherit; color: var(--sl-ink); background: var(--sl-surface); }
 .sl-output-frame-skel .sl-pc-media-empty { display: none; }
 .sl-reference-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: var(--sl-radius-chip); border: 1px solid var(--sl-line); font-size: 11.5px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-reference-text { color: var(--sl-ink-2); font-size: 12.5px; }
@@ -483,6 +567,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    the restrained brand variant for creation calls-to-action. The doubled
    selectors outrank the shell's bot-button[data-variant] rules. */
 .sl-primary, .sl-secondary, .sl-brand { padding: 0 15px; border-radius: var(--sl-radius-control); font-size: 12px; font-weight: 650; }
+/* sm — the compact variant for row-level actions (adopt, use-candidate). */
+.sl-primary.sl-sm, .sl-secondary.sl-sm { min-height: 28px; padding: 0 10px; font-size: 11.5px; }
 /* Dialogs are appended to body, not .sl-app — both roots are covered. */
 .sl-app .sl-primary.sl-primary, .sl-preview-dialog .sl-primary.sl-primary { border: 1px solid var(--sl-ink); background: var(--sl-ink); color: var(--sl-surface); }
 .sl-app .sl-primary.sl-primary:hover:not(:disabled), .sl-preview-dialog .sl-primary.sl-primary:hover:not(:disabled) { background: #36363d; border-color: #36363d; }
@@ -503,9 +589,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-open-source-name { font-weight: 550; }
 .sl-open-source-meta { margin-left: auto; color: var(--sl-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .sl-open-source-remove { border: 0; background: none; color: var(--sl-muted); font-size: 14px; line-height: 1; padding: 0 2px; }
-.sl-item-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
-.sl-item-tabs button { height: var(--sl-h-compact); padding: 0 12px; border: 1px solid var(--sl-line-strong); border-radius: 999px; background: var(--sl-surface); font-size: 11px; }
-.sl-item-tabs button[aria-selected="true"] { background: var(--sl-ink); border-color: var(--sl-ink); color: #fff; }
+/* THE CARD ⋯ — the post's actions live on the board card that owns them.
+   The chip sits on the media's top corner beside the selection box; its
+   popover is the CARD's overlay — a sibling of the chip, positioned to
+   .sl-post — spanning the card's inner width below the corner row, so no
+   card is ever narrow enough to clip it. */
+.sl-cardmenu { position: absolute; z-index: 3; top: 10px; right: 44px; }
+.sl-cardbtn { width: 26px; height: 26px; border: 0; border-radius: 8px; background: rgba(255,255,255,.9); color: var(--sl-ink); display: grid; place-items: center; font-size: 14px; line-height: 1; cursor: pointer; }
+.sl-cardbtn:hover { background: var(--sl-surface); }
+.sl-cardmenu-pop { position: absolute; z-index: 3; top: 46px; left: 10px; right: 10px; width: auto; min-width: 0; max-width: none; }
+/* The confirm replaces the row in place — no modal over a menu, and the post
+   being removed stays named while the question is asked. */
+.sl-rowconfirm { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; border-radius: var(--sl-radius-control); background: var(--sl-danger-soft, #fae9e7); font-size: 12.5px; }
+.sl-rowconfirm .sl-pm-grow { flex: 1 1 100%; min-width: 0; color: var(--sl-danger, #b3261e); font-weight: 600; }
+.sl-rowconfirm button { min-height: 26px; padding: 0 9px; border-radius: var(--sl-radius-control); border: 1px solid transparent; font-size: 11px; font-weight: 600; cursor: pointer; }
+.sl-rowconfirm .sl-pm-yes { background: var(--sl-danger, #b3261e); color: #fff; }
+.sl-rowconfirm .sl-pm-no { background: transparent; color: var(--sl-ink-2); border-color: var(--sl-line-strong); margin-left: auto; }
+/* The drawer's title is the post's own name, edited where it is read — a
+   heading until it is touched. */
+.sl-titlefield { width: 100%; font: inherit; font-size: 15px; font-weight: 600; color: var(--sl-ink); border: 1px solid transparent; border-radius: var(--sl-radius-control); background: transparent; padding: 2px 6px; margin: 0 -6px; min-height: 30px; }
+.sl-titlefield:hover:not(:read-only) { background: var(--sl-hover); }
+.sl-titlefield:focus { background: var(--sl-surface); border-color: var(--sl-line-strong); outline: none; box-shadow: var(--sl-e-1); }
+.sl-titlefield::placeholder { color: var(--sl-muted); font-weight: 500; }
+.sl-titlefield:read-only { cursor: default; }
 .sl-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
 .sl-dual-pane { border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card); overflow: hidden; }
 .sl-dual-pane header { padding: 9px 13px; background: var(--sl-surface-2); border-bottom: 1px solid var(--sl-line); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; display: flex; justify-content: space-between; align-items: center; }
@@ -670,7 +776,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    still carry their rules, so removing the value is not enough. */
 .sl-preview-head.sl-preview-head { min-height: 0; padding: 16px 18px 4px; border-bottom: 0; display: flex; align-items: flex-start; gap: 10px; }
 .sl-preview-who { flex: 1 1 auto; min-width: 0; }
-.sl-preview-head-actions { margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
+.sl-preview-head-actions { position: relative; margin-left: auto; display: flex; gap: 4px; align-self: flex-start; }
 .sl-preview-head .sl-icon-action { width: 32px; height: 32px; }
 /*
  * Scoped to the eyebrow, not to every span in the header.
@@ -719,13 +825,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-stage-strip { display: flex; gap: 6px; padding: 8px 10px; background: #080807; border: 1px solid var(--sl-line); border-top: 0; border-radius: 0 0 var(--sl-radius-card) var(--sl-radius-card); overflow-x: auto; overscroll-behavior-x: contain; }
 .sl-stage-thumb { flex: 0 0 auto; width: 34px; height: 42px; cursor: pointer; display: grid; place-items: center; color: #9d968a; background: #14120f; border: 1px solid rgba(243,240,233,.18); font-size: 11px; font-variant-numeric: tabular-nums; }
 .sl-stage-thumb[aria-selected="true"] { color: #f3f0e9; border-color: var(--sl-accent, #f5b544); }
-.sl-drawer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--sl-line); border: 1px solid var(--sl-line); margin: 0 0 18px; }
-.sl-fact { background: var(--sl-surface, #fff); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-.sl-fact dt { font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sl-muted); }
-.sl-fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+/* Provenance and metrics read as ONE quiet wrapping line, not a data
+ * table — the <dl> stays because the pairing is right for a screen
+ * reader; each fact is "label value" inline. */
+.sl-drawer-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; font-size: 11px; }
+.sl-fact { display: inline-flex; gap: 5px; }
+.sl-fact dt { font-size: 11px; font-weight: 400; color: var(--sl-muted); }
+.sl-fact dd { margin: 0; font-size: 11px; font-weight: 500; color: var(--sl-ink-2); }
 .sl-preview-who { display: flex; flex-direction: column; gap: 1px; }
 .sl-preview-via { font-size: 11.5px; color: var(--sl-muted); text-transform: none; letter-spacing: 0; }
-.sl-preview-caption { font-size: 15px; line-height: 1.8; white-space: pre-wrap; }
 .sl-announce { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; max-width: min(520px, calc(100vw - 32px)); pointer-events: none; }
 .sl-announce-card { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; background: var(--sl-surface); border: 1px solid var(--sl-line-strong, var(--sl-line)); border-radius: var(--sl-radius-card); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
 .sl-announce-card strong { font-size: 13px; }
@@ -861,7 +969,7 @@ function postedLabel(locale, item) {
  * This was one line — "Format: Video post · Engagement: 3" — where
  * "engagement" was `metrics.likes` alone and nothing else on the record
  * reached the screen. The posting time, the comment count and the number of
- * frames all bear on whether this is the post to localize. Anything the
+ * frames all bear on whether this is the post to draft. Anything the
  * record does not carry is left out rather than rendered as zero (GUD-003).
  */
 function drawerFacts(locale, item, frameCount) {
@@ -960,7 +1068,16 @@ function App() {
   let drawerSession = null; // { requestClose, refresh, dispose, previous } for the open drawer
   batchDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
+    // An open drawer popover (add-image or the picture's ⋯ menu) takes the
+    // first Escape; the sheet asks next.
+    if (drawerSession?.closeAddMenu?.(true)) return;
     drawerSession?.requestClose();
+  });
+  batchDialog.addEventListener("click", (event) => {
+    // A drawer popover closes on any click outside its control and menu;
+    // the sheet itself never closes on a stray click.
+    if (event.target?.closest?.(".sl-addwrap")) return;
+    drawerSession?.closeAddMenu?.(false);
   });
   batchDialog.addEventListener("close", () => {
     const session = drawerSession;
@@ -1016,10 +1133,61 @@ function App() {
    * request's late reply) cannot start work here.
    */
   const pendingDoorRequests = new Map();
+  /*
+   * What the host announced it can carry — the agent-intent hand-off and
+   * the top-up ask. A canvas hears it once at load (and again if the host
+   * re-announces); until then nothing is assumed. The regenerate row and
+   * the 增值 affordance stay visible but disabled with the reason, never
+   * replaced by an inline fallback — the conversation IS the surface.
+   */
+  const hostFeatures = new Set();
+  const hostFeatureListeners = new Set();
+  const pendingTopupRequests = new Map();
+  /*
+   * The board card's ⋯ menu is a popover like the drawer's: a click anywhere
+   * outside its wrapper closes it, Escape closes it and returns focus to the
+   * ⋯ that opened it. The listeners sit on the canvas DOCUMENT — they cover
+   * every focus position inside the gadget, which is also the boundary an
+   * iframe makes of them (the host's own Escape can never reach in). Both
+   * delegate to inboxState so they register once rather than per render.
+   */
+  if (typeof document.addEventListener === "function") document.addEventListener("click", (event) => {
+    if (event.target?.closest?.("[data-cardmenu]")) return;
+    if (!inboxState.cardMenu) return;
+    inboxState = clearCardMenu(inboxState);
+    renderCurrentView();
+  });
+  if (typeof document.addEventListener === "function") document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !inboxState.cardMenu) return;
+    const id = inboxState.cardMenu.batchItemId;
+    inboxState = clearCardMenu(inboxState);
+    renderCurrentView();
+    viewHost.querySelector(`.sl-cardmenu[data-cardmenu="${id}"] .sl-cardbtn`)?.focus?.();
+  });
   // A sandboxed canvas always has a window to listen on; guarded so the
   // client still boots where there is none (unit shims, a detached render).
   if (typeof window.addEventListener === "function") window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
+    // The host's contract announcement: re-render any open drawer so the
+    // row it governs flips between offered and disabled-with-reason.
+    const features = parseGadgetHostFeaturesMessage(event.data);
+    if (features) {
+      hostFeatures.clear();
+      for (const key of features.features) hostFeatures.add(key);
+      for (const notify of hostFeatureListeners) notify();
+      return;
+    }
+    // A top-up ask's answer, correlated by request id; the drawer's handler
+    // owns what "topped_up" does next (the paused run resumes on its own).
+    const topup = parseGadgetTopupResultMessage(event.data);
+    if (topup?.requestId) {
+      const pending = pendingTopupRequests.get(topup.requestId);
+      if (!pending) return;
+      pendingTopupRequests.delete(topup.requestId);
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.resolve({ outcome: topup.outcome, message: topup.message });
+      return;
+    }
     // F2: an unprompted "something about this door may have changed" notice
     // — Studio's own access popover, not a reply to anything this canvas
     // asked (those go through gadget:grant-result below, correlated by
@@ -1144,7 +1312,7 @@ function App() {
   const toaster = createToaster(announceRegion, {
     duration: 12000,
     dismissLabel: t(locale, "dismiss"),
-    onLog: (title, body) => console.log(`[social-localization] ${title}: ${body || ""}`),
+    onLog: (title, body) => console.log(`[social-content] ${title}: ${body || ""}`),
     // The `sl-announce-*` chrome is this canvas's own — the card markup stays
     // byte-identical to the pre-extraction toast.
     classes: { card: "sl-announce-card", action: "sl-announce-action", dismiss: "sl-announce-dismiss" }
@@ -1190,17 +1358,36 @@ function App() {
     if (activePreviewStage) activePreviewStage.dispose();
     activePreviewStage = mediaStageFor(item);
 
+    /*
+     * Same column pair as the drawer's 帖文 and 參考 panels: media under a
+     * quiet label on the left, caption + facts on the right. Inspecting a
+     * source post is the same act as checking the reference a draft kept.
+     */
     replace(body, [
-      el("div", { class: "sl-preview-stage-wrap" }, [
-        activePreviewStage.node,
-        activePreviewStage.strip
-      ]),
-      drawerFacts(locale, item, activePreviewStage.frameCount),
-      el("p", { class: "sl-preview-caption" }, item.text || ""),
-      item.permalink
-        ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-receipt" }, t(locale, "drawerViewOriginal"))
-        : null,
-      item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
+      el("section", { class: "sl-drawer-section", "aria-labelledby": "sl-source-media-label" }, [
+        el("div", { class: "sl-cols" }, [
+          el("div", { class: "sl-cols-media" }, [
+            el("div", { class: "sl-collabel" }, [
+              el("span", { class: "sl-field-label sl-grow", id: "sl-source-media-label" }, t(locale, "drawerRefImageLabel"))
+            ]),
+            el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [
+              activePreviewStage.node,
+              activePreviewStage.strip
+            ])
+          ]),
+          el("div", { class: "sl-cols-side" }, [
+            el("div", { class: "sl-collabel" }, [
+              el("span", { class: "sl-field-label sl-grow" }, t(locale, "drawerSourceCaption")),
+              item.permalink
+                ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer", class: "sl-brief-link" }, t(locale, "drawerViewOriginal"))
+                : null
+            ].filter(Boolean)),
+            el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, item.text || ""),
+            drawerFacts(locale, item, activePreviewStage.frameCount),
+            item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
+          ].filter(Boolean))
+        ])
+      ])
     ]);
 
     /*
@@ -1228,24 +1415,25 @@ function App() {
      * the tray's Clear are where a selection is taken back, and this drawer is
      * open on the post you are deciding about.
      */
-    const actions = el("footer", { class: "sl-preview-actions" });
+    const actions = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
     const drawActions = (isSelected) => replace(actions, [
-      el(
-        "button",
-        {
-          type: "button",
-          class: "sl-primary",
-          onclick: async () => {
-            if (!activePreviewItem.selected) {
-              await handleSelect(item.id, true);
-              activePreviewItem = { ...activePreviewItem, selected: true };
-              announce(t(locale, "drawerSelectedNotice"), "");
+      el("div", { class: "sl-drawer-footer-actions" }, [
+        el(
+          "button",
+          {
+            type: "button",
+            class: "sl-primary",
+            onclick: async () => {
+              if (!activePreviewItem.selected) {
+                await handleSelect(item.id, true);
+                activePreviewItem = { ...activePreviewItem, selected: true };
+              }
+              closePreview();
             }
-            closePreview();
-          }
-        },
-        isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
-      )
+          },
+          isSelected ? t(locale, "drawerContinueSelected") : t(locale, "drawerSelectAndContinue")
+        )
+      ])
     ]);
     drawActions(!!item.selected);
 
@@ -1288,7 +1476,7 @@ function App() {
    * The Saved drawer is ONE post. `{ id, itemId }` arrives from the clicked
    * card: `id` is the containing batch (fetched for provenance and sibling
    * navigation), `itemId` the batch item that is the drawer's actual
-   * subject. Generated output — the poster image and the localized caption
+   * subject. Generated output — the poster image and the draft caption
    * — is the primary content; the source post sits in a labelled reference
    * section below it. Every save/regenerate/review action scopes to the
    * viewed item: an action taken on one post never writes a sibling.
@@ -1344,7 +1532,6 @@ function App() {
     const imageBriefOf = (item) => {
       const stored = bufferOf(item.id).imageBrief ?? {};
       return {
-        open: stored.open === true,
         useSource: stored.useSource ?? policy?.posterReferences !== "none",
         ratio: stored.ratio ?? policy?.posterAspectRatio ?? "4:5",
         oneOffOpen: stored.oneOffOpen === true,
@@ -1352,6 +1539,90 @@ function App() {
         saveOneOff: stored.saveOneOff === true
       };
     };
+    /**
+     * The ⋯ row's whole job: hand THIS image to the host's conversation. The
+     * intent carries enough context — post, item, media id, the brief's ratio
+     * and reference basis, a thumbnail of what is on screen, and the one-tap
+     * answers already in the owner's language — that the conversation never
+     * asks which image is meant. The canvas posts it and its layout does not
+     * move; the host owns what the conversation does next. Nothing here runs
+     * a generation — filing stays the durable requestGeneration the agent
+     * submits after the owner approves the plan.
+     */
+    const postAgentIntent = (item, slot = null) => {
+      if (!hostFeatures.has("agent-intent")) return;
+      const brief = imageBriefOf(item);
+      try {
+        window.parent.postMessage(gadgetAgentIntentMessage({
+          intent: "image.regenerate",
+          post: { batchId: batch.id, batchItemId: item.id, title: item.title ?? null },
+          image: {
+            // The image the conversation corrects is the SLOT's picture, not
+            // the post's first one — page 2's regen talks about page 2.
+            mediaId: slot?.generated?.id ?? item.generatedImage?.id ?? null,
+            aspectRatio: brief.ratio,
+            references: brief.useSource ? "source" : "none",
+            thumbnail: intentThumbnail()
+          },
+          page: slot ? { pageId: slot.page.pageId, index: slot.index } : null,
+          suggestedReplies: REGEN_SUGGESTION_KEYS.map((key) => t(locale, key)),
+          locale
+        }), "*");
+      } catch (error) {
+        console.error("agent intent could not be posted", error);
+      }
+    };
+    /**
+     * A small JPEG of the picture on screen so the conversation's intent
+     * card shows the actual image being discussed — drawn from the rendered
+     * <img>, never fetched again. When it cannot be drawn (still loading, a
+     * shim without canvas) the card simply renders without it.
+     */
+    const intentThumbnail = () => {
+      try {
+        const img = batchDialog.querySelector?.(".sl-output-frame-accepted .sl-pc-canvas");
+        if (!img?.naturalWidth || !img?.naturalHeight) return null;
+        const scale = Math.min(1, 160 / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.72);
+      } catch {
+        return null;
+      }
+    };
+    /**
+     * The 增值 ask on a credits-paused run. The host owns the funding surface;
+     * this canvas asks and hears the answer. `topped_up` resumes the paused
+     * run on its own — the drawer's handler calls retryStart, which re-files
+     * the SAME request (mark's needs + brief + run instructions), so nothing
+     * the owner already agreed to is re-asked or re-decided.
+     */
+    const requestTopup = (item) => {
+      const requestId = newTopupRequestId();
+      const reply = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          if (!pendingTopupRequests.delete(requestId)) return;
+          resolve({ outcome: "unconfirmed", message: null });
+        }, 120_000);
+        pendingTopupRequests.set(requestId, { resolve, timer });
+      });
+      window.parent.postMessage(gadgetTopupMessage({
+        post: { batchId: batch.id, batchItemId: item.id, title: item.title ?? null },
+        requestId
+      }), "*");
+      return reply;
+    };
+    /*
+     * Per-post sheet state that is NOT content and never saved: the add
+     * menu, the publish picker's open state, the transient destination
+     * picks, the schedule field's chosen local time, and the top-up ask's
+     * in-flight/outcome flags. Like the buffers, one entry per post.
+     */
+    const drawerUi = new Map(); // batchItemId -> { menuOpen?, menuAnchor? (a pageId), destOpen?, picking?, scheduledAt?, picked?, dismissedCandidates? (Set), topupPending?, topupDone?, topupCancelled? }
+    const uiOf = (id) => drawerUi.get(id) ?? {};
+    const patchUi = (id, patch) => drawerUi.set(id, { ...uiOf(id), ...patch });
     // Every change to a buffered field bumps that field's edit version, so a
     // Save acknowledgment can tell "still what I submitted" from "typed
     // since" — including typing the same text back after changing it.
@@ -1566,7 +1837,7 @@ function App() {
       if (failed) announce(failed, "");
       if (!live) return false;
       if (!failed) {
-        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource", "pages"]);
         ownerUploads.delete(item.id);
       }
       await refetchItems();
@@ -1574,9 +1845,28 @@ function App() {
       return !failed;
     };
 
-    const pickOwnerUpload = (item, file) => {
+    /**
+     * The visual commits that are decisions, not drafts: page structure
+     * (add/remove/fill), source adoption, visual mode. They save at once —
+     * exactly what `acceptedVisualMode` did before pages existed — so an
+     * empty page the owner made persists and blocks filing until filled.
+     * The staged `pages` buffer is reserved for edits that go through Save:
+     * a staged candidate pick and per-page alt text.
+     */
+    const applyPages = (item, nextPages) => applyVisual(item, { pages: nextPages });
+
+    /** A fresh durable page id — unique inside this post's list. */
+    const newPageId = (item) => {
+      const taken = new Set(workingPages(item, bufferOf(item.id)).map((page) => page.pageId));
+      for (let n = 1; ; n += 1) {
+        const id = `pg_own_${Date.now().toString(36)}_${n}`;
+        if (!taken.has(id)) return id;
+      }
+    };
+
+    const pickOwnerUpload = (item, pageId = null, file = null) => {
       if (file) {
-        ownerUploads.set(item.id, file);
+        ownerUploads.set(item.id, { file, pageId });
         patchBuffer(item.id, { imageSource: "upload" });
         redraw();
         return;
@@ -1587,7 +1877,7 @@ function App() {
       input.addEventListener("change", () => {
         const chosen = input.files?.[0];
         if (!chosen) return;
-        ownerUploads.set(item.id, chosen);
+        ownerUploads.set(item.id, { file: chosen, pageId });
         patchBuffer(item.id, { imageSource: "upload" });
         redraw();
       });
@@ -1595,15 +1885,21 @@ function App() {
     };
 
     const adoptOwnerUpload = async (item) => {
-      const file = ownerUploads.get(item.id);
+      const upload = ownerUploads.get(item.id);
+      const file = upload?.file ?? upload ?? null;
+      const pageId = upload?.pageId ?? null;
       if (!file || saving) return;
       saving = true;
       redrawFooter();
       let failed = null;
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
+        // The upload answers the PAGE it was picked for — the row carries
+        // the binding, so the save pins it into exactly that slot and a
+        // delivery for another page can never fill this one.
         const registered = await rpc.saveGeneratedImage({
           batchItemId: item.id,
+          pageId,
           altText: file.name.replace(/\.[^.]+$/, "") || null,
           mimeType: file.type || null
         });
@@ -1613,14 +1909,19 @@ function App() {
           const delivered = await rpc.deliverGeneratedImage({ id: registered.id, bytes });
           if (delivered?.ok === false) failed = revisionIssue(delivered);
           else {
-            const result = await rpc.saveRevisions({
-              revisions: [{
-                batchItemId: item.id,
-                expectedRevision: item.revision ?? 0,
-                acceptedVisualMode: "ai_refinement",
-                acceptedGeneratedMediaId: registered.id
-              }]
-            });
+            const pages = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, kind: "generated", mediaId: registered.id } : page
+            );
+            const result = pageId
+              ? await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, pages }] })
+              : await rpc.saveRevisions({
+                    revisions: [{
+                      batchItemId: item.id,
+                      expectedRevision: item.revision ?? 0,
+                      acceptedVisualMode: "ai_refinement",
+                      acceptedGeneratedMediaId: registered.id
+                    }]
+                  });
             failed = revisionIssue(result);
           }
         }
@@ -1632,7 +1933,7 @@ function App() {
       if (failed) announce(failed, "");
       if (!live) return;
       if (!failed) {
-        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource", "pages"]);
         ownerUploads.delete(item.id);
       }
       await refetchItems();
@@ -1681,7 +1982,7 @@ function App() {
                 target.generation = one.generation ?? null;
                 target.phase = null;
               }
-              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText", "publicationIntent"]);
+              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText", "pages", "publicationIntent"]);
               captionConflicts.delete(job.item.id);
               if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
             } else {
@@ -1820,11 +2121,25 @@ function App() {
         }
         if (!dirtyItemIds().length) break;
       }
-      const intent = bufferOf(item.id).publicationIntent ?? current.publicationIntent ?? { publishMode: "save_draft", latePolicy: "hold" };
+      /*
+       * Which button was pressed IS the intent — there is no stored
+       * publication mode. A chosen schedule time makes this a schedule;
+       * otherwise it is publish-now. And what the press files is exactly the
+       * picker's selection minus every destination that explained on its own
+       * row why it cannot take this post — never the recorded set silently.
+       */
+      const scheduledAt = uiOf(item.id).scheduledAt ?? null;
+      const intent = scheduledAt
+        ? { publishMode: "schedule", publishLocalTime: scheduledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, utcOffsetMinutes: null, latePolicy: "hold" }
+        : { publishMode: "publish_now", latePolicy: "hold" };
+      const fileable = (uiOf(item.id).picked ?? recordedBindings(current))
+        .filter((binding) => !destinationBlock(current, bufferOf(item.id), summary?.destinations ?? [], binding));
+      if (!fileable.length) { announce(t(locale, "drawerPublishNeedsDestination"), ""); return; }
       try {
         const result = await rpc.submitForReview({
           batchItemId: current.id,
           expectedRevision: current.revision ?? 0,
+          destinationBindings: fileable,
           intent
         });
         if (!live) return;
@@ -1835,14 +2150,16 @@ function App() {
           announce(message, "");
           return;
         }
-        const dest = (current.destinationBindings ?? []).map((binding) => destinationLabel(binding)).join(" · ");
-        const when = intent.publishLocalTime ? String(intent.publishLocalTime).replace("T", " ") : "";
+        const dest = fileable.map((binding) => destinationLabel(binding)).join(" · ");
+        const when = scheduledAt ? String(scheduledAt).replace("T", " ") : "";
         announce(
           intent.publishMode === "schedule"
             ? t(locale, "drawerScheduleFiled", { when })
             : t(locale, "drawerPublishFiled", { dest }),
           ""
         );
+        // Consumed: a post that comes back editable starts untimed again.
+        patchUi(item.id, { scheduledAt: null, picking: false, destOpen: false });
         if (result?.warnings?.length) announce(result.warnings[0].message, "");
       } catch (error) {
         announce(error instanceof Error ? error.message : t(locale, "genericError"), "");
@@ -1860,6 +2177,26 @@ function App() {
       buffers.clear();
       session.dispose();
       batchDialog.close();
+    };
+
+    /*
+     * A drawer menu is a popover on its control: Escape closes the menu
+     * and puts focus back on that control — it never reaches the sheet. A
+     * click anywhere else closes it too, and the click itself owns the focus.
+     */
+    const closeAddMenu = (focusTrigger) => {
+      const item = activeItem();
+      if (!item || uiOf(item.id).menuOpen !== true) return false;
+      const anchor = uiOf(item.id).menuAnchor;
+      patchUi(item.id, { menuOpen: false });
+      redraw();
+      if (focusTrigger) {
+        const control = anchor
+          ? bodyEl.querySelector(`.sl-addwrap[data-addanchor="${anchor}"] > button`)
+          : bodyEl.querySelector(".sl-addwrap > button");
+        control?.focus?.();
+      }
+      return true;
     };
 
     const partName = (part) => t(locale, part === "image" ? "drawerPartImage" : "drawerPartCaption");
@@ -1921,8 +2258,14 @@ function App() {
      *   owner explicitly generates with the saved ones (edits kept), or cancels;
      * - rewriting the caption over an unsaved caption edit asks.
      * Unrelated unsaved work is left alone.
+     *
+     * `runInstruction` is the regenerate conversation's named correction: it
+     * is sent as the run layer and nothing else — the staged one-off is left
+     * alone and its save-as-post checkbox does not apply to it. `null` (the
+     * menu's Generate) means the staged brief's own one-off rules apply.
+     * Returns true only when a request was actually filed.
      */
-    const requestPart = async (item, part) => {
+    const requestPart = async (item, part, runInstruction = null, scopePages = null) => {
       if (saving) return;
       const parts = [part];
       // Any outstanding part — the other one, the same one, or the request a
@@ -2013,10 +2356,15 @@ function App() {
       const options = { needs };
       let brief = null;
       if (part === "image") {
+        // A page-scoped ask names exactly the pages it covers — a page's
+        // own Generate, never the whole post's. `null` keeps the legacy
+        // meaning: every page the post has.
+        if (Array.isArray(scopePages) && scopePages.length) needs.imagePages = scopePages;
         brief = imageBriefOf(item);
         options.image = { references: brief.useSource ? "source" : "none", aspectRatio: brief.ratio };
-        const oneOff = brief.oneOff.trim();
-        if (oneOff && brief.saveOneOff) {
+        const oneOff = runInstruction !== null ? String(runInstruction).trim() : brief.oneOff.trim();
+        const saveOneOff = runInstruction !== null ? false : brief.saveOneOff;
+        if (oneOff && saveOneOff) {
           let savedIns;
           saving = true;
           redrawFooter();
@@ -2055,7 +2403,7 @@ function App() {
           result = await send(true);
         }
         if (result && result.ok === false) {
-          // The fail-closed refusal is localized, never the raw code: the
+          // The fail-closed refusal is translated, never the raw code: the
           // owner picked "the post's image" and the honest answer is that it
           // cannot be used — with the two ways forward.
           announce(result.code === "reference_unavailable" ? t(locale, "drawerRefUnavailable") : refusalMessage(result), "");
@@ -2067,14 +2415,16 @@ function App() {
       }
       if (!live) return;
       // The one-off named THIS request — a second Generate must not silently
-      // reuse it. The settings (reference, ratio) stay as staged.
-      if (brief) {
+      // reuse it. The settings (reference, ratio) stay as staged. A run-layer
+      // correction consumed nothing staged, so it clears nothing.
+      if (brief && runInstruction === null) {
         patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, oneOff: "", oneOffOpen: false, saveOneOff: false } });
       }
       await refetchItems();
       redraw();
       announce(t(locale, "drawerRequestSent"), "");
       try { inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 })); } catch (error) { console.error(error); }
+      return true;
     };
 
     /**
@@ -2169,6 +2519,62 @@ function App() {
     const tabsEl = el("div", { class: "sl-drawer-tabs" });
     const bodyEl = el("div", { class: "sl-preview-scroll", tabindex: "-1" });
     const footerEl = el("footer", { class: "sl-preview-actions sl-drawer-footer" });
+
+    /*
+     * THE TITLE IS THE POST'S NAME, edited where it is read (batch_items.title,
+     * schema 19). It looks like a heading until touched; Enter commits (via
+     * blur), Escape restores the pre-edit value, and a submitted post's field
+     * is read-only. The derived name — the source text's first line — is only
+     * the placeholder: `title` stays NULL until the owner actually types one.
+     */
+    const titleField = el("input", {
+      id: "sl-drawer-title",
+      class: "sl-titlefield",
+      type: "text",
+      "aria-label": t(locale, "drawerTitleAria")
+    });
+    let titleBefore = null;
+    titleField.addEventListener("focus", () => { titleBefore = titleField.value; });
+    titleField.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); titleField.blur(); }
+      if (event.key === "Escape") { event.preventDefault(); titleField.value = titleBefore ?? ""; titleField.blur(); }
+    });
+    titleField.addEventListener("blur", () => {
+      const item = activeItem();
+      const next = titleField.value.trim();
+      const before = titleBefore;
+      titleBefore = null;
+      if (!item || before === null || next === before.trim()) return;
+      if (next === (item.title ?? "")) return;
+      renamePost(item, next);
+    });
+
+    /** The post's display name — its stored title, else the derived source head, else the untitled label. */
+    const postNameOf = (entry) => {
+      const titled = typeof entry?.title === "string" && entry.title.trim() ? entry.title.trim() : null;
+      if (titled) return titled;
+      const head = (String(entry?.sourceItem?.text ?? entry?.caption ?? "")
+        .split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 60);
+      return head || t(locale, "drawerTitlePlaceholder");
+    };
+
+    const renamePost = async (item, title) => {
+      let result;
+      try {
+        result = await rpc.renameBatchItem({ batchItemId: item.id, title });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!result?.ok) {
+        announce(result?.message || t(locale, "saveFailed"), "");
+        redraw();
+        return;
+      }
+      announce(t(locale, "drawerTitleSaved"), "");
+      if (!live) return;
+      await refetchItems();
+      redraw();
+    };
 
     /*
      * The accepted image is drawn from the gadget's own bytes. Nothing here
@@ -2277,25 +2683,17 @@ function App() {
       }
     };
 
-    /*
-     * The one place a publication-intent patch lands. Shared by the footer's
-     * timing controls and kept honest with them: a mode change rebuilds the
-     * whole sheet (the schedule field joins or leaves), any other field only
-     * rebuilds the foot.
-     */
-    const patchPublicationIntent = (entry, patch) => {
-      const before = bufferOf(entry.id).publicationIntent ?? entry.publicationIntent ?? { publishMode: "save_draft" };
-      patchBuffer(entry.id, { publicationIntent: { ...before, ...patch } });
-      if (patch.publishMode && patch.publishMode !== before.publishMode) redraw();
-      else redrawFooter();
-    };
-
     const redrawFooter = () => {
       const item = activeItem();
       if (!item) { replace(footerEl, []); return; }
       if (isEditableItem(item)) {
-        const state = footerState(locale, item, { buffers: bufferOf(item.id), saving, defaults: instructionDefaultsOf(policy) });
-        const reason = state.primary.reason || state.save.reason || publicationHint(locale, item, bufferOf(item.id));
+        const ui = uiOf(item.id);
+        const destinations = summary?.destinations ?? [];
+        const buffers = bufferOf(item.id);
+        const picked = ui.picked ?? recordedBindings(item);
+        const scheduledAt = ui.scheduledAt ?? null;
+        const state = footerState(locale, item, { buffers, saving, defaults: instructionDefaultsOf(policy), destinations, picked, scheduledAt });
+        const reason = state.primary.reason || state.save.reason || publicationHint(locale, { scheduledAt });
         /*
          * The truthful pending state. The mark's dispatch says whether the
          * request was FILED; the platform's canonical state, read back by
@@ -2424,14 +2822,63 @@ function App() {
           resolution === "unavailable";
         replace(footerEl, [
           stageNote ? el("p", { class: "sl-drawer-stage-note", role: "status" }, stageNote) : null,
-          // Publication timing sits in the sheet foot per the accepted
-          // mockup — visible on every tab, above the actions.
-          ...renderPublicationControls(locale, item, {
+          /*
+           * THE 增值 ASK. A run paused on credits gets its funding action in
+           * place — no dead-end sentence. The host owns the top-up surface;
+           * this row asks and hears the answer. `topped_up` re-files the SAME
+           * request (retryStart), so the paused run resumes on its own and the
+           * owner is never asked to ask again. A host with no top-up surface
+           * leaves the row disabled with the reason.
+           */
+          display === "insufficient_credits"
+            ? el("div", { class: "sl-topup", role: "group" }, [
+                el("p", { class: "sl-topup-note" }, t(locale,
+                  ui.topupDone ? "drawerTopupDone" : ui.topupCancelled ? "drawerTopupCancelled" : "drawerTopupResumeNote")),
+                ui.topupDone
+                  ? null
+                  : el("button", {
+                      type: "button", class: "sl-primary sl-sm sl-topup-btn",
+                      disabled: ui.topupPending === true || !hostFeatures.has("topup"),
+                      title: hostFeatures.has("topup") ? null : t(locale, "drawerTopupUnsupported"),
+                      onclick: async () => {
+                        if (uiOf(item.id).topupPending === true || !hostFeatures.has("topup")) return;
+                        patchUi(item.id, { topupPending: true, topupCancelled: false });
+                        redrawFooter();
+                        const reply = await requestTopup(item);
+                        if (!live) return;
+                        if (reply.outcome === "topped_up") {
+                          patchUi(item.id, { topupPending: false, topupDone: true });
+                          redrawPreserving();
+                          void retryStart(item);
+                        } else {
+                          patchUi(item.id, { topupPending: false, topupCancelled: reply.outcome === "cancelled" });
+                          redrawPreserving();
+                        }
+                      }
+                    }, t(locale, ui.topupPending === true ? "drawerTopupWorking" : "drawerTopupAction"))
+              ])
+            : null,
+          // The publish row sits in the sheet foot per the accepted mockup —
+          // the destination picker visible on every tab, above the actions.
+          // What is picked here IS what submitForReview files.
+          ...renderPublishControls(locale, item, {
             editable: true,
             saving,
-            buffers: bufferOf(item.id),
+            buffers,
+            destinations,
             destinationLabel,
-            onPublicationIntent: (patch) => patchPublicationIntent(item, patch)
+            picked,
+            menuOpen: ui.destOpen === true,
+            picking: ui.picking === true,
+            scheduledAt,
+            onToggleMenu: () => { patchUi(item.id, { destOpen: ui.destOpen !== true }); redrawFooter(); },
+            onToggleDestination: (binding) => {
+              const now = uiOf(item.id).picked ?? recordedBindings(item);
+              patchUi(item.id, { picked: now.includes(binding) ? now.filter((entry) => entry !== binding) : [...now, binding] });
+              redrawFooter();
+            },
+            onScheduleChange: (value) => { patchUi(item.id, { scheduledAt: value || null, picking: false }); redrawFooter(); },
+            onScheduleCancel: () => { patchUi(item.id, { picking: false }); redrawFooter(); }
           }),
           el("p", { class: "sl-drawer-footer-hint", id: DRAWER_FOOTER_HINT_ID, role: "status" }, reason || ""),
           el("div", { class: "sl-drawer-footer-actions" }, [
@@ -2503,6 +2950,21 @@ function App() {
                     onclick: () => retryFinal(item)
                   }, t(locale, "drawerRetryStart"))
                 : null,
+            el("span", { class: "sl-grow" }),
+            // 排程… arms the field; a chosen time turns the primary into
+            // "Schedule for …" — the press itself carries the intent.
+            scheduledAt
+              ? el("button", {
+                  type: "button", class: "sl-brief-link",
+                  disabled: saving,
+                  onclick: () => { patchUi(item.id, { scheduledAt: null, picking: false }); redrawFooter(); }
+                }, t(locale, "drawerCancelSchedule"))
+              : el("button", {
+                  type: "button", class: "sl-secondary",
+                  disabled: saving || state.primary.disabled || ui.picking === true,
+                  title: state.primary.reason || null,
+                  onclick: () => { patchUi(item.id, { picking: true }); redrawFooter(); }
+                }, t(locale, "drawerSchedulePick")),
             el("button", {
               type: "button", class: "sl-primary",
               disabled: state.primary.disabled,
@@ -2593,9 +3055,10 @@ function App() {
         );
       })();
 
+      // The eyebrow keeps state/revision; the post itself is named once, in
+      // the title field — the drawer is one post, so nothing else navigates.
       replace(headerMeta, [
         el("span", { class: "sl-drawer-state" }, [
-          items.length > 1 ? t(locale, "drawerPostNofM", { n: items.findIndex((entry) => entry.id === activeId) + 1, total: items.length }) + " · " : "",
           t(locale, headerStateKey),
           " · ",
           (item.revision ?? 0) > 0 ? t(locale, "drawerRevision", { n: item.revision }) : t(locale, "inboxNoSavedRevision"),
@@ -2603,42 +3066,53 @@ function App() {
         ].join(""))
       ]);
 
-      // Sibling navigation names ONE post each; switching never applies a
-      // buffer to a sibling.
+      // A redraw must never stomp a title the owner is typing — only repaint
+      // the field while it is not focused (blur commits first, so post-blur
+      // repaints see the new value).
+      if (document.activeElement !== titleField) {
+        titleField.value = item.title ?? "";
+        titleField.placeholder = postNameOf({ ...item, title: "" });
+        titleField.readOnly = !isEditableItem(item) || postFiled(item);
+      }
+
       replace(tabsEl, [
-        items.length > 1
-          ? el("div", { class: "sl-item-tabs", role: "group", "aria-label": t(locale, "drawerSavedWork") },
-              items.map((entry, index) => el("button", {
-                type: "button",
-                "aria-pressed": String(entry.id === activeId),
-                "aria-selected": String(entry.id === activeId),
-                onclick: () => {
-                  activeId = entry.id;
-                  // A read in flight was taken for the previous post's view:
-                  // it must not land, but the drawer still owes a refresh.
-                  if (refreshing) { readToken += 1; rerun = true; }
-                  redraw();
-                }
-              }, t(locale, "drawerPostNofM", { n: index + 1, total: items.length }))))
-          : null,
         renderDrawerTablist(locale, { active: activeTab, onSelect: selectTab })
       ]);
 
       const buffer = bufferOf(item.id);
       let panel;
       if (activeTab === "reference") {
-        // Inspection only — adopting the source image is the Post tab's
-        // "Use reference" source control, the one place that choice lives.
+        // The picture owns its adopt affordance here too — the same action
+        // the Post tab's add menu carries, one click for the same write.
         panel = renderReferencePanel(locale, item, {
           stage: item.sourceItem ? stageFor(item) : null,
           editable,
-          saving
+          saving,
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onAdoptSource: () => {
+            // Adopt the post's own pictures: every page bound to a source
+            // child takes THAT child — page k keeps child k, never the
+            // blended set. Pages with no binding stay as they are.
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.sourceMediaId ? { ...page, kind: "original", mediaId: page.sourceMediaId } : page
+            );
+            void applyVisual(item, { pages: list });
+          }
         });
       } else if (activeTab === "instructions") {
+        // The brief lives here per the accepted mockup: the settings a
+        // Generate ask is made under, beside the instructions it amends.
         panel = renderInstructionsPanel(locale, item, {
           editable,
+          saving,
           buffers: buffer,
           policy,
+          imageBrief: imageBriefOf(item),
+          imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
+          onPatchImageBrief: (patch) => {
+            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
+          },
+          onBriefChanged: () => redraw(),
           onInput: (part, value) => {
             patchBuffer(item.id, { instructions: { ...bufferOf(item.id).instructions, [part]: value } });
             redrawFooter();
@@ -2652,7 +3126,18 @@ function App() {
         panel = renderHistoryPanel(locale, item, {
           editable,
           onUseImage: (mediaId) => {
-            patchBuffer(item.id, { imageId: mediaId });
+            // A history pick stages into the page it was generated for —
+            // a page-2 image never displaces page 1. An unpaged row lands
+            // on the first page, the single-image meaning it always had.
+            const row = (item.generatedHistory ?? []).find((media) => media.id === mediaId) ?? null;
+            const targetId = row?.pageId ?? workingPages(item, bufferOf(item.id))[0]?.pageId ?? null;
+            if (targetId) {
+              const saved = pagesOfItem(item).find((page) => page.pageId === targetId) ?? null;
+              const list = workingPages(item, bufferOf(item.id)).map((page) =>
+                page.pageId === targetId ? { ...page, kind: "generated", mediaId, sourceMediaId: page.sourceMediaId ?? saved?.sourceMediaId ?? null } : page
+              );
+              patchBuffer(item.id, { pages: list });
+            }
             activeTab = "output";
             redraw();
             announce(t(locale, "drawerHistoryImageStaged"), "");
@@ -2675,20 +3160,31 @@ function App() {
             patchBuffer(item.id, { caption: value });
             redrawFooter();
           },
-          onAltTextInput: (value) => {
-            patchBuffer(item.id, { altText: value });
+          onAltTextInput: (pageId, value) => {
+            // Alt text is per page — the edit lands in the working list and
+            // saves with Save like every other buffered field.
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, altText: value.trim() ? value : null } : page
+            );
+            patchBuffer(item.id, { pages: list });
             redrawFooter();
           },
           destinationLabel,
-          onPublicationIntent: (patch) => patchPublicationIntent(item, patch),
           captionConflict: captionConflicts.get(item.id) ?? null,
-          onReacceptImage: async (mediaId) => {
+          onReacceptImage: async () => {
+            // The same explicit re-accept the singular pin performed, per
+            // page: every generated page whose provenance is "unknown" is
+            // marked owner-explicit in one save.
             if (saving) return;
+            const list = workingPages(item, bufferOf(item.id)).map((page) => {
+              const projected = (item.pages ?? []).find((entry) => entry.pageId === page.pageId);
+              return projected?.mediaProvenance === "unknown" ? { ...page, mediaAcceptance: "owner_explicit" } : page;
+            });
             saving = true;
             redrawFooter();
             let result;
             try {
-              result = await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: mediaId }] });
+              result = await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, pages: list }] });
             } catch (error) {
               result = { ok: false, message: error instanceof Error ? error.message : String(error) };
             } finally {
@@ -2707,26 +3203,92 @@ function App() {
             captionConflicts.delete(item.id);
             redraw();
           },
-          onStageImage: (mediaId) => {
-            if (mediaId) patchBuffer(item.id, { imageId: mediaId });
-            else dropBufferFields(item.id, ["imageId"]);
+          onStageImage: (pageId, mediaId) => {
+            // A candidate pick stages into ITS page — never a neighbour's —
+            // and unstaging restores the page's saved fill.
+            const saved = pagesOfItem(item).find((page) => page.pageId === pageId) ?? null;
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, kind: mediaId ? "generated" : (saved?.kind ?? null), mediaId: mediaId ?? (saved?.mediaId ?? null) } : page
+            );
+            patchBuffer(item.id, { pages: list });
             redraw();
           },
           imageBrief: imageBriefOf(item),
-          // The toggle's honesty line: whether this post's own image can
+          // The menu's honesty line: whether this post's own image can
           // actually be sent as a reference — decided by the same rule the
           // server applies, so a missing one warns before the refusal.
           imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
-          onPatchImageBrief: (patch) => {
-            patchBuffer(item.id, { imageBrief: { ...bufferOf(item.id).imageBrief, ...patch } });
-          },
-          onBriefChanged: () => redraw(),
-          onShowInstructions: () => selectTab("instructions", { focus: false }),
           onRequestPart: (part) => requestPart(item, part),
           uploadPreview: ownerUploads.has(item.id) ? { name: ownerUploads.get(item.id).name } : null,
-          onPickUpload: (file) => pickOwnerUpload(item, file),
           onAdoptUpload: () => adoptOwnerUpload(item),
-          onAdoptReference: () => applyVisual(item, { acceptedVisualMode: "keep_original" })
+          /*
+           * The strip's callbacks. Add/menu/regenerate/destinations are
+           * drawerUi — sheet state, never content. Remove is a real revision
+           * change (it clears the accepted visual), so it goes through
+           * applyVisual like any other visual decision; a staged pick is
+           * dropped first so the next Save cannot resurrect it.
+           */
+          strip: {
+            menuOpen: uiOf(item.id).menuOpen === true,
+            menuAnchor: uiOf(item.id).menuAnchor ?? null,
+            agentIntent: hostFeatures.has("agent-intent"),
+            dismissedCandidates: uiOf(item.id).dismissedCandidates ?? null,
+            onToggleMenu: (anchor) => {
+              const ui = uiOf(item.id);
+              // Re-clicking the control that owns the open menu closes it;
+              // clicking another moves the one menu there is to it.
+              const closing = ui.menuOpen === true && ui.menuAnchor === anchor;
+              patchUi(item.id, closing ? { menuOpen: false } : { menuOpen: true, menuAnchor: anchor });
+              redraw();
+              if (closing) {
+                bodyEl.querySelector(`.sl-addwrap[data-addanchor="${anchor}"] > button`)?.focus?.();
+              } else {
+                // A popover below the fold is invisible: bring its control
+                // into the scroll viewport first.
+                bodyEl.querySelector(".sl-menu")?.scrollIntoView?.({ block: "nearest" });
+              }
+            },
+            // Adding a page is an explicit structural commit — the new
+            // empty slot persists, holds its place at the end, and blocks
+            // filing until filled or removed.
+            onAddPage: () => {
+              const list = [...workingPages(item, bufferOf(item.id)), { pageId: newPageId(item), kind: null, mediaId: null, sourceMediaId: null, altText: null }];
+              void applyPages(item, list);
+            },
+            // A chosen row closes the popover immediately — the action's own
+            // redraw comes later (or not at all, when the ask is refused).
+            onMenuGenerate: (slot) => { patchUi(item.id, { menuOpen: false }); redraw(); void requestPart(item, "image", null, [slot.page.pageId]); },
+            onMenuUpload: (slot) => { patchUi(item.id, { menuOpen: false }); redraw(); pickOwnerUpload(item, slot.page.pageId); },
+            onMenuAdoptSource: (slot, sourceMediaId) => {
+              patchUi(item.id, { menuOpen: false });
+              const list = workingPages(item, bufferOf(item.id)).map((page) =>
+                page.pageId === slot.page.pageId ? { ...page, kind: "original", mediaId: sourceMediaId, sourceMediaId } : page
+              );
+              void applyPages(item, list);
+            },
+            // Regenerate is a conversation hand-off: the intent carries this
+            // page's context to the host, which opens the chat. The menu
+            // closes and the layout does not move — the drawer keeps its state
+            // for when the owner returns.
+            onRegenIntent: (slot) => {
+              patchUi(item.id, { menuOpen: false });
+              redraw();
+              postAgentIntent(item, slot);
+            },
+            onRemoveSlot: (slot) => {
+              patchUi(item.id, { menuOpen: false });
+              const list = workingPages(item, bufferOf(item.id)).filter((page) => page.pageId !== slot.page.pageId);
+              void applyPages(item, list);
+            },
+            onViewSlot: () => { patchUi(item.id, { menuOpen: false }); redraw(); void openPreview(item); },
+            onDismissCandidate: (candidateId) => {
+              const ui = uiOf(item.id);
+              const dismissed = new Set(ui.dismissedCandidates ?? []);
+              if (candidateId) dismissed.add(candidateId);
+              patchUi(item.id, { dismissedCandidates: dismissed });
+              redraw();
+            }
+          }
         });
       }
 
@@ -2793,6 +3355,7 @@ function App() {
       if (!live) return;
       live = false;
       readToken += 1;
+      hostFeatureListeners.delete(redrawPreserving);
       for (const held of stages.values()) held.stage.dispose();
       stages.clear();
       for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
@@ -2800,13 +3363,16 @@ function App() {
       if (drawerSession === session) drawerSession = null;
     };
 
+    // A host-features announcement that lands mid-drawer flips the ⋯ row
+    // between offered and disabled-with-reason; the open sheet re-reads it.
+    hostFeatureListeners.add(redrawPreserving);
     redraw();
 
     replace(batchDialog, [el("div", { class: "sl-preview-sheet sl-sheet-drawer" }, [
       el("header", { class: "sl-preview-head" }, [
         el("div", { class: "sl-preview-who" }, [
           headerMeta,
-          el("strong", { id: "sl-drawer-title" }, t(locale, "drawerSavedWork"))
+          titleField
         ]),
         el("div", { class: "sl-preview-head-actions" }, [
           el("button", {
@@ -2823,7 +3389,7 @@ function App() {
     batchDialog.setAttribute("aria-labelledby", "sl-drawer-title");
     // The shared dialog's close/cancel listeners delegate here — one
     // registration, one session, see buildPreviewDialog above.
-    session = { requestClose, refresh, dispose, previous, batchId: batch.id };
+    session = { requestClose, refresh, dispose, previous, batchId: batch.id, closeAddMenu };
     // Opening another post ends the previous drawer session: its reads and
     // stages must not outlive it.
     if (drawerSession && drawerSession !== session) drawerSession.dispose?.();
@@ -2918,6 +3484,45 @@ function App() {
       renderCurrentView();
     },
     onInspectBatch: (batch, batchItemId) => openBatchDrawer({ id: batch.id, itemId: batchItemId }),
+    // The card ⋯ — one menu open across the board; the Remove row asks in
+    // place before the write, and a removed post leaves the review
+    // selection too (a selected row that no longer exists is a stale ask).
+    onCardMenu: (batchItemId) => {
+      inboxState = setCardMenu(inboxState, batchItemId);
+      renderCurrentView();
+    },
+    onCardMenuConfirm: (batchItemId) => {
+      inboxState = setCardMenuConfirm(inboxState, batchItemId);
+      renderCurrentView();
+    },
+    onCardMenuCancel: (batchItemId) => {
+      inboxState = setCardMenu(inboxState, batchItemId);
+      renderCurrentView();
+    },
+    onRemoveItem: async (batch, item) => {
+      const batchItemId = item?.batchItemId ?? item?.id;
+      inboxState = clearCardMenu(inboxState);
+      renderCurrentView();
+      let result;
+      try {
+        result = await rpc.removeBatchItem({ batchItemId });
+      } catch (error) {
+        result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!result?.ok) {
+        inboxState = setInboxNotice(inboxState, result?.message || t(locale, "genericError"));
+        renderCurrentView();
+        return;
+      }
+      if (inboxState.selected?.[batchItemId]) inboxState = toggleInboxItem(inboxState, batchItemId, null);
+      announce(t(locale, "drawerRemovedPost"), "");
+      try {
+        inboxState = setInboxSummaries(inboxState, await rpc.listBatchSummaries({ limit: 50 }));
+      } catch (error) {
+        console.error(error);
+      }
+      renderCurrentView();
+    },
     onSelectItem: (batchItemId, entry) => {
       inboxState = toggleInboxItem(inboxState, batchItemId, entry);
       renderCurrentView();
@@ -3003,24 +3608,24 @@ function App() {
     const taken = takenSourceIds();
     const draftable = selected.filter((id) => !taken.has(id));
     const ids = draftable.length ? draftable : selected;
+    collectionState = setContinuing(collectionState, true);
+    renderCurrentView();
     try {
       const destinationBindings = (summary?.destinations || []).map((destination) => destination.destinationBinding || destination.binding);
       const batch = await rpc.createBatch({ itemIds: ids, destinationBindings, createNewVersion });
       // createBatch answers an expected refusal (no items, an existing
-      // active localization) as a value, not a throw — see server.js's
+      // active draft) as a value, not a throw — see server.js's
       // header note.
-      if (isRefusal(batch)) {
+      if (isRefusalResult(batch)) {
         if (batch.code === "duplicate_active") {
           collectionState = setNotice(collectionState, {
             message: refusalMessage(batch),
             actionLabel: t(locale, "duplicateBlockedNewVersion")
           });
-          renderCurrentView();
           return;
         }
         collectionState = clearNotice(collectionState);
         announceRefusal(batch);
-        renderCurrentView();
         return;
       }
       collectionState = clearNotice(collectionState);
@@ -3046,9 +3651,14 @@ function App() {
       } catch (error) {
         console.error(error);
       }
-      renderCurrentView();
     } catch (error) {
       console.error(error);
+      // A thrown failure used to die here silently — the tray went back to
+      // its idle label with nothing to show for the press. Say it.
+      announce(t(locale, "batchBlockedTitle"), error instanceof Error ? error.message : String(error));
+    } finally {
+      collectionState = setContinuing(collectionState, false);
+      renderCurrentView();
     }
   }
 
@@ -3188,7 +3798,7 @@ function App() {
   };
   const settleAcceptance = async (id, saved) => {
     if (!saved) return;
-    if (isRefusal(saved)) {
+    if (isRefusalResult(saved)) {
       wizard = setPublishError(wizard, id, { code: saved.code, message: refusalMessage(saved) });
     } else {
       wizard = setPublishError(wizard, id, null);
@@ -3257,7 +3867,7 @@ function App() {
           intent: choice.intent,
           createNewVersion
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, id, { code: result.code, message: refusalMessage(result) });
         } else {
           // The filing landed — read back the item and its publication rows
@@ -3341,7 +3951,7 @@ function App() {
           expectedRevision: wizard.batch.items.find((item) => item.id === itemId)?.revision ?? 0,
           destinationBindings: [destinationBinding]
         });
-        if (isRefusal(result)) {
+        if (isRefusalResult(result)) {
           wizard = setPublishError(wizard, itemId, { code: result.code, message: refusalMessage(result) });
         } else {
           const state = await rpc.readPublishState(itemId);

@@ -5,9 +5,8 @@
  * testkit's rpc-bytes.js: an index-keyed Uint8Array costs ~9 characters per
  * byte and arrives as an object with one own property per byte for
  * structuredClone to walk, twice). Encoder and decoder must be the same
- * version, and BOT_SDK_SOURCE overlays the testkit with a checkout — so
- * importing the published package here would pair a source encoder with an
- * installed decoder. preview.mjs resolves both from the same place.
+ * version. preview.mjs resolves both from the installed testkit package and
+ * hands them in, so encoder and decoder come from the same artifact.
  */
 export function connectedCanvasBridge(origin, decodeBytes, encodeBytes = ''){return `
 ${decodeBytes}

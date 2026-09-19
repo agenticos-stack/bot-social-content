@@ -161,7 +161,7 @@ describe("generated image registration and delivery", () => {
     expect(registered).toMatchObject({ ok: true });
     // Registration alone must not touch the mark — only bytes do.
     let item = gadget.storage.getBatchItem("item-1");
-    expect(JSON.parse(item.generation).needs).toEqual({ caption: true, image: true });
+    expect(JSON.parse(item.generation).needs).toEqual({ caption: true, image: true, imagePages: ["pg_src_source-media"] });
     expect((await gadget.pendingGeneratedImages()).pending.map((row: any) => row.id)).toEqual([registered.id]);
 
     // Supersede the ask: the still-registered image answered the OLD one.
@@ -173,7 +173,7 @@ describe("generated image registration and delivery", () => {
     // Bytes are kept, but the newer ask's image need is NOT satisfied by a
     // delivery stamped under the superseded request.
     item = gadget.storage.getBatchItem("item-1");
-    expect(JSON.parse(item.generation).needs).toEqual({ caption: true, image: true });
+    expect(JSON.parse(item.generation).needs).toEqual({ caption: true, image: true, imagePages: ["pg_src_source-media"] });
     // getGeneratedImage mirrors getMedia's chunked envelope — {mime, total,
     // chunk, chunks, bytes}; a missing row answers a media_missing value.
     const read = await gadget.getGeneratedImage(registered.id, {});

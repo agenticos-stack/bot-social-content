@@ -1,4 +1,4 @@
-// Social Localization client — tiny DOM helpers shared by every view module.
+// Social Content client — tiny DOM helpers shared by every view module.
 //
 // The generic helpers live in @agenticos-dev/bot-shell's client modules; what
 // stays here is the domain-to-design-system adapter (the `sl-*` vocabulary the

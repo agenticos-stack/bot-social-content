@@ -1,4 +1,4 @@
-// TASK-201 / TEST-001: node unit tests for the pure Social Localization
+// TASK-201 / TEST-001: node unit tests for the pure Social Content
 // model. No network, no D1, no facet — model.js has no I/O beyond the
 // platform crypto API and the system clock.
 import { readFileSync } from "node:fs";
@@ -20,9 +20,10 @@ import {
   draftOrigin,
   ledgerFromProtectedOverrides,
   normalizeLedger,
+  postFiled,
   usesGroundedValidation,
   validateGrounded,
-  validateLocalization,
+  validateDraft,
   validatePosterLayout,
   validateRevisionDraft
 } from "../../src/model.js";
@@ -30,10 +31,10 @@ import {
 const MODEL_PATH = fileURLToPath(new URL("../../src/model.js", import.meta.url));
 
 const instagramPage = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/social-localization/instagram-media-page.json", import.meta.url)), "utf8")
+  readFileSync(fileURLToPath(new URL("./fixtures/social-content/instagram-media-page.json", import.meta.url)), "utf8")
 );
 const facebookPage = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/social-localization/facebook-page-posts-page.json", import.meta.url)), "utf8")
+  readFileSync(fileURLToPath(new URL("./fixtures/social-content/facebook-page-posts-page.json", import.meta.url)), "utf8")
 );
 
 /**
@@ -299,15 +300,15 @@ describe("detectProtectedLiterals", () => {
   });
 });
 
-describe("validateLocalization", () => {
+describe("validateDraft", () => {
   it("blocks an empty draft", () => {
-    const result = validateLocalization({ source: {}, draft: "   ", policy: {} });
+    const result = validateDraft({ source: {}, draft: "   ", policy: {} });
     expect(result.ok).toBe(false);
     expect(result.issues[0]).toMatchObject({ code: "empty_draft", severity: "block" });
   });
 
   it("blocks an altered price", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: { text: "Get the HK$1,299 bundle now." },
       draft: "宣傳優惠：套裝價錢係HK$999，立即購買。",
       policy: {}
@@ -319,7 +320,7 @@ describe("validateLocalization", () => {
   });
 
   it("blocks a missing disclaimer", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: { text: "New product launch. Results may vary." },
       draft: "全新產品正式登場，歡迎選購。",
       policy: { disclaimers: ["Results may vary."] }
@@ -329,7 +330,7 @@ describe("validateLocalization", () => {
   });
 
   it("blocks a spoken-form token", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: {},
       draft: "呢個係我哋嘅新產品，大家快啲嚟睇吓啦。",
       policy: {}
@@ -339,7 +340,7 @@ describe("validateLocalization", () => {
   });
 
   it("blocks an over-limit caption", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: {},
       draft: "全新產品正式登場，歡迎選購。",
       policy: {},
@@ -350,7 +351,7 @@ describe("validateLocalization", () => {
   });
 
   it("asks for confirmation on an unconfirmed claim without blocking", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: { text: "This is clinically proven to work." },
       draft: "本產品經臨床實證，效果顯著，歡迎選購。",
       policy: { claimsRequiringConfirmation: ["clinically proven"] }
@@ -358,7 +359,7 @@ describe("validateLocalization", () => {
     expect(result.issues).toContainEqual(expect.objectContaining({ code: "claim_unconfirmed", severity: "confirm" }));
     expect(result.issues.some((issue) => issue.severity === "block")).toBe(false);
 
-    const confirmed = validateLocalization({
+    const confirmed = validateDraft({
       source: { text: "This is clinically proven to work." },
       draft: "本產品經臨床實證，效果顯著，歡迎選購。",
       policy: { claimsRequiringConfirmation: ["clinically proven"], confirmedClaims: ["clinically proven"] }
@@ -367,13 +368,13 @@ describe("validateLocalization", () => {
   });
 
   it("notes half-width punctuation between Chinese characters without blocking", () => {
-    const result = validateLocalization({ source: {}, draft: "全新產品,正式登場歡迎選購。", policy: {} });
+    const result = validateDraft({ source: {}, draft: "全新產品,正式登場歡迎選購。", policy: {} });
     expect(result.issues).toContainEqual(expect.objectContaining({ code: "halfwidth_punctuation", severity: "note" }));
     expect(result.issues.some((issue) => issue.severity === "block")).toBe(false);
   });
 
   it("accepts a clean written-Chinese draft with no issues", () => {
-    const result = validateLocalization({
+    const result = validateDraft({
       source: { text: "New arrivals are here." },
       draft: "全新產品正式登場，歡迎選購。",
       policy: {}
@@ -383,7 +384,7 @@ describe("validateLocalization", () => {
 });
 
 describe("usesGroundedValidation", () => {
-  it("routes keep_original with no allowed changes to localization", () => {
+  it("routes keep_original with no allowed changes to the draft validator", () => {
     expect(usesGroundedValidation({ visualTreatment: "keep_original", allowedChanges: [] })).toBe(false);
     expect(usesGroundedValidation({ visualTreatment: "text_poster" })).toBe(false);
   });
@@ -584,7 +585,7 @@ describe("draftOrigin", () => {
 });
 
 describe("validateRevisionDraft routing", () => {
-  it("still blocks an altered price on the localization path", () => {
+  it("still blocks an altered price on the draft-validation path", () => {
     const result = validateRevisionDraft({
       source: { text: "Get the HK$1,299 bundle now." },
       draft: "宣傳優惠：套裝價錢係HK$999，立即購買。",
@@ -599,7 +600,7 @@ describe("validateRevisionDraft routing", () => {
 
   it("applies the zh-HK register check on both paths", () => {
     const spoken = "呢個係我哋嘅新產品，大家快啲嚟睇吓啦。";
-    const localized = validateRevisionDraft({
+    const drafted = validateRevisionDraft({
       source: {},
       draft: spoken,
       brief: { visualTreatment: "keep_original" }
@@ -610,7 +611,7 @@ describe("validateRevisionDraft routing", () => {
       brief: { allowedChanges: ["copy"] },
       ledger: { spans: [] }
     });
-    expect(localized.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
+    expect(drafted.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
     expect(grounded.issues).toContainEqual(expect.objectContaining({ code: "spoken_form_detected", severity: "block" }));
   });
 });
@@ -844,3 +845,25 @@ describe("a video keeps its poster frame", () => {
   });
 });
 
+
+// postFiled is the ONE filed check — the board's summary items carry
+// `deliveries`, the drawer's full items carry `publications`; both shapes
+// answer the same question so no surface re-derives it.
+describe("postFiled", () => {
+  it("a bound-only summary item is still a draft", () => {
+    expect(postFiled({ deliveries: [{ outcome: "bound" }] })).toBe(false);
+    expect(postFiled({ deliveries: [] })).toBe(false);
+    expect(postFiled({})).toBe(false);
+  });
+
+  it("any non-bound delivery outcome means the post left draft", () => {
+    expect(postFiled({ deliveries: [{ outcome: "bound" }, { outcome: "submitted" }] })).toBe(true);
+    expect(postFiled({ deliveries: [{ outcome: "failed" }] })).toBe(true);
+  });
+
+  it("full items read publications — bound/superseded/failed keep it a draft", () => {
+    expect(postFiled({ publications: [{ state: "bound" }, { state: "superseded" }, { state: "failed" }] })).toBe(false);
+    expect(postFiled({ publications: [{ state: "bound" }, { state: "review_requested" }] })).toBe(true);
+    expect(postFiled({ publications: [] })).toBe(false);
+  });
+});

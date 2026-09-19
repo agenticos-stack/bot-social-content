@@ -1,7 +1,7 @@
-// Social Localization client — the one file that calls the gadget's server.
+// Social Content client — the one file that calls the gadget's server.
 //
 // Every RPC this UI makes goes through here, so a contract change on the
-// server side (`format-blueprints/social-localization/server.js`, owned by a
+// server side (`format-blueprints/social-content/server.js`, owned by a
 // sibling task) touches this one file rather than every view module that
 // happens to need a post. The method list below is this bot's contract; the
 // pass-throughs and the chunked-blob mechanics come from
@@ -35,6 +35,12 @@ export function createRpc(gadget) {
     "saveDerivedGeneratedImage",
     "createBatch",
     "getBatch",
+    // The selector's three membership/name calls: another source post joins
+    // the batch, a post leaves it (superseded, never deleted), and the post's
+    // own name is edited in place. All refuse by value.
+    "addBatchItem",
+    "removeBatchItem",
+    "renameBatchItem",
     // `itemIds` scopes a re-draft to the named posts; omitted means the
     // legacy batch-wide request (still used by createBatch's first run).
     // `options.needs` ({ image, caption }) asks for one part and keeps the other.

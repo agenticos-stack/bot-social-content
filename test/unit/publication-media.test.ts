@@ -317,7 +317,7 @@ describe("submitForReview attribution (TASK-015)", () => {
     const { ctx } = sqliteContext();
     const gadget = new Gadget(ctx as never, { FB_MAIN: {}, ...mockSocial(created) } as never);
     seed(gadget);
-    // A localization brief never inspects the ledger's bases, and a grounded
+    // A rewrite brief never inspects the ledger's bases, and a grounded
     // brief only checks spans it detects in the caption — so a contradicting
     // basis does reach storage. Submit is where it must not reach the publisher.
     await gadget.saveRevision({

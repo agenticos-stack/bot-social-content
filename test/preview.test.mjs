@@ -6,10 +6,10 @@ import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { buildPackage } from "../scripts/build.mjs";
+import { buildGadget } from "../scripts/build.mjs";
 
 test("served preview includes the required mount before loading the real client", { timeout: 10000 }, async () => {
-  await buildPackage();
+  await buildGadget();
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
   await once(reservation, "listening");

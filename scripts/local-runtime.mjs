@@ -1,11 +1,8 @@
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { createLocalSession } from '@agenticos-dev/bot-testkit/local-session';
 import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
 
 // Development-only wrapper. The packaged server and its storage stay unchanged.
-export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory, doors, seedFixtures = true }) {
-  if (!sdkSource) throw new Error('Local runtime requires BOT_SDK_SOURCE pointing to the SDK source checkout.');
-  const { createLocalSession } = await import(pathToFileURL(resolve(sdkSource, 'packages/testkit/src/local-session.js')));
+export async function createSocialRuntime({ files, origins, stateDirectory, doors, seedFixtures = true }) {
   const modules = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith('.js') && name !== 'client.js'));
   modules['app-server.js'] = modules['server.js'];
   modules['server.js'] = `
@@ -95,11 +92,12 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
    * sweep's poll. Absent from `browsing` the whole contract silently
    * refused at the session gate.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage','saveDerivedGeneratedImage'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','addBatchItem','removeBatchItem','renameBatchItem','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage','saveDerivedGeneratedImage'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors,
+    allowedHostnames: ['localhost', '127.0.0.1', 'social.localhost'],
     maxRequestBytes: LOCAL_RPC_MAX_BYTES,
     seed: seedFixtures ? [{method:'seedLocal',args:[]}] : [],
     allowedMethods: connectedDoors || !seedFixtures ? [...browsing, ...needsDoors] : browsing });

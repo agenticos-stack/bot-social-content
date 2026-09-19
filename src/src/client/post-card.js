@@ -120,9 +120,56 @@ export function renderPostCard(locale, card, covers) {
       : { slot: coverSlot, itemId: card.cover.itemId, mediaId: card.cover.mediaId });
   }
 
+  /*
+   * The card's ⋯ — the post's action menu. It renders INSIDE the card
+   * (`.sl-post` clips overflow), a small popover under the chip that covers
+   * the body's top rather than overhanging the grid. `confirm` swaps the
+   * rows for the in-place question, so a destructive choice keeps the post
+   * named and the card still.
+   */
+  const menuBtn = card.menu
+    ? el("span", { class: "sl-cardmenu", "data-cardmenu": card.key }, [
+        el("button", {
+          type: "button",
+          class: "sl-cardbtn",
+          "aria-haspopup": "menu",
+          "aria-expanded": card.menu.open ? "true" : "false",
+          "aria-label": card.menu.label || "actions",
+          onclick: (event) => { event.stopPropagation?.(); card.menu.onToggle?.(); }
+        }, "⋯")
+      ])
+    : null;
+  // The popover is the CARD's overlay, not the chip's: rendered as a sibling
+  // so it positions to .sl-post and spans the card's width — a narrow card
+  // can never clip it the way a wrapper-anchored menu would.
+  const menuPop = card.menu?.open
+    ? el("div", { class: "sl-menu sl-cardmenu-pop", role: "menu", "aria-label": card.menu.label || "", "data-cardmenu": card.key },
+        card.menu.confirm
+          ? [el("div", { class: "sl-rowconfirm" }, [
+              el("span", { class: "sl-pm-grow" }, card.menu.confirmBody || ""),
+              el("button", { type: "button", class: "sl-pm-no", onclick: () => card.menu.onCancel?.() }, card.menu.confirmNo || ""),
+              el("button", { type: "button", class: "sl-pm-yes", onclick: () => card.menu.onConfirm?.() }, card.menu.confirmYes || "")
+            ])]
+          : (card.menu.rows ?? []).map((row) =>
+              el("button", {
+                type: "button",
+                role: "menuitem",
+                class: `sl-menu-item${row.danger ? " sl-menu-danger" : ""}`,
+                disabled: row.disabled || null,
+                onclick: () => row.onSelect?.()
+              }, [
+                el("span", { class: "sl-menu-lead" }, row.title || ""),
+                row.reason ? el("span", { class: "sl-menu-sub sl-menu-warn" }, row.reason) : null
+              ].filter(Boolean))
+            )
+      )
+    : null;
+
   const article = el("article", { class: "sl-post" }, [
     selectbox,
     openButton,
+    menuBtn,
+    menuPop,
     card.badge ? el("span", { class: "sl-duplicate-badge" }, card.badge) : null
   ]);
   article.classList.toggle("sl-post-selected", !!card.selected);
