@@ -9,8 +9,10 @@
 - License: Apache-2.0, approved by owner on 2026-09-08
 - Public runtime dependencies: `@agenticos-dev/bot-archive-tools@0.1.0`, `@agenticos-dev/bot-contract@0.1.0`
 
-The archive compatibility identities remain `social_localization`,
-`social.localization`, and `social-content.gadget`. The source snapshot contains
+The archive compatibility identities were `social_localization` and
+`social.localization` at publication; the 2026-09 rename moved them to
+`social_content` / `social.content` (same archive filename,
+`social-content.gadget`). The source snapshot contains
 synthetic fixture preview code only and no credentials or production data.
 
 Public snapshot excludes local extraction history. A customer-specific example

@@ -216,7 +216,8 @@ describe("requestGeneration stamps the brief", () => {
     const mark = generationMark(gadget.storage.getBatchItem(itemId).generation);
     expect(mark?.imageBrief).toEqual({
       aspectRatio: "1:1",
-      references: [{ id: "m1", url: "https://cdn.example.com/p1.jpg" }]
+      references: [{ id: "m1", url: "https://cdn.example.com/p1.jpg" }],
+      pages: [{ pageId: "pg_src_m1", references: [{ id: "m1", url: "https://cdn.example.com/p1.jpg" }] }]
     });
   });
 
@@ -243,7 +244,7 @@ describe("requestGeneration stamps the brief", () => {
     expect(asked.workRequest.items[0].aspectRatio).toBe("9:16");
     expect("imageReferences" in asked.workRequest.items[0]).toBe(false);
     const mark = generationMark(gadget.storage.getBatchItem(opened.items[0].id).generation);
-    expect(mark?.imageBrief).toEqual({ aspectRatio: "9:16" });
+    expect(mark?.imageBrief).toEqual({ aspectRatio: "9:16", pages: [{ pageId: "pg_src_m1" }] });
     expect(mark?.imageBrief && "references" in mark.imageBrief).toBe(false);
   });
 
@@ -365,7 +366,7 @@ describe("a replacement keeps the original request's brief", () => {
     });
     // The replaced item itself carries the NEW brief.
     const replaced = generationMark(gadget.storage.getBatchItem(first).generation);
-    expect(replaced?.imageBrief).toEqual({ aspectRatio: "9:16" });
+    expect(replaced?.imageBrief).toEqual({ aspectRatio: "9:16", pages: [{ pageId: "pg_src_m1" }] });
     // The work request's items describe each item's own committed mark.
     const byItem = new Map(result.workRequest.items.map((entry: any) => [entry.itemId, entry]));
     expect(byItem.get("instagram:IG_MAIN:p1").aspectRatio).toBe("9:16");

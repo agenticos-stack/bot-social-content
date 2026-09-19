@@ -150,7 +150,7 @@ describe("TEST-001: drafting needs no destination and no publishing door", () =>
   });
 });
 
-describe("TEST-002: one active localization per post while it is drafting", () => {
+describe("TEST-002: one active draft per post while it is drafting", () => {
   it("a second Continue refuses duplicate_active, and createNewVersion supersedes it", async () => {
     const gadget = gadgetWith({ workspace: { notify: async () => {} } });
     const first = await draft(gadget);
@@ -213,7 +213,7 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     expect(gadget.storage.publicationsFor(item.id)).toEqual([]);
   });
 
-  it("files one publication per binding, and the same pair on another localization refuses", async () => {
+  it("files one publication per binding, and the same pair on another draft refuses", async () => {
     const created: unknown[] = [];
     const gadget = gadgetWith({ workspace: { notify: async () => {} }, FB_MAIN: {}, IG_OUT: {}, ...mockSocial(created) });
     const first = await draft(gadget);
@@ -234,7 +234,7 @@ describe("TEST-004/005/012: the pair rule lives at submit", () => {
     // connector resource binding id `describe()` resolved, not the env name.
     expect((created[0] as { targets: unknown[] }).targets).toEqual([{ destinationBinding: "crb_fb_main" }]);
 
-    // The owner's new version leaves the filed localization active — REQ-017's
+    // The owner's new version leaves the filed draft active — REQ-017's
     // pair, not the item, is now what a second draft would collide with.
     const second = await draft(gadget, ["instagram:IG_MAIN:p1"], { createNewVersion: true });
     expect(second.ok).not.toBe(false);
@@ -388,6 +388,10 @@ describe("TEST-007: migration 8 backfills live rows", () => {
     db.exec(`CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`);
     // The real v7 shape carries the batches row too — migration 9 alters it.
     db.exec(`CREATE TABLE batches (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL)`);
+    // `items` is base-schema — every database old enough to migrate has it;
+    // migration 20's page backfill joins it for each revision's source media.
+    db.exec(`CREATE TABLE items (id TEXT PRIMARY KEY, media_json TEXT)`);
+    db.exec(`CREATE TABLE posters (batch_item_id TEXT NOT NULL, revision INTEGER NOT NULL, template TEXT, png BLOB, byte_length INTEGER, created_at TEXT, PRIMARY KEY (batch_item_id, revision))`);
     db.exec(`CREATE TABLE batch_items (
       id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, item_id TEXT NOT NULL,
       destination_bindings_json TEXT NOT NULL, state TEXT NOT NULL,

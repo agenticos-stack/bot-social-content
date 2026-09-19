@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { assertPackedImports, assertStorageSchemaDeclaration, buildGadget, sha256 } from "../scripts/build.mjs";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
 /*
@@ -44,10 +44,10 @@ test("repeated builds preserve bytes, complete definition, and member checksums"
     assert.deepEqual(first.bytes, second.bytes);
     assert.deepEqual(first.release, second.release);
     assert.equal(first.release.artifact, "social-content.gadget");
-    assert.equal(first.release.blueprintKey, "social_localization");
+    assert.equal(first.release.blueprintKey, "social_content");
     assert.equal(first.release.sha256, sha256(first.bytes));
     const archive = await readBlueprintArchive(first.bytes.buffer.slice(first.bytes.byteOffset, first.bytes.byteOffset + first.bytes.byteLength));
-    assert.deepEqual(archive.metadata.gadgetDefinition, SOCIAL_LOCALIZATION_DEFINITION);
+    assert.deepEqual(archive.metadata.gadgetDefinition, SOCIAL_CONTENT_DEFINITION);
     assert.equal(archive.metadata.title, "Social Content");
     // devkit returns a null-prototype map so a crafted member name cannot
     // pollute Object.prototype; spread to a plain object for the comparison.

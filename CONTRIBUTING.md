@@ -11,7 +11,7 @@ not hold the source any more.
 `scan sources → inbox → select → createBatch → saveRevision → savePoster →
 confirmRights → submitForReview → readPublishState → exportAs`
 
-Watch authorized social accounts, keep normalized posts, localize approved
+Watch authorized social accounts, keep normalized posts, draft approved
 picks into written Traditional Chinese (zh-HK), and hand the exact approved
 version to the Social Hub publisher through a door.
 
@@ -33,7 +33,7 @@ pnpm preview
 
 # connected: real production agent loop, local source
 bot-dev login                       # once, ever
-bot-dev dev --gadget social_localization --org <sandbox-org> -- pnpm preview
+bot-dev dev --gadget social_content --org <sandbox-org> -- pnpm preview
 ```
 
 `bot-dev` comes from `@agenticos-dev/bot-devkit`. It mints an eight-hour
@@ -76,7 +76,7 @@ records citations, never the corpus.
 
 The four review items recorded in the API's 2026-09-07 evidence note —
 mixed-state batch resume, unsaved-submission protection, conflict recovery,
-incomplete localized labels — are **closed**. Every one has a passing test in
+incomplete translated labels — are **closed**. Every one has a passing test in
 `test/unit/`. Do not re-do them; read the tests first if you think otherwise.
 
 What has genuinely never happened is a **real run**: this gadget has never

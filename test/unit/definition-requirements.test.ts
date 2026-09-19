@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../../definition.ts";
 
 /**
  * Draft first: setup's gate waits only on declared, non-optional rows, so
@@ -7,7 +7,7 @@ import { SOCIAL_LOCALIZATION_DEFINITION } from "../../definition.ts";
  * at the operation instead (`submitForReview`, `addOpenSource`).
  */
 const byKey = Object.fromEntries(
-  SOCIAL_LOCALIZATION_DEFINITION.requirements.map((requirement) => [requirement.requirementKey, requirement as Record<string, unknown>])
+  SOCIAL_CONTENT_DEFINITION.requirements.map((requirement) => [requirement.requirementKey, requirement as Record<string, unknown>])
 );
 
 describe("Social Content setup declarations", () => {
@@ -18,7 +18,7 @@ describe("Social Content setup declarations", () => {
     for (const key of ["source", "destination", "social", "metered_fetch", "schedule", "workspace"]) {
       expect({ key, optional: byKey[key]?.optional }).toEqual({ key, optional: true });
     }
-    expect(SOCIAL_LOCALIZATION_DEFINITION.requirements.filter((requirement) => !(requirement as { optional?: boolean }).optional)).toEqual([]);
+    expect(SOCIAL_CONTENT_DEFINITION.requirements.filter((requirement) => !(requirement as { optional?: boolean }).optional)).toEqual([]);
   });
 
   it("keeps each connector family's bounds for when it is used", () => {

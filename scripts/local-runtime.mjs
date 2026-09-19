@@ -92,7 +92,7 @@ export async function createSocialRuntime({ files, origins, stateDirectory, door
    * sweep's poll. Absent from `browsing` the whole contract silently
    * refused at the session gate.
    */
-  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage','saveDerivedGeneratedImage'];
+  const browsing = ['summary','listItems','getItem','markSeen','setSelection','clearSelection','listBatchSummaries','listBatches','getBatch','createBatch','addBatchItem','removeBatchItem','renameBatchItem','requestGeneration','saveInstructionOverrides','saveRevision','saveRevisions','dismissGenerationAsk','saveSetup','refreshGrants','readPublishState','submitForReview','exportAs','exportJson','exportHtml','savePoster','getMedia','getGeneratedImage','pendingGeneratedImages','saveGeneratedImage','deliverGeneratedImage','saveDerivedGeneratedImage'];
   const needsDoors = ['setConfig','setMonitoring','describedBindings','scanRuns','refresh','scan','addOpenSource','removeOpenSource','armSchedule','cancelSchedule'];
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');

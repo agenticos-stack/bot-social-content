@@ -35,7 +35,7 @@ const LEGACY_GENERATION = JSON.stringify({
   scope: { caption: true, image: true },
   needs: { caption: true, image: true },
   at: "2026-09-15T03:24:05.276Z",
-  instructions: { image: "Localize into Traditional Chinese", caption: "Translate the caption" }
+  instructions: { image: "Draft in Traditional Chinese", caption: "Translate the caption" }
 });
 
 function batchSummaries() {
@@ -185,6 +185,22 @@ const buttonText = (root: unknown, text: string) =>
   findAll(root, (element) => element.tagName === "BUTTON" && String(element.textContent ?? "").trim() === text)[0];
 const partButton = (root: unknown, part: string) =>
   findAll(root, (element) => element.getAttribute?.("data-part") === part)[0];
+// The image part's control is the empty page's ⋯ chip: it opens that page's
+// menu, whose Generate row is the pressable action — a bare Generate exists
+// only while the page has no picture. A pending request marks the row
+// (`data-requested`) without disabling it — a re-ask always asks first.
+const imageAdd = (root: unknown) =>
+  findAll(root, (element) => {
+    const cls = String(element.className ?? "").split(" ");
+    return element.tagName === "BUTTON" && cls.includes("sl-picbtn");
+  })[0];
+const imageGenerate = (root: unknown) =>
+  findAll(
+    root,
+    (element) =>
+      element.getAttribute?.("role") === "menuitem" &&
+      String(element.textContent ?? "").startsWith("Generate a new image")
+  )[0];
 
 async function click(button: { dispatchEvent: (event: unknown) => unknown } | undefined) {
   await button?.dispatchEvent({ type: "click", preventDefault: () => {} });
@@ -199,8 +215,12 @@ describe("a generation request saved before the handoff", () => {
     installGadget("not_found", calls);
     await openDrawer(document);
 
-    // F2 baseline: the per-part controls start usable.
-    expect(partButton(document.body, "image")?.disabled).toBe(false);
+    // F2 baseline: the per-part controls start usable. The image part's
+    // control is the strip's add menu — the ＋ slot opens it and its Generate
+    // row stays pressable (a pending request is named, not locked out).
+    expect(imageAdd(document.body)?.disabled).toBe(false);
+    await click(imageAdd(document.body));
+    expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
     // The drawer opened on a request the host cannot confirm, so the automatic
@@ -208,19 +228,25 @@ describe("a generation request saved before the handoff", () => {
     expect(calls.status).toBeGreaterThan(0);
 
     // F2: after a manual check settles, the body controls are usable again.
+    // The menu may still be open from the baseline probe — only toggle if not.
     await click(buttonText(document.body, "Check status"));
-    expect(partButton(document.body, "image")?.disabled).toBe(false);
+    expect(imageAdd(document.body)?.disabled).toBe(false);
+    if (!imageGenerate(document.body)) await click(imageAdd(document.body));
+    expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
-    // The empty image region stays compact: no framed placeholder under an
-    // "accepted image" heading — the next action stays visible.
+    // The empty page is a dashed frame its own size, named by number — its ⋯
+    // chip carries every way a picture joins it, and the separate ＋ tile is
+    // the only way the post itself grows.
     expect(
-      findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
-      "giant empty image frame still rendered"
-    ).toHaveLength(0);
-    expect(findAll(document.body, (element) => element.classList?.contains("sl-output-empty")).length).toBeGreaterThan(0);
+      findAll(document.body, (element) => element.classList?.contains("sl-slot-frame-empty")).length,
+      "the empty page's dashed frame missing"
+    ).toBeGreaterThan(0);
+    expect(findAll(document.body, (element) => element.classList?.contains("sl-picbtn")).length).toBeGreaterThan(0);
+    expect(findAll(document.body, (element) => element.classList?.contains("sl-addpage")).length).toBeGreaterThan(0);
     expect(String(document.body.textContent)).not.toContain("Accepted image");
-    expect(String(document.body.textContent)).toContain("No generated image yet.");
+    expect(String(document.body.textContent)).toContain("Page 1 — empty");
+    expect(String(document.body.textContent)).toContain("Add a page");
 
     // Card, drawer and per-part copy agree: nothing implies an agent queue
     // for a request that was never submitted.
@@ -277,11 +303,12 @@ describe("a generation request saved before the handoff", () => {
     expect(buttonText(document.body, "繼續生成"), "no zh-HK resume action").toBeTruthy();
     expect(text).toContain("未確認已開始");
     expect(text).not.toContain("正在等待代理處理");
-    expect(text).toContain("尚未有生成圖片");
+    expect(text).toContain("第 1 頁 — 空白");
+    expect(text).toContain("新增一頁");
     expect(
-      findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
-      "giant empty image frame still rendered"
-    ).toHaveLength(0);
+      findAll(document.body, (element) => element.classList?.contains("sl-slot-frame-empty")).length,
+      "the empty page's dashed frame missing"
+    ).toBeGreaterThan(0);
   });
 });
 

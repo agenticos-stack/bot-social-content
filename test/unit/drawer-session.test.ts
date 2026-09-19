@@ -15,7 +15,8 @@ import { t } from "../../src/src/client/i18n.js";
 import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, sourceImageReferences } from "../../src/model.js";
+import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, visualModeFromPages } from "../../src/model.js";
+import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
 type AnyRec = Record<string, any>;
@@ -28,10 +29,30 @@ function extract(startText: string, endText: string, name: string, scope: AnyRec
   return new Function("scope", `with(scope){${source.slice(start, end)}; return ${name};}`)(scope);
 }
 
-function post(id = "a", overrides: AnyRec = {}): AnyRec {
+/** The media row a page's mediaId names — found in the post's own lists, or
+ *  synthesized like the server's stored row. */
+function knownMedia(row: AnyRec, id: string): AnyRec {
+  const found = [row.generatedImage, row.generatedCandidate, ...(row.generatedHistory ?? [])]
+    .find((media: AnyRec) => media?.id === id);
+  return found ?? { id, ready: true, mimeType: "image/jpeg", status: "accepted" };
+}
+
+/** A projected page row, shaped like projectBatchItem's `pages[]` entries. */
+function pg(pageId: string, kind: string | null, mediaId: string | null, extra: AnyRec = {}): AnyRec {
   return {
+    pageId, kind, mediaId, sourceMediaId: null, altText: null,
+    mediaProvenance: null, mediaAcceptance: null,
+    generatedMedia: null, candidate: null,
+    ...extra
+  };
+}
+
+function post(id = "a", overrides: AnyRec = {}): AnyRec {
+  const merged: AnyRec = {
     id,
     batchId: "b",
+    itemId: `src_${id}`,
+    title: null,
     revision: 1,
     state: "drafting",
     caption: "Saved caption",
@@ -48,19 +69,39 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
     deliveries: [],
     ...overrides
   };
+  if (merged.pages === undefined) {
+    // What the server projects for this shape: a saved ai_refinement post is
+    // one generated page; a post with no visual pick yet is one empty page
+    // per bindable source child, each bound to it.
+    merged.pages = merged.generatedImage
+      ? [pg("pg_1", "generated", merged.generatedImage.id, {
+          sourceMediaId: "m1",
+          generatedMedia: merged.generatedImage,
+          candidate: merged.generatedCandidate && merged.generatedCandidate.id !== merged.generatedImage.id ? merged.generatedCandidate : null
+        })]
+      : (merged.sourceItem?.media ?? [])
+          .filter((m: AnyRec) => m?.kind === "image" || m?.kind === "carousel_child")
+          .map((m: AnyRec) => pg(`pg_src_${m.id}`, null, null, { sourceMediaId: m.id }));
+    if (!merged.pages.length) merged.pages = [pg("pg_1", null, null)];
+  }
+  return merged;
 }
 
 const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: false, caption: false, ...needs }, needs: { image: false, caption: false, ...needs }, at: "2026-09-14T03:00:00.000Z" });
+// A post with no picture: every page is an empty slot — Generate lives on
+// that page's own ⋯ menu. Once a picture lands, generation goes through the
+// filled page's Regenerate… intent instead.
+const imageless = { generatedImage: null, acceptedVisualMode: null };
 
-function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec } = {}) {
+function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; hostFeatures?: Set<string> } = {}) {
   installMinimalDom();
   const db: AnyRec = { id: "b", items: options.items ?? [post()] };
-  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [] };
+  const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [], posts: [] };
   const responses: AnyRec = { requestGeneration: [], saveInstructionOverrides: null };
   const held: Array<(value: AnyRec) => void> = [];
   let holdReads = 0;
   const scope: AnyRec = {
-    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationDisplayStage, generationMark, generationStage, platformStage, setNotice, builtinImageInstruction, sourceImageReferences,
+    ...dom, ...drawers, t, createInboxState, isEditableItem, setInboxSummaries, itemPresentation, generationDisplayStage, generationMark, generationStage, platformStage, postFiled, setNotice, builtinImageInstruction, sourceImageReferences,
     drawerRequest: 0, locale: "en", summary: { configured: true }, policy: { posterPrompt: "SAVED DEFAULT" },
     drawerSession: null, collectionState: {}, inboxState: createInboxState(), wizard: {},
     batchDialog: document.createElement("dialog"), leaveDialog: document.createElement("dialog"),
@@ -83,7 +124,17 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     publicationStateSummary: (_locale: string, outcome: string) => outcome,
     confirmUnsavedNavigation: async () => { calls.guards++; return "keep"; },
     GadgetSubscriber: class {},
-    window: { addEventListener() {} }
+    // The host-contract seam: the module-level listener never runs under
+    // extraction, so tests seed capabilities here and read what the canvas
+    // posted to window.parent.
+    hostFeatures: options.hostFeatures ?? new Set(["agent-intent", "topup"]),
+    hostFeatureListeners: new Set(),
+    pendingTopupRequests: new Map(),
+    gadgetAgentIntentMessage, gadgetTopupMessage, parseGadgetTopupResultMessage, newTopupRequestId,
+    window: {
+      addEventListener() {},
+      parent: { postMessage(message: AnyRec) { calls.posts.push(message); } }
+    }
   };
   scope.rpc = {
     getBatch: (_id: string) => {
@@ -101,6 +152,9 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
       calls.sequence.push("request");
       return responses.requestGeneration.shift() ?? { ok: true };
     },
+    // The footer's automatic status read — the seam exists so the extracted
+    // body can call it; these tests drive the outcome through `stage`.
+    checkGenerationStatus: async () => ({ ok: true, workRequestStatus: [] }),
     saveInstructionOverrides: async (patch: AnyRec) => {
       calls.instructionWrites.push(patch);
       calls.sequence.push("instructions");
@@ -113,11 +167,47 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     },
     saveRevisions: async (input: AnyRec) => {
       calls.revisionWrites.push(input);
+      // Apply like the server does: a pages entry rewrites the list and the
+      // legacy projection fields (visual mode, singular image, alt) derive
+      // from it — that's what the next getBatch read would show.
+      for (const rev of input.revisions ?? []) {
+        const row = db.items.find((it: AnyRec) => it.id === rev.batchItemId);
+        if (!row) continue;
+        if (rev.caption !== undefined) row.caption = rev.caption;
+        if (Array.isArray(rev.pages)) {
+          row.pages = rev.pages.map((page: AnyRec) => ({
+            ...page,
+            generatedMedia: page.kind === "generated" && page.mediaId
+              ? knownMedia(row, page.mediaId)
+              : null,
+            candidate: null
+          }));
+          row.acceptedVisualMode = visualModeFromPages(rev.pages);
+          const gen = rev.pages.find((page: AnyRec) => page.kind === "generated" && page.mediaId);
+          row.generatedImage = gen ? knownMedia(row, gen.mediaId) : null;
+          row.altText = rev.pages.find((page: AnyRec) => page.altText)?.altText ?? null;
+        }
+        if (rev.altText !== undefined) row.altText = rev.altText;
+        if (rev.acceptedVisualMode !== undefined) row.acceptedVisualMode = rev.acceptedVisualMode;
+        if (rev.acceptedGeneratedMediaId !== undefined) {
+          row.generatedImage = rev.acceptedGeneratedMediaId ? knownMedia(row, rev.acceptedGeneratedMediaId) : row.generatedImage;
+        }
+        row.revision = (row.revision ?? 0) + 1;
+      }
       return { ok: true, results: input.revisions.map(() => ({ ok: true, revision: 2 })) };
     },
     submitForReview: async (input: AnyRec) => {
       calls.submits.push(input);
       return { ok: true, submitted: [] };
+    },
+    // The title mutation — the fake DB answers like the real one: rename
+    // rewrites the row.
+    renameBatchItem: async (input: AnyRec) => {
+      calls.renames = (calls.renames ?? []).concat(input);
+      const row = db.items.find((item: AnyRec) => item.id === input.batchItemId);
+      if (!row) return { ok: false, code: "post_not_found" };
+      row.title = input.title || null;
+      return { ok: true, batchItemId: input.batchItemId, title: row.title };
     }
   };
   const open = extract("  async function openBatchDrawer(", "\n  function closePreview()", "openBatchDrawer", scope);
@@ -139,9 +229,50 @@ function findButton(root: unknown, label: string) {
   if (!found) throw new Error(`Missing button "${label}" in: ${labels(root).join(" | ")}`);
   return found;
 }
+/** A menu row's textContent is its lead + sub; match on the lead. */
+const menuButton = (root: unknown, lead: string) =>
+  buttons(root).find((b) => String(b.textContent ?? "").startsWith(lead));
 async function click(root: unknown, label: string) {
   await findButton(root, label).dispatchEvent({ type: "click" });
   await flushAsyncWork();
+}
+/** The picture's ⋯ menu — every per-page action lives on the page's own
+ *  chip, filled page or empty. `index` picks the Nth page's chip. */
+async function openPicMenu(r: AnyRec, index = 0) {
+  const triggers = buttons(r.dialog()).filter((b) =>
+    String(b.className ?? "").split(" ").includes("sl-picbtn"));
+  const trigger = triggers[index];
+  if (!trigger) throw new Error(`⋯ trigger ${index} missing in: ` + labels(r.dialog()).join(" | "));
+  await trigger.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+}
+/**
+ * The ⋯ row's whole job: post the image's intent to the host — the
+ * conversation, the plan and the filing all live there now.
+ */
+async function pressRegenIntent(r: AnyRec) {
+  await openPicMenu(r);
+  const row = menuButton(r.dialog(), t("en", "drawerPicRegen"));
+  if (!row) throw new Error("Regenerate row missing in: " + labels(r.dialog()).join(" | "));
+  await row.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+}
+/** The first empty page's ⋯ menu — where a page's Generate lives. */
+async function openEmptyMenu(r: AnyRec) {
+  const slots = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-slot")) as any[];
+  const index = slots.findIndex((slot) =>
+    findAll(slot as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-slot-frame-empty")).length > 0);
+  if (index < 0) throw new Error("No empty page in: " + labels(r.dialog()).join(" | "));
+  await openPicMenu(r, index);
+}
+/** An empty page's Generate row: a bare press asks for THAT page only. */
+async function pressGenerate(r: AnyRec) {
+  await openEmptyMenu(r);
+  const item = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
+  if (!item) throw new Error("Generate menu item missing");
+  const done = item.dispatchEvent({ type: "click" });
+  await flushAsyncWork();
+  return done;
 }
 /** Presses a button whose handler waits on a decision dialog; returns its settled promise. */
 async function press(root: unknown, label: string) {
@@ -213,23 +344,16 @@ describe("U1: the open drawer follows generation completion", () => {
     expect(findButton(r.dialog(), t("en", "drawerSaveDraft")).disabled).toBe(true);
   });
 
-  it("ignores a read that was in flight when the owner switched posts", async () => {
+  it("when the bound post disappears, the drawer follows the remaining post", async () => {
     const r = rig({ items: [post("a"), post("b", { caption: "Second post caption" })] });
     await r.open({ id: "b", itemId: "a" });
-    r.holdNextRead();
-    const pending = r.operation({ type: "revision", batchItemId: "a", revision: 2 });
+    expect(captionField(r).value).toBe("Saved caption");
+    // Another surface removes "a"; the next read carries the batch without it
+    // and the drawer rebinds to what is left rather than holding a ghost.
+    r.db.items = [post("b", { caption: "Second post caption" })];
+    await r.operation({ type: "revision", batchItemId: "b" });
     await flushAsyncWork();
-    expect(r.calls.reads).toBe(2);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 2, total: 2 }));
-    r.db.items[0].caption = "FRESH";
-    r.release({ id: "b", items: [post("a", { caption: "STALE" }), post("b", { caption: "Second post caption" })] });
-    await pending;
-    await flushAsyncWork();
-    // The stale answer was dropped and one follow-up read replaced it.
-    expect(r.calls.reads).toBe(3);
     expect(captionField(r).value).toBe("Second post caption");
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 1, total: 2 }));
-    expect(captionField(r).value).toBe("FRESH");
   });
 
   it("stops updating a closed drawer, and a reopened drawer has exactly one registration", async () => {
@@ -314,39 +438,39 @@ async function editImageInstructions(r: AnyRec, value: string) {
 }
 
 describe("U2: unsaved instructions are decided before a request", () => {
-  it("asks before Regenerate image uses stale instructions, and sends nothing yet", async () => {
-    const r = rig();
+  it("asks before Generate uses stale instructions, and sends nothing yet", async () => {
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    void press(r.dialog(), t("en", "drawerRegenerateImage"));
-    await flushAsyncWork();
+    const done = await pressGenerate(r);
     expect(labels(r.scope.leaveDialog)).toEqual(["Cancel", "Generate with saved instructions", "Save instructions and generate"]);
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.instructionWrites).toHaveLength(0);
   });
 
   it("saves the instructions, then sends exactly one request", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
     await flushAsyncWork();
     expect(r.calls.sequence).toEqual(["instructions", "request"]);
     expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Morning light, outdoors" }]);
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
     expect(findButton(r.dialog(), t("en", "drawerSaveDraft")).disabled).toBe(true);
   });
 
   it("keeps the edits and requests nothing when saving the instructions fails", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     r.responses.saveInstructionOverrides = { ok: false, code: "invalid_argument", message: "Instructions are too long." };
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.announced).toContain("Instructions are too long.");
     await click(r.dialog(), t("en", "drawerTabInstructions"));
@@ -354,53 +478,57 @@ describe("U2: unsaved instructions are decided before a request", () => {
   });
 
   it("does nothing on Cancel", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Cancel");
     await done;
+    await flushAsyncWork();
     expect(r.calls.requests).toHaveLength(0);
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(findButton(r.dialog(), t("en", "drawerSaveDraft")).disabled).toBe(false);
   });
 
   it("generates with the saved instructions only when chosen, keeping the edits unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Generate with saved instructions");
     await done;
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Morning light, outdoors");
   });
 
   it("saves only the requested part's instructions and leaves unrelated edits unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
     await click(r.dialog(), t("en", "drawerTabOutput"));
     await editImageInstructions(r, "Morning light, outdoors");
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    const done = await pressGenerate(r);
     await click(r.scope.leaveDialog, "Save instructions and generate");
     await done;
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Morning light, outdoors" }]);
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     expect(byId(r.dialog(), "sl-instructions-caption").value).toBe("Warmer tone");
   });
 
   it("does not ask when only the other part's instructions are unsaved", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     await type(byId(r.dialog(), "sl-instructions-caption"), "Warmer tone");
     await click(r.dialog(), t("en", "drawerTabOutput"));
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    await pressGenerate(r);
+    await flushAsyncWork();
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
   });
 });
 
@@ -410,17 +538,20 @@ describe("U2: unsaved instructions are decided before a request", () => {
 
 describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
-    const r = rig({ items: [post("a", { generation: pendingMark({ caption: true }) })] });
+    const r = rig({ items: [post("a", { ...imageless, generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    expect(findButton(r.dialog(), t("en", "drawerRegenerateImage")).getAttribute("title")).toContain(
-      "A caption request is still pending for this post."
-    );
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
+    await openEmptyMenu(r);
+    const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
+    // The pending honesty moved to the menu row: it names the other part.
+    expect(generate.getAttribute("title")).toContain("A caption request is still pending for this post.");
+    const done = generate.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
     expect(labels(r.scope.leaveDialog)).toContain("Replace the pending caption request");
     expect(r.calls.requests).toHaveLength(0);
     await click(r.scope.leaveDialog, "Replace the pending caption request");
     await done;
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
+    await flushAsyncWork();
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
   });
 
   it("sends nothing when the owner cancels the replacement", async () => {
@@ -432,15 +563,20 @@ describe("one outstanding request per post", () => {
     expect(r.calls.requests).toHaveLength(0);
   });
 
-  it("a new post's initial request (both parts) is replaced only explicitly", async () => {
+  it("a new post's initial request (both parts) is never doubled — the add control hides while it runs", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    const regenerate = findButton(r.dialog(), t("en", "drawerRegenerateImage"));
-    expect(regenerate.disabled).toBe(false);
-    const done = press(r.dialog(), t("en", "drawerRegenerateImage"));
-    await click(r.scope.leaveDialog, "Replace the pending image request");
-    await done;
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
+    // While the post's image need is outstanding every page is live, so no
+    // page ⋯ renders and the add-page tile stays disabled — no second ask,
+    // and no silent replacement, can leave the strip. A refusal the server
+    // still reports gets the same explicit decision (next test).
+    const trigger = buttons(r.dialog()).find((b) =>
+      String(b.className ?? "").split(" ").includes("sl-picbtn"));
+    expect(trigger).toBeUndefined();
+    const addPage = buttons(r.dialog()).find((b) =>
+      String(b.className ?? "").split(" ").includes("sl-addpage"));
+    expect(addPage === undefined || addPage.disabled).toBe(true);
+    expect(r.calls.requests).toHaveLength(0);
   });
 
   it("answers a generation_pending refusal with the same explicit decision", async () => {
@@ -619,6 +755,18 @@ function gateSaves(r: AnyRec) {
     const results = input.revisions.map((rev: AnyRec) => {
       const row = r.db.items.find((item: AnyRec) => item.id === rev.batchItemId);
       if (rev.caption !== undefined) row.caption = rev.caption;
+      if (Array.isArray(rev.pages)) {
+        row.pages = rev.pages.map((page: AnyRec) => ({
+          ...page,
+          generatedMedia: page.kind === "generated" && page.mediaId ? knownMedia(row, page.mediaId) : null,
+          candidate: null
+        }));
+        row.acceptedVisualMode = visualModeFromPages(rev.pages);
+        const gen = rev.pages.find((page: AnyRec) => page.kind === "generated" && page.mediaId);
+        row.generatedImage = gen ? knownMedia(row, gen.mediaId) : null;
+        row.altText = rev.pages.find((page: AnyRec) => page.altText)?.altText ?? null;
+        row.generatedCandidate = null;
+      }
       if (rev.altText !== undefined) row.altText = rev.altText;
       if (rev.acceptedGeneratedMediaId) {
         row.generatedImage = { id: rev.acceptedGeneratedMediaId, ready: true, mimeType: "image/jpeg", status: "accepted" };
@@ -769,33 +917,14 @@ describe("R3: typing during a pending Save keeps the newer edit", () => {
     await saves.release();
     await saving;
     await flushAsyncWork();
-    expect(r.calls.revisionWrites[0].revisions[0].acceptedGeneratedMediaId).toBe("gm_cand");
+    expect(r.calls.revisionWrites[0].revisions[0].pages[0].mediaId).toBe("gm_cand");
     expect(r.db.items[0].generatedImage.id).toBe("gm_cand");
     expect(saveButton(r).disabled).toBe(false);
     const { done: second } = await startSave(r);
-    expect(r.calls.revisionWrites[1].revisions[0].acceptedGeneratedMediaId).toBe("gm_old");
+    expect(r.calls.revisionWrites[1].revisions[0].pages[0].mediaId).toBe("gm_old");
     await saves.release();
     await second;
     expect(r.db.items[0].generatedImage.id).toBe("gm_old");
-  });
-
-  it("switching sibling posts during the save: the acknowledgment lands on the saved post only", async () => {
-    const r = rig({ items: [post("a"), post("b", { caption: "Second post caption" })] });
-    const saves = gateSaves(r);
-    await r.open({ id: "b", itemId: "a" });
-    await type(captionField(r), "Caption A");
-    const { done: saving } = await startSave(r);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 2, total: 2 }));
-    await type(captionField(r), "Second post edit");
-    await saves.release();
-    await saving;
-    await flushAsyncWork();
-    expect(r.db.items.map((item: AnyRec) => item.caption)).toEqual(["Caption A", "Second post caption"]);
-    expect(captionField(r).value).toBe("Second post edit");
-    expect(saveButton(r).disabled).toBe(false);
-    await click(r.dialog(), t("en", "drawerPostNofM", { n: 1, total: 2 }));
-    expect(captionField(r).value).toBe("Caption A");
-    expect(saveButton(r).disabled).toBe(true);
   });
 
   it("a live generation refresh during the save merges server data and keeps the newer buffer", async () => {
@@ -956,17 +1085,18 @@ describe("R4: a stream reconnect reconciles missed updates", () => {
 // The image brief — what a Generate press asks for
 // ---------------------------------------------------------------------------
 
-const briefBlock = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brief"))[0] as any;
+// The brief lives on the Instructions tab — the settings a Generate ask is
+// made under, beside the instructions it amends.
+const briefBlock = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brieftab"))[0] as any;
 const briefSwitch = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-switch"))[0] as any;
-const briefOnceArea = (root: unknown) => findAll(root as never, (e: any) => e.classList?.contains("sl-brief-once"))[0] as any;
-const briefSave = (root: unknown) => findAll(root as never, (e: any) => e.tagName === "INPUT" && e.parentNode?.classList?.contains("sl-brief-save"))[0] as any;
 
-describe("the image brief under Generate", () => {
-  it("renders the settings block only while Generate is the picked source, and warns when no reference exists", async () => {
+describe("the image brief on the Instructions tab", () => {
+  it("carries the generation settings, and warns when no usable reference exists", async () => {
     // The fixture's media entries carry ids but no fetchable https URL — the
     // same reading the server makes, so the warning must show.
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     const block = briefBlock(r.dialog());
     expect(block).toBeTruthy();
     expect(findAll(block, (e: any) => e.classList?.contains("sl-brief-warn"))).toHaveLength(1);
@@ -974,61 +1104,244 @@ describe("the image brief under Generate", () => {
   });
 
   it("sends references:none when the owner switches the source image off", async () => {
-    const r = rig();
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     briefSwitch(r.dialog()).checked = false;
     await briefSwitch(r.dialog()).dispatchEvent({ type: "change" });
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    await pressGenerate(r);
     await flushAsyncWork();
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "none", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "none", aspectRatio: "4:5" } }]]);
   });
 
-  it("sends the picked ratio and an unsaved one-off as the run layer, then clears it", async () => {
-    const r = rig();
+  it("sends the picked ratio — the Instructions tab carries no run layer of its own", async () => {
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
+    await click(r.dialog(), t("en", "drawerTabInstructions"));
     await click(r.dialog(), t("en", "drawerRatioStory"));
-    await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
-    const area = briefOnceArea(r.dialog());
-    area.value = "Bottle facing the camera";
-    await area.dispatchEvent({ type: "input" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    // The per-run entry point is gone: a correction for one run belongs to
+    // the regenerate conversation, which sends it as the run layer (next test).
+    expect(labels(r.dialog())).not.toContain("Adjust for this run");
+    await click(r.dialog(), t("en", "drawerTabOutput"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(r.calls.requests).toEqual([["b", ["a"], {
-      needs: { image: true },
-      image: { references: "source", aspectRatio: "9:16" },
-      instructions: { image: "Bottle facing the camera" }
+      needs: { image: true, imagePages: ["pg_src_m1"] },
+      image: { references: "source", aspectRatio: "9:16" }
     }]]);
-    await flushAsyncWork();
-    // The consumed one-off does not silently ride the next ask.
-    expect(briefOnceArea(r.dialog())?.value ?? "").toBe("");
   });
 
-  it("saves the one-off as the post instruction first when the box is checked", async () => {
+  it("posts the image's agent intent — the correction and the filing are the host's", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), t("en", "drawerBriefOnceOpen"));
-    const area = briefOnceArea(r.dialog());
-    area.value = "Bottle facing the camera";
-    await area.dispatchEvent({ type: "input" });
-    briefSave(r.dialog()).checked = true;
-    await briefSave(r.dialog()).dispatchEvent({ type: "change" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
-    // The instruction write precedes the request, and the request carries no
-    // run layer — what was saved is what runs.
-    expect(r.calls.sequence.slice(0, 2)).toEqual(["instructions", "request"]);
-    expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Bottle facing the camera" }]);
-    expect(r.calls.requests).toEqual([["b", ["a"], {
-      needs: { image: true },
-      image: { references: "source", aspectRatio: "4:5" }
-    }]]);
+    await pressRegenIntent(r);
+    // One gadget:agent-intent to window.parent, naming this exact image:
+    // batch item, the brief's own ratio/reference mode, a thumbnail and the
+    // suggested replies the host's chat renders as one-tap answers.
+    expect(r.calls.requests).toHaveLength(0);
+    expect(r.calls.posts).toHaveLength(1);
+    const message = r.calls.posts[0];
+    expect(message.type).toBe("gadget:agent-intent");
+    expect(message.intent).toBe("image.regenerate");
+    expect(message.post).toMatchObject({ batchId: "b", batchItemId: "a" });
+    expect(message.image.aspectRatio).toBe("4:5");
+    expect(message.image.references).toBe("source");
+    expect(message.image.mediaId).toBe("gm_a");
+    expect(message.suggestedReplies.length).toBeGreaterThan(0);
+    // The canvas never files on this path — nothing for the run layer to be.
+    expect(r.calls.instructionWrites).toHaveLength(0);
   });
 
-  it("announces the localized refusal when the server reports reference_unavailable", async () => {
-    const r = rig();
+  it("the ⋯ Regenerate… row is disabled with the reason on a host that cannot carry it", async () => {
+    const r = rig({ hostFeatures: new Set() });
+    await r.open({ id: "b", itemId: "a" });
+    await openPicMenu(r);
+    const row = menuButton(r.dialog(), t("en", "drawerPicRegen"));
+    expect(row.disabled).toBe(true);
+    expect(row.textContent).toContain(t("en", "drawerPicRegenOff"));
+    await row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.posts).toHaveLength(0);
+  });
+
+  it("a credits-paused run offers a correlated top-up; topped_up resumes the same request", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })] });
+    await r.open({ id: "b", itemId: "a" });
+    // The pause reads in place — no dead-end sentence, the ask is here.
+    expect(r.dialog().textContent).toContain(t("en", "drawerInsufficientCredits"));
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    expect(row).toBeTruthy();
+    expect(row.disabled).toBe(false);
+    const done = row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    // One correlated gadget:topup ask — the host owns the funding surface.
+    expect(r.calls.posts).toHaveLength(1);
+    expect(r.calls.posts[0].type).toBe("gadget:topup");
+    expect(r.calls.posts[0].post).toMatchObject({ batchId: "b", batchItemId: "a" });
+    const requestId = r.calls.posts[0].requestId;
+    expect(r.scope.pendingTopupRequests.has(requestId)).toBe(true);
+    // The host's answer, correlated by request id: topped_up re-files the
+    // SAME outstanding needs — the paused run resumes on its own.
+    const pending = r.scope.pendingTopupRequests.get(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve({ outcome: "topped_up", message: null });
+    await done;
+    await flushAsyncWork();
+    expect(r.calls.requests).toHaveLength(1);
+    expect(r.calls.requests[0][0]).toBe("b");
+    expect(r.calls.requests[0][1]).toEqual(["a"]);
+    expect(r.calls.requests[0][2]).toMatchObject({ replace: true, needs: { image: true, caption: false } });
+  });
+
+  it("a cancelled top-up resumes nothing — the run stays paused and says so", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })] });
+    await r.open({ id: "b", itemId: "a" });
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    const done = row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    const requestId = r.calls.posts[0].requestId;
+    const pending = r.scope.pendingTopupRequests.get(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve({ outcome: "cancelled", message: null });
+    await done;
+    await flushAsyncWork();
+    // Nothing re-filed; the row returns and the note says the ask was closed.
+    expect(r.calls.requests).toHaveLength(0);
+    expect(r.dialog().textContent).toContain(t("en", "drawerTopupCancelled"));
+  });
+
+  it("a host with no top-up surface disables the row with the reason", async () => {
+    const mark = JSON.stringify({
+      id: "gen_1", base: 1,
+      scope: { image: true, caption: false }, needs: { image: true, caption: false },
+      dispatch: { filed: false, reason: "insufficient_credits" }
+    });
+    const r = rig({ items: [post("a", { generation: mark })], hostFeatures: new Set(["agent-intent"]) });
+    await r.open({ id: "b", itemId: "a" });
+    const row = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-topup-btn"))[0] as any;
+    expect(row.disabled).toBe(true);
+    await row.dispatchEvent({ type: "click" });
+    await flushAsyncWork();
+    expect(r.calls.posts).toHaveLength(0);
+    expect(r.calls.requests).toHaveLength(0);
+  });
+
+  it("announces the translated refusal when the server reports reference_unavailable", async () => {
+    const r = rig({ items: [post("a", imageless)] });
     r.responses.requestGeneration = [{ ok: false, code: "reference_unavailable", message: "raw server wording" }];
     await r.open({ id: "b", itemId: "a" });
-    await click(r.dialog(), t("en", "drawerRegenerateImage"));
+    await pressGenerate(r);
+    await flushAsyncWork();
     expect(r.calls.announced).toContain(t("en", "drawerRefUnavailable"));
     expect(r.calls.announced).not.toContain("raw server wording");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The post's own name (schema 19: batch_items.title) — the drawer is one post,
+// so the header names it and nothing else navigates.
+// ---------------------------------------------------------------------------
+
+describe("the post title", () => {
+  it("commits the title on blur, trims it, and announces the save", async () => {
+    const r = rig({ items: [post("a")] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field).toBeTruthy();
+    expect(field.getAttribute("aria-label")).toBe(t("en", "drawerTitleAria"));
+    await field.dispatchEvent({ type: "focus" });
+    field.value = "  Weekend tray  ";
+    await field.dispatchEvent({ type: "blur" });
+    await flushAsyncWork();
+    expect(r.calls.renames).toEqual([{ batchItemId: "a", title: "Weekend tray" }]);
+    expect(r.calls.announced).toContain(t("en", "drawerTitleSaved"));
+    expect(r.db.items[0].title).toBe("Weekend tray");
+  });
+
+  it("Escape restores the pre-edit value and sends nothing", async () => {
+    const r = rig({ items: [post("a", { title: "Kept name" })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field.value).toBe("Kept name");
+    await field.dispatchEvent({ type: "focus" });
+    field.value = "Typed over";
+    await field.dispatchEvent({ type: "keydown", key: "Escape", preventDefault: () => {} });
+    await flushAsyncWork();
+    expect(field.value).toBe("Kept name");
+    expect(r.calls.renames ?? []).toHaveLength(0);
+  });
+
+  it("an unchanged blur sends nothing", async () => {
+    const r = rig({ items: [post("a", { title: "Same" })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    await field.dispatchEvent({ type: "focus" });
+    await field.dispatchEvent({ type: "blur" });
+    await flushAsyncWork();
+    expect(r.calls.renames ?? []).toHaveLength(0);
+  });
+
+  it("the title is read-only on a submitted post", async () => {
+    const r = rig({ items: [post("a", {
+      title: "Sent one",
+      state: "submitted",
+      publications: [{ id: "pub_1", destinationBinding: "FB_MAIN", state: "review_requested" }]
+    })] });
+    await r.open({ id: "b", itemId: "a" });
+    const field = byId(r.dialog(), "sl-drawer-title");
+    expect(field.value).toBe("Sent one");
+    expect(field.readOnly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The post's pages ARE the source's images: a multi-image source opens one
+// empty page per bindable child, numbered — and a skipped video still says so.
+// ---------------------------------------------------------------------------
+
+describe("the source's pages", () => {
+  it("a two-image source renders two numbered empty pages — never flattened to one slot", async () => {
+    const r = rig({ items: [post("a", imageless)] });
+    await r.open({ id: "b", itemId: "a" });
+    const slots = findAll(r.dialog() as never, (e: any) =>
+      String(e.className ?? "").split(" ").includes("sl-slot"));
+    expect(slots).toHaveLength(2);
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerPageEmpty", { n: 1 }));
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerPageEmpty", { n: 2 }));
+  });
+
+  it("a video the source post carried says so, in words, next to the strip", async () => {
+    const r = rig({ items: [post("a", {
+      ...imageless,
+      sourceItem: { id: "s1", text: "Reference text", media: [{ id: "m1", kind: "image" }, { id: "v1", kind: "video" }] },
+      skippedVideos: [{ id: "v1", kind: "video" }]
+    })] });
+    await r.open({ id: "b", itemId: "a" });
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerSourceVideosNote", { n: 1 }));
+  });
+
+  it("a single-image source with nothing skipped says nothing extra", async () => {
+    const r = rig({ items: [post("a", {
+      ...imageless,
+      sourceItem: { id: "s1", text: "Reference text", media: [{ id: "m1", kind: "image" }] },
+      skippedVideos: []
+    })] });
+    await r.open({ id: "b", itemId: "a" });
+    expect(String(r.dialog().textContent)).not.toContain("videos");
+    const slots = findAll(r.dialog() as never, (e: any) =>
+      String(e.className ?? "").split(" ").includes("sl-slot"));
+    expect(slots).toHaveLength(1);
   });
 });

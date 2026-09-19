@@ -1,4 +1,4 @@
-// Social Localization client — the poster editor's canvas renderer.
+// Social Content client — the poster editor's canvas renderer.
 //
 // REQ-008 / ALT-006: text is rendered deterministically from editable text
 // and layout data by THIS module, never by an image model, so the exact
@@ -8,7 +8,7 @@
 // a solid background plus text, never composites an external asset.
 //
 // `computePosterLayout` is pure geometry (testable in node without a canvas)
-// so tests/social-localization-client.test.ts can assert the layout maths
+// so tests/social-content-client.test.ts can assert the layout maths
 // directly; `drawPoster` and `renderPosterImage` are the imperative half that
 // needs a real `CanvasRenderingContext2D`.
 

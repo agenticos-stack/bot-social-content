@@ -296,7 +296,7 @@ describe("duplicate protection follows the resource, not the alias", () => {
     const first = await drafted(gadget);
     await gadget.submitForReview({ batchItemId: first.id, expectedRevision: 1, destinationBindings: ["FIRST_ALIAS"] });
 
-    // Another localization of the same source post, sent through the other alias.
+    // Another draft of the same source post, sent through the other alias.
     const second = await drafted(gadget, { createNewVersion: true });
     const refused = await gadget.submitForReview({
       batchItemId: second.id,

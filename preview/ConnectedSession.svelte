@@ -12,6 +12,14 @@
   let draftRequests = $state([]);
   let canvasRevision = $state(0);
   let asksRevision = $state(0);
+  // The ⋯ row's hand-off: the canvas named the image, the conversation takes
+  // it from there — on narrow the pane swaps to the chat, with a way back.
+  let agentIntent = $state(null);
+  let mobilePane = $state('canvas');
+  function receiveIntent(intent){
+    agentIntent=intent;
+    mobilePane='chat';
+  }
   function queueDraft(batchId){
     if(typeof batchId==='string' && !draftRequests.includes(batchId))draftRequests=[...draftRequests,batchId];
   }
@@ -46,9 +54,14 @@
 
 {#if development}
   <div class="runtime-shell">
-    {#snippet chat()}<ConnectedChat agent={development.agent} {draftRequests} {asksRevision} onDraftHandled={()=>draftRequests=draftRequests.slice(1)} onChange={()=>canvasRevision++} onBack={()=>development=null} />{/snippet}
-    {#snippet canvas()}<ConnectedCanvas revision={canvasRevision} onDraftRequested={queueDraft} onMutation={()=>asksRevision++} />{/snippet}
-    <Shell {chat} {canvas} chatSide="left" chatOpen={true} mobilePane="canvas" canvasScroll="clip" chatLabel="Development connection" canvasLabel="Local canvas" />
+    {#snippet chat()}<ConnectedChat agent={development.agent} {draftRequests} {asksRevision} {agentIntent} onIntentConsumed={()=>agentIntent=null} onCanvas={()=>mobilePane='canvas'} onDraftHandled={()=>draftRequests=draftRequests.slice(1)} onChange={()=>canvasRevision++} onBack={()=>development=null} />{/snippet}
+    {#snippet canvas()}
+      <div class="canvas-wrap">
+        <ConnectedCanvas revision={canvasRevision} onDraftRequested={queueDraft} onMutation={()=>asksRevision++} onAgentIntent={receiveIntent} />
+        <button class="pane-toggle" type="button" onclick={()=>mobilePane='chat'}>Conversation</button>
+      </div>
+    {/snippet}
+    <Shell {chat} {canvas} chatSide="left" chatOpen={true} {mobilePane} canvasScroll="clip" chatLabel="Development connection" canvasLabel="Local canvas" />
   </div>
 {:else}
 <main class="connected">
@@ -80,6 +93,9 @@
 
 <style>
   .runtime-shell{flex:1;min-height:0;--bot-chat-width:320px}
+  .canvas-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-height:0}
+  .pane-toggle{display:none;position:absolute;right:14px;bottom:14px;min-height:36px;padding:0 14px;border:1px solid var(--color-line-strong);border-radius:999px;background:var(--color-panel);font-size:12px;color:var(--color-ink);box-shadow:0 2px 10px rgb(0 0 0 / .12)}
+  @media(max-width:760px){.pane-toggle{display:block}}
   .connected{flex:1;overflow:auto;display:grid;place-items:start center;padding:clamp(32px,8vh,96px) 24px;background:var(--color-paper)}
   section{width:min(100%,380px);padding:24px;border:1px solid var(--color-line-strong);border-radius:var(--bot-radius-card,14px);background:var(--color-panel)}
   h1{font-family:var(--font-brand);font-size:20px;line-height:1.3;margin:0 0 12px}p{font-size:13px;line-height:1.6;color:var(--color-ink-soft);margin:8px 0}.account{color:var(--color-ink);overflow-wrap:anywhere}.account span{display:block;font-size:12px;color:var(--color-ink-soft);margin-top:4px}

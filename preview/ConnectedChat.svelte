@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
 
-  let { agent, onBack, draftRequests = [], asksRevision = 0, onDraftHandled = () => {}, onChange = () => {} } = $props();
+  let { agent, onBack, onCanvas = () => {}, draftRequests = [], asksRevision = 0, agentIntent = null, onIntentConsumed = () => {}, onDraftHandled = () => {}, onChange = () => {} } = $props();
   const remote = document.getElementById('preview-root')?.dataset.mode === 'connected-prod';
   const workspaceId = $derived(typeof agent?.workspaceId === 'string' ? agent.workspaceId : '');
   // A full conversation id is 41 characters of mostly-constant prefix and
@@ -84,6 +84,43 @@
   }
 
   $effect(()=>{asksRevision;untrack(()=>{void refreshAsks();});});
+  /*
+   * The ⋯ row's hand-off: the intent card IS the owner's ask — it lands in
+   * the transcript, then a seeded turn carries the image's context (and the
+   * agent.md rule, attached server-side) so the agent asks what should
+   * change about THIS image rather than which one. The suggested replies it
+   * carried stay beside the composer until the intent is consumed.
+   */
+  let activeIntent = $state(null);
+  $effect(()=>{
+    if(!agentIntent)return;
+    const intent=agentIntent;
+    untrack(()=>{onIntentConsumed();void startIntent(intent);});
+  });
+  async function startIntent(intent){
+    activeIntent=intent;
+    busy=true;error='';
+    messages=[...messages,{role:'intent',intent}];
+    try{
+      const result=await request({operation:'regen-intent',intent});
+      addAssistant(result?.result);
+      asks=(await request({operation:'pending'}))?.asks ?? [];
+      onChange();
+    }catch(cause){error=cause instanceof Error?cause.message:'The regenerate conversation could not start.';}
+    finally{busy=false;}
+  }
+  async function suggestReply(text){
+    if(busy||!activeIntent)return;
+    messages=[...messages,{role:'user',text}];
+    busy=true;error='';
+    try{
+      const result=await request({operation:'run',message:text});
+      addAssistant(result?.result);
+      asks=(await request({operation:'pending'}))?.asks ?? [];
+      onChange();
+    }catch(cause){error=cause instanceof Error?cause.message:'The local agent request failed.';}
+    finally{busy=false;}
+  }
   $effect(()=>{
     if(!busy && draftRequests.length){
       const batchId=draftRequests[0];
@@ -121,9 +158,22 @@
       <div class="empty"><strong>Work with the source</strong><p>Ask the agent to inspect a batch, refine a caption, or explain the current local state.</p></div>
     {/if}
     {#each messages as message, index (index)}
-      <div class:mine={message.role === 'user'} class="message"><span>{message.text}</span></div>
+      {#if message.role === 'intent'}
+        <div class="intent-card" role="note">
+          {#if message.intent.image.thumbnail}<img class="intent-thumb" src={message.intent.image.thumbnail} alt="" />{/if}
+          <div class="intent-meta">
+            <strong>Regenerate image — {message.intent.post.title || 'this post'}</strong>
+            <span>Image · {message.intent.image.aspectRatio} · {message.intent.image.references === 'source' ? "from the post's own picture" : 'no reference'}</span>
+          </div>
+        </div>
+      {:else}
+        <div class:mine={message.role === 'user'} class="message"><span>{message.text}</span></div>
+      {/if}
     {/each}
     {#if busy}<div class="typing" aria-label="Agent is working"><i></i><i></i><i></i></div>{/if}
+    {#if activeIntent}
+      <button class="canvas-back" type="button" onclick={onCanvas}>← Canvas</button>
+    {/if}
   </div>
   {#if replacedFrom}
     <aside class="approvals" aria-label="Registration replaced">
@@ -138,6 +188,13 @@
         <div class="approval"><p>{ask.subject || ask.toolName || 'The agent requested an action.'}</p><div><button type="button" onclick={() => answer(ask.id, false)} disabled={busy}>Reject</button><button class="approve" type="button" onclick={() => answer(ask.id, true)} disabled={busy}>Approve</button></div></div>
       {/each}
     </aside>
+  {/if}
+  {#if activeIntent?.suggestedReplies?.length}
+    <div class="intent-chips" role="group">
+      {#each activeIntent.suggestedReplies as suggestion (suggestion)}
+        <button type="button" disabled={busy} onclick={()=>suggestReply(suggestion)}>{suggestion}</button>
+      {/each}
+    </div>
   {/if}
   {#if error}<p class="error" role="alert">{error}{#if failedDraft}<button type="button" disabled={busy} onclick={()=>generate(failedDraft)}>Retry generation</button>{/if}</p>{/if}
   <form class="composer" onsubmit={send}>
@@ -162,4 +219,16 @@
   .error{margin:0 14px 9px;padding:7px 9px;border-left:2px solid #b94b4b;color:#934040;font-size:10px;line-height:1.4}.composer{display:flex;gap:7px;padding:11px 12px;border-top:1px solid var(--color-line);background:var(--color-panel)}.composer input{min-width:0;flex:1;height:34px;padding:0 10px;border:1px solid var(--color-line-strong);border-radius:8px;background:var(--color-paper);color:var(--color-ink);font:12px var(--font-body)}.composer button{flex:none;width:34px;height:34px;border:0;border-radius:8px;background:var(--color-ink);color:var(--color-panel);font-size:18px;line-height:1;cursor:pointer}.composer button:hover:not(:disabled){background:var(--color-act-hover)}
   /* Matches the fixture composer: nothing to send is inert, not a dimmed dark button. */
   .composer button:disabled{background:var(--color-panel-subtle);color:var(--color-ink-faint);cursor:default}
+  /* The intent card shows the image being discussed — the conversation never
+     asks which one. Chips are the one-tap answers the canvas suggested. */
+  .intent-card{display:flex;gap:10px;align-items:center;padding:9px 11px;border:1px solid var(--color-line-strong);border-radius:11px;background:var(--color-paper)}
+  .intent-thumb{width:40px;height:40px;object-fit:cover;border-radius:8px;flex:none}
+  .intent-meta{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .intent-meta strong{font-size:11.5px;font-weight:600}
+  .intent-meta span{font-size:10px;color:var(--color-ink-soft)}
+  .intent-chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
+  .intent-chips button{min-height:28px;padding:3px 10px;border:1px solid var(--color-line-strong);border-radius:999px;background:var(--color-panel);font-size:10.5px;color:var(--color-ink-soft);cursor:pointer}
+  .intent-chips button:hover:not(:disabled){color:var(--color-act-hover);border-color:var(--color-act-hover)}
+  .canvas-back{display:none;align-self:flex-start;margin:6px 0 0;background:transparent;border:0;font-size:11px;color:var(--color-act-hover);cursor:pointer}
+  @media(max-width:760px){.canvas-back{display:block}}
 </style>

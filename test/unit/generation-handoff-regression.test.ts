@@ -136,7 +136,7 @@ describe("the work request names the work", () => {
     expect(result.workRequest.parts).toEqual({ caption: true, image: true });
     expect(markOf(gadget, first).id).toBe(result.request);
     expect(markOf(gadget, first).scope).toEqual({ caption: true, image: true });
-    expect(markOf(gadget, second).scope).toEqual({ caption: false, image: true });
+    expect(markOf(gadget, second).scope).toEqual({ caption: false, image: true, imagePages: ["pg_src_m2"] });
   });
 });
 

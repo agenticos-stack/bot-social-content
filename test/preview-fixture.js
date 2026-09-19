@@ -6,13 +6,55 @@ const items = ["A brighter kind of daily", "Start with morning light", "Blend it
   permalink: "https://example.invalid/source", publishedAt: "2026-09-01T10:00:00.000Z",
   text, media: [], metrics: { likes: 100 + index, comments: 2 }, seen: false, selected: false
 }));
+// ?pages=1: a synthetic multi-media source. Data-URL SVGs render without a
+// media door; the video child exercises the not-carried-over disclosure.
+const svg = (label, from, to) =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient></defs><rect width="400" height="500" fill="url(#g)"/><text x="200" y="260" font-family="sans-serif" font-size="42" font-weight="700" fill="#fff" text-anchor="middle">${label}</text></svg>`)}`;
+const carouselSource = {
+  id: "fixture-carousel-src", provider: "instagram", sourceBinding: "IG_MAIN",
+  sourceLabel: "Example Studio", providerItemId: "cs1", authorHandle: "@example_studio",
+  permalink: "https://example.invalid/source", publishedAt: "2026-09-01T10:00:00.000Z",
+  text: "Three frames and a clip from the morning shoot.",
+  media: [
+    { id: "m1", kind: "carousel_child", url: "https://example.invalid/frame1.png", alt: "Studio frame one" },
+    { id: "m2", kind: "carousel_child", url: "https://example.invalid/frame2.png", alt: "Studio frame two" },
+    { id: "v1", kind: "video", url: "https://example.invalid/clip.mp4", alt: "Behind-the-scenes clip" }
+  ],
+  metrics: { likes: 210, comments: 14 }, seen: false, selected: false
+};
+const carouselSourceVisual = {
+  ...carouselSource, id: "fixture-carousel-vis-src", providerItemId: "cs2",
+  media: [
+    { ...carouselSource.media[0], url: svg("FRAME 1", "#f5b544", "#e07856") },
+    { ...carouselSource.media[1], url: svg("FRAME 2", "#2a6f97", "#34e597") },
+    carouselSource.media[2]
+  ]
+};
+const singleSource = {
+  ...carouselSourceVisual, id: "fixture-single-src", providerItemId: "ss1",
+  text: "One frame from the set.", media: [carouselSourceVisual.media[0]]
+};
 const fixture = {
   async listBatchSummaries() {
+    if (pagesScenario) {
+      return {
+        batches: previewBatches.map((batch) => ({
+          id: batch.id, itemCount: 1, draftCount: 1, reviewCount: 0, scheduledCount: 0, attentionCount: 0,
+          preview: { sourceLabel: "Example Studio", caption: batch.items[0].caption, revision: batch.items[0].revision }
+        })),
+        totals: { batches: previewBatches.length, drafts: previewBatches.length }, nextCursor: null
+      };
+    }
     return { batches: previewBatch ? [{ id: previewBatch.id, itemCount: 2, draftCount: 1, reviewCount: 1, scheduledCount: 0, attentionCount: 0, preview: { sourceLabel: "Example Studio", caption: "每日精選內容，歡迎了解。", revision: 1 } }] : [], totals: { batches: previewBatch ? 1 : 0, drafts: previewBatch ? 1 : 0 }, nextCursor: null };
   },
-  async getBatch(id) { return previewBatch?.id === id ? JSON.parse(JSON.stringify(previewBatch)) : null; },
+  async getBatch(id) {
+    const batch = (previewBatches ?? []).find((entry) => entry.id === id) ?? (previewBatch?.id === id ? previewBatch : null);
+    return batch ? JSON.parse(JSON.stringify(batch)) : null;
+  },
   async saveRevision(input) {
-    const item = previewBatch?.items.find((entry) => entry.id === input.batchItemId);
+    const item = [...(previewBatches ?? []), ...(previewBatch ? [previewBatch] : [])]
+      .flatMap((batch) => batch.items)
+      .find((entry) => entry.id === input.batchItemId);
     if (!item || item.state !== "drafting") throw new Error("Fixture preview has no editable item. No live action was performed.");
     if (conflictPending) {
       conflictPending = false;
@@ -23,6 +65,11 @@ const fixture = {
     item.revision += 1;
     if ("caption" in input) item.caption = input.caption;
     if ("posterLayout" in input) item.posterLayout = input.posterLayout;
+    if (Array.isArray(input.pages)) {
+      item.pages = input.pages;
+      // The singular mirror pre-pages readers still consult.
+      item.altText = input.pages.find((page) => page?.altText)?.altText ?? null;
+    }
     if (input.acceptedGeneratedMediaId) {
       // ?jpeg=1: pinning an image is a new revision; the stored bytes never change.
       const stored = generatedStore.get(input.acceptedGeneratedMediaId);
@@ -100,7 +147,34 @@ const jpegSeed = jpegScenario ? (async () => {
   const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
   generatedStore.set("gm_fixture_png", { id: "gm_fixture_png", mime: "image/png", bytes, digest: await sha256(bytes) });
 })() : Promise.resolve();
-const previewBatch = new URL(location.href).searchParams.get("draft") === "1" ? {
+// ?pages=1: the carousel page strip — an unsaved post on a mixed-media
+// source (empty bound pages + video disclosure), a filled two-page
+// carousel, and a single-page post.
+const pagesScenario = new URL(location.href).searchParams.get("pages") === "1";
+const previewBatches = pagesScenario ? [
+  { id: "fixture-batch-empty", items: [
+    { id: "fixture-pages-empty", state: "drafting", sourceItem: carouselSource, revision: 0,
+      caption: "早上的拍攝三個畫面。", destinationBindings: ["IG_MAIN"],
+      skippedVideos: [carouselSource.media[2]] }
+  ] },
+  { id: "fixture-batch-carousel", items: [
+    { id: "fixture-pages", state: "drafting", sourceItem: carouselSourceVisual, revision: 1,
+      caption: "早上的拍攝三個畫面。", destinationBindings: ["IG_MAIN"],
+      skippedVideos: [carouselSourceVisual.media[2]],
+      pages: [
+        { pageId: "pg_src_m1", kind: "original", mediaId: "m1", sourceMediaId: "m1", altText: "Studio frame one" },
+        { pageId: "pg_src_m2", kind: "original", mediaId: "m2", sourceMediaId: "m2", altText: "Studio frame two" }
+      ] }
+  ] },
+  { id: "fixture-batch-single", items: [
+    { id: "fixture-pages-single", state: "drafting", sourceItem: singleSource, revision: 1,
+      caption: "One frame from the set.", destinationBindings: ["IG_MAIN"],
+      pages: [
+        { pageId: "pg_src_m1", kind: "original", mediaId: "m1", sourceMediaId: "m1", altText: "Studio frame one" }
+      ] }
+  ] }
+] : null;
+const previewBatch = !pagesScenario && new URL(location.href).searchParams.get("draft") === "1" ? {
   id: "fixture-batch", items: [
     { id: "fixture-submitted", state: "submitted", sourceItem: items[0], revision: 1, caption: "已送交審核的內容。", destinationBindings: ["IG_MAIN"] },
     { id: "fixture-draft", state: "drafting", sourceItem: items[1], revision: 1, caption: "每日精選內容，歡迎了解。", destinationBindings: ["IG_MAIN"] }

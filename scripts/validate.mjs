@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { validatePackage } from "@agenticos-dev/bot-devkit";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { buildClient } from "./client.mjs";
 import { packageRoot } from "./build.mjs";
 
@@ -11,7 +11,7 @@ import { packageRoot } from "./build.mjs";
  * manifest fails here rather than shipping.
  */
 const result = await validatePackage(fileURLToPath(packageRoot), {
-  definition: SOCIAL_LOCALIZATION_DEFINITION,
+  definition: SOCIAL_CONTENT_DEFINITION,
   generatedMembers: {
     "client.js": () => buildClient(),
     "manifest.json": async () => readFile(new URL("manifest.json", packageRoot), "utf8")

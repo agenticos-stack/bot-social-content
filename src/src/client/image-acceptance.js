@@ -14,7 +14,15 @@
 // Destinations can be chosen after drafting, so the need is computed from the
 // Review picker's current choice, not from the item's bindings at drawer open.
 
-const JPEG_ONLY_PROVIDERS = new Set(["instagram"]);
+export const JPEG_ONLY_PROVIDERS = new Set(["instagram"]);
+
+/*
+ * Providers whose draft contract takes an ordered media list as ONE post —
+ * two or more filled pages file as a carousel only where the door accepts
+ * the album. Kept as a set so a destination that cannot take the album says
+ * so on its own option instead of failing at the server.
+ */
+export const CAROUSEL_PROVIDERS = new Set(["instagram", "facebook"]);
 
 /** True when this post files a PNG generated image to at least one chosen JPEG-only destination. */
 export function needsJpegCopy(item, { bindings = [], destinations = [], visualMode } = {}) {

@@ -1,4 +1,4 @@
-// Social Localization blueprint — pure config normalization and validation.
+// Social Content blueprint — pure config normalization and validation.
 //
 // No I/O, like model.js (PAT-002): `server.js` calls these, and they are
 // unit-tested in plain node without a facet. Kept separate from model.js
@@ -202,7 +202,7 @@ function normalizeRefinementBrief(value) {
  * `notifications: {mode,quietHours}`, `cadence` as `{kind,...}`) is what
  * `summary()` returns and what a future richer setup screen or a test can
  * send directly. The client's actual `toConfigPayload` output
- * (`src/client/steps.js`, `cc/social-localization-client` PR #1483) is
+ * (`src/client/steps.js`, `cc/social-content-client` PR #1483) is
  * flatter — `timezone` (lowercase), `sourceLocale`/`targetLocale`,
  * `notificationPolicy`, top-level `quietHours`, `cadence` as a bare
  * `"hourly"`/`"daily"`/`"weekly"` string — and is accepted the same way, so

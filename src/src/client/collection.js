@@ -1,4 +1,4 @@
-// Social Localization client — the generic "watch, notify, act" collection
+// Social Content client — the generic "watch, notify, act" collection
 // (PAT-003). Cards, filters, provider/account chips, search, the sticky
 // selection tray, empty/loading states and the New badge live here as a
 // single module so the next blueprint of this shape packs the same file
@@ -6,7 +6,7 @@
 //
 // State is plain, immutable-update data — no DOM, no RPC — so the reducer
 // half of this module is unit-testable in node (see
-// tests/social-localization-client.test.ts). The render half below it is
+// tests/social-content-client.test.ts). The render half below it is
 // imperative DOM building that a smoke test exercises with a fake `gadget`.
 
 import { el, relativeLabel, relativeTimeFrom, replace } from "./dom.js";
@@ -48,8 +48,13 @@ export function createCollectionState() {
   // filter: "new" | "all"; sourceFilter: a sourceBinding, or null for every
   // granted source. `notice` is { message, actionLabel? } — a refusal the
   // collection's own action came back with, rendered above the tray;
-  // `handlers.onNoticeAction` runs the way forward.
+  // `handlers.onNoticeAction` runs the way forward. `continuing` joins on
+  // first setContinuing rather than sitting in the shared initial shape.
   return createSharedCollectionState();
+}
+
+export function setContinuing(state, continuing) {
+  return { ...state, continuing: !!continuing };
 }
 
 export function setFilter(state, filter) {
@@ -280,16 +285,18 @@ export function renderCollection(root, state, ctx) {
         "button",
         // Brand gold, not primary ink: drafting a batch is the one creation
         // call-to-action on this screen (the component study's `brand`).
-        { type: "button", class: "sl-brand", disabled: nSelected === 0, onclick: handlers.onContinue },
-        nSelected
-          // One agent turn drafts the whole batch — and the count on the
-          // action is the DRAFTABLE count, not the selected one (PM decision
-          // 5, corrected): posts already in an open draft are skipped by
-          // `continueWithSelection`, so the button says what the batch will
-          // actually hold. All-taken selections keep the selected count —
-          // that click reaches the duplicate refusal and its new-version opt-in.
-          ? t(locale, nDraft === 1 ? "draftPost" : "draftPosts", { n: nDraft })
-          : t(locale, "continueSelectPrompt")
+        { type: "button", class: "sl-brand", disabled: nSelected === 0 || state.continuing, onclick: handlers.onContinue },
+        state.continuing
+          ? t(locale, "draftStarting")
+          : nSelected
+            // One agent turn drafts the whole batch — and the count on the
+            // action is the DRAFTABLE count, not the selected one (PM decision
+            // 5, corrected): posts already in an open draft are skipped by
+            // `continueWithSelection`, so the button says what the batch will
+            // actually hold. All-taken selections keep the selected count —
+            // that click reaches the duplicate refusal and its new-version opt-in.
+            ? t(locale, nDraft === 1 ? "draftPost" : "draftPosts", { n: nDraft })
+            : t(locale, "continueSelectPrompt")
       )
     ])
   ]);

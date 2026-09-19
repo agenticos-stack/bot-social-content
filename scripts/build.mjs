@@ -7,7 +7,7 @@ import {
   assertPackedImports,
   assertStorageSchemaDeclaration
 } from "@agenticos-dev/bot-devkit";
-import { SOCIAL_LOCALIZATION_DEFINITION } from "../definition.ts";
+import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { buildClient } from "./client.mjs";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
@@ -32,12 +32,16 @@ export { assertPackedImports, assertStorageSchemaDeclaration };
  * its `sl-*` classes — and the wrappers that preserve those contracts are the
  * rest of it.
  *
+ * The 327,342 floor adds the drawer-v3 line on top of that adoption — the
+ * post selector, the one-post drawer and the carousel page rail — measured
+ * at the staging merge.
+ *
  * `ARCHIVE_BYTE_BUDGET` freezes today's `.gadget` so feature work cannot grow
  * the artifact silently. Bump it only when the growth is the change being
  * reviewed.
  */
-export const CLIENT_JS_BYTE_BUDGET = 292_813;
-export const ARCHIVE_BYTE_BUDGET = 219_329;
+export const CLIENT_JS_BYTE_BUDGET = 327_342;
+export const ARCHIVE_BYTE_BUDGET = 248_138;
 
 /** Members that are built rather than read from src/: the bundled client and the manifest itself. */
 const generatedMembers = {
@@ -47,7 +51,7 @@ const generatedMembers = {
 
 export async function buildGadget({ outputDir = new URL("dist/", packageRoot), maxBytes = ARCHIVE_BYTE_BUDGET } = {}) {
   return buildGadgetPackage(fileURLToPath(packageRoot), {
-    definition: SOCIAL_LOCALIZATION_DEFINITION,
+    definition: SOCIAL_CONTENT_DEFINITION,
     generatedMembers,
     storageSchemaVersion: CURRENT_SCHEMA_VERSION,
     budgets: {
