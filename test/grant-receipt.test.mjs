@@ -1,7 +1,7 @@
 // Audit b7de9dd R1: the preview host reads a grant/activation receipt strictly.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { grantReceiptOutcome } from '../scripts/grant-receipt.mjs';
+import { grantReceiptOutcome } from '@agenticos-dev/bot-devkit/doors';
 
 const ok = (bodyText) => ({ ok: true, status: 200, bodyText });
 

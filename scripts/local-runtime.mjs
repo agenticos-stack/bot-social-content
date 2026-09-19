@@ -1,11 +1,8 @@
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { createLocalSession } from '@agenticos-dev/bot-testkit/local-session';
 import { LOCAL_RPC_MAX_BYTES } from './local-rpc-contract.mjs';
 
 // Development-only wrapper. The packaged server and its storage stay unchanged.
-export async function createSocialRuntime({ files, sdkSource, origins, stateDirectory, doors, seedFixtures = true }) {
-  if (!sdkSource) throw new Error('Local runtime requires BOT_SDK_SOURCE pointing to the SDK source checkout.');
-  const { createLocalSession } = await import(pathToFileURL(resolve(sdkSource, 'packages/testkit/src/local-session.js')));
+export async function createSocialRuntime({ files, origins, stateDirectory, doors, seedFixtures = true }) {
   const modules = Object.fromEntries(Object.entries(files).filter(([name]) => name.endsWith('.js') && name !== 'client.js'));
   modules['app-server.js'] = modules['server.js'];
   modules['server.js'] = `
@@ -100,8 +97,6 @@ export async function createSocialRuntime({ files, sdkSource, origins, stateDire
   const connectedDoors = doors ?? undefined;
   if (seedFixtures) console.warn('Social Content fixture runtime seeds fetchBudgetCredits=0. Metered fetches fail closed until you set a budget in Settings.');
   return createLocalSession({ modules, origins, stateDirectory, doors: connectedDoors,
-    // The testkit went generic (sdk #31): the loopback hostname list it once
-    // hardcoded — including this host's gateway name — is now caller-supplied.
     allowedHostnames: ['localhost', '127.0.0.1', 'social.localhost'],
     maxRequestBytes: LOCAL_RPC_MAX_BYTES,
     seed: seedFixtures ? [{method:'seedLocal',args:[]}] : [],

@@ -13,6 +13,7 @@
 // no failure is ever shown that the projection did not report.
 
 import { el, replace } from "./dom.js";
+import { confirmDrawerChoice as confirmDrawerChoiceShared } from "@agenticos-dev/bot-shell/client/drawer.js";
 import { t } from "./i18n.js";
 import { CAROUSEL_PROVIDERS, JPEG_ONLY_PROVIDERS } from "./image-acceptance.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
@@ -194,46 +195,23 @@ export function instructionPatchFor(item, buffers = {}, parts = ["image", "capti
  * Resolves to the chosen value, or `"cancel"` on Escape/close. One pending
  * decision per dialog — a second ask waits on the first.
  */
-const pendingChoices = new WeakMap();
+/*
+ * The prompt machinery is the shared package's; this canvas's chrome is not.
+ * `classes` carries the `sl-preview-*`/`sl-*` vocabulary the local stylesheet
+ * owns, spelled with the `bot-*` partners the `el` adapter would have added —
+ * so the emitted markup is byte-identical to the pre-extraction prompt.
+ */
+const CONFIRM_CLASSES = {
+  sheet: "sl-preview-sheet bot-drawer-sheet",
+  head: "sl-preview-head bot-drawer-head",
+  body: "sl-preview-scroll bot-drawer-body",
+  actions: "sl-preview-actions bot-drawer-actions",
+  button: "sl-secondary bot-button",
+  primary: "sl-primary bot-button"
+};
+
 export function confirmDrawerChoice(dialog, { title, body, choices }) {
-  const pending = pendingChoices.get(dialog);
-  if (pending) return pending;
-  let settle;
-  const decision = new Promise((resolve) => { settle = resolve; });
-  pendingChoices.set(dialog, decision);
-  let done = false;
-  const finish = (value) => {
-    if (done) return;
-    done = true;
-    dialog.removeEventListener("cancel", onCancel);
-    dialog.removeEventListener("close", onClose);
-    pendingChoices.delete(dialog);
-    if (dialog.open) dialog.close();
-    settle(value);
-  };
-  const onCancel = (event) => { event.preventDefault?.(); finish("cancel"); };
-  /*
-   * A `close` event is dispatched as a later task, after `close()` returns.
-   * When one prompt resolves and the caller opens the next on the same dialog
-   * straight away (replace a pending request, then decide about unsaved
-   * instructions), the first prompt's close arrives while the dialog is open
-   * again — and used to answer the second prompt "cancel", so Regenerate did
-   * nothing and said nothing. Only a close that left the dialog closed is a
-   * real dismissal.
-   */
-  const onClose = () => { if (dialog.open) return; finish("cancel"); };
-  replace(dialog, [
-    el("div", { class: "sl-preview-sheet" }, [
-      el("header", { class: "sl-preview-head" }, [el("strong", null, title)]),
-      el("div", { class: "sl-preview-scroll" }, (Array.isArray(body) ? body : [body]).filter(Boolean).map((line) => el("p", null, line))),
-      el("footer", { class: "sl-preview-actions" }, choices.map((choice) =>
-        el("button", { type: "button", class: choice.primary ? "sl-primary" : "sl-secondary", "data-choice": choice.value, onclick: () => finish(choice.value) }, choice.label)))
-    ])
-  ]);
-  dialog.addEventListener("cancel", onCancel);
-  dialog.addEventListener("close", onClose);
-  if (!dialog.open) dialog.showModal();
-  return decision;
+  return confirmDrawerChoiceShared(dialog, { title, body, choices, classes: CONFIRM_CLASSES });
 }
 
 // ---------------------------------------------------------------------------

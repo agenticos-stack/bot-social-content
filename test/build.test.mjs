@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
-import { assertPackedImports, assertStorageSchemaDeclaration, buildPackage, sha256 } from "../scripts/build.mjs";
+import { assertPackedImports, assertStorageSchemaDeclaration, buildGadget, sha256 } from "../scripts/build.mjs";
 import { SOCIAL_CONTENT_DEFINITION } from "../definition.ts";
 import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 
@@ -18,7 +18,7 @@ import { CURRENT_SCHEMA_VERSION } from "../src/storage.js";
 test("every archive carries manifest.json declaring the storage schema storage.js migrates to", async () => {
   const directory = await mkdtemp(join(tmpdir(), "social-content-schema-test-"));
   try {
-    const built = await buildPackage({ outputDir: directory });
+    const built = await buildGadget({ outputDir: directory });
     const archive = await readBlueprintArchive(built.bytes.buffer.slice(built.bytes.byteOffset, built.bytes.byteOffset + built.bytes.byteLength));
     assert.ok(Object.hasOwn(archive.files, "manifest.json"), "manifest.json must be an archive member");
     assert.equal(JSON.parse(archive.files["manifest.json"]).storageSchemaVersion, CURRENT_SCHEMA_VERSION);
@@ -39,8 +39,8 @@ test("a declaration that disagrees with storage.js, or is missing, fails the bui
 test("repeated builds preserve bytes, complete definition, and member checksums", async () => {
   const directory = await mkdtemp(join(tmpdir(), "social-content-build-test-"));
   try {
-    const first = await buildPackage({ outputDir: join(directory, "first") });
-    const second = await buildPackage({ outputDir: join(directory, "second") });
+    const first = await buildGadget({ outputDir: join(directory, "first") });
+    const second = await buildGadget({ outputDir: join(directory, "second") });
     assert.deepEqual(first.bytes, second.bytes);
     assert.deepEqual(first.release, second.release);
     assert.equal(first.release.artifact, "social-content.gadget");
@@ -49,7 +49,9 @@ test("repeated builds preserve bytes, complete definition, and member checksums"
     const archive = await readBlueprintArchive(first.bytes.buffer.slice(first.bytes.byteOffset, first.bytes.byteOffset + first.bytes.byteLength));
     assert.deepEqual(archive.metadata.gadgetDefinition, SOCIAL_CONTENT_DEFINITION);
     assert.equal(archive.metadata.title, "Social Content");
-    assert.deepEqual(archive.files, first.files);
+    // devkit returns a null-prototype map so a crafted member name cannot
+    // pollute Object.prototype; spread to a plain object for the comparison.
+    assert.deepEqual({ ...archive.files }, { ...first.files });
     for (const [name, content] of Object.entries(archive.files)) assert.equal(first.release.files[name], sha256(content));
     assert.deepEqual(await readFile(join(directory, "first", first.release.artifact)), first.bytes);
   } finally {
@@ -69,9 +71,9 @@ test("a packed module importing an unpacked one fails the build, not the gadget"
 test("host size limits reject before writing any release files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "social-content-limit-test-"));
   try {
-    await assert.rejects(buildPackage({ outputDir: directory, maxBytes: 1 }), /host limit/);
+    await assert.rejects(buildGadget({ outputDir: directory, maxBytes: 1 }), /declared budget is 1/);
     assert.deepEqual(await readdir(directory), []);
-    await assert.rejects(buildPackage({ outputDir: directory, maxBytes: 0 }), /positive integer/);
+    await assert.rejects(buildGadget({ outputDir: directory, maxBytes: 0 }), /positive integer/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

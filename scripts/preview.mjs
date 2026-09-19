@@ -6,7 +6,7 @@ import { watch } from "node:fs";
 import { readBlueprintArchive } from "@agenticos-dev/bot-archive-tools";
 import { build } from 'esbuild';
 import { compile } from 'svelte/compiler';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { createSocialRuntime, browserBridge } from './local-runtime.mjs';
@@ -15,12 +15,12 @@ import { prepareLocalState } from './local-state.mjs';
 import { createConnectedApi } from './connected-api.mjs';
 import { SOCIAL_CONTENT_DEFINITION } from '../definition.ts';
 import { createDevelopmentSessions } from './development-session.mjs';
-import { createDoorRuntime } from './door-runtime.mjs';
+import { createDoorRuntime } from '@agenticos-dev/bot-devkit/doors';
 import { createConnectedAgent, socialMethodNames, sourceDigest } from './connected-agent.mjs';
 import { buildClient } from './client.mjs';
 import { connectedCanvasBridge } from './connected-canvas.mjs';
-import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from './platform-origin.mjs';
-import { describeExpiry, mintGadgetDevSession, readDeveloperKey } from './gadget-dev-mint.mjs';
+import { assertGadgetDevWorkspaceId, assertRemoteApiOrigin } from '@agenticos-dev/bot-devkit/origins';
+import { describeExpiry, mintGadgetDevSession, readDeveloperKey } from '@agenticos-dev/bot-devkit/session';
 
 const port = Number(process.env.SOCIAL_CONTENT_PREVIEW_PORT || 17920);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Choose an explicit unprivileged preview port.");
@@ -79,7 +79,6 @@ if (connectedModes.has(mode)) {
 }
 const fixture = await readFile(new URL("../test/preview-fixture.js", import.meta.url), "utf8");
 const canvasCss = await readFile(new URL('../preview/canvas.css', import.meta.url), 'utf8');
-const overlay = process.env.BOT_SDK_SOURCE;
 if (!['fixture', 'local-runtime', 'connected', 'connected-prod'].includes(mode)) throw new Error('Unknown preview mode');
 const frontendOrigin = process.env.SOCIAL_CONTENT_FRONTEND_ORIGIN;
 const apiOrigin=process.env.SOCIAL_CONTENT_API_ORIGIN || process.env.AGENTICOS_API_ORIGIN;
@@ -107,6 +106,7 @@ if (remote) {
     const minted = await mintGadgetDevSession({
       apiOrigin,
       developerKey,
+      envVar: 'SOCIAL_CONTENT_DEV_KEY',
       gadgetKey: SOCIAL_CONTENT_DEFINITION.key,
       title: SOCIAL_CONTENT_DEFINITION.title
     });
@@ -118,7 +118,7 @@ if (remote) {
   } else if (!devToken) {
     throw new Error('Set SOCIAL_CONTENT_DEV_KEY to a personal access token with the gadget_dev.session scope, or SOCIAL_CONTENT_DEV_TOKEN to a token already minted.');
   }
-  assertGadgetDevWorkspaceId(devWorkspaceId);
+  assertGadgetDevWorkspaceId(devWorkspaceId, 'SOCIAL_CONTENT_DEV_WORKSPACE_ID');
 }
 /**
  * Which methods this gadget calls on each door.
@@ -278,7 +278,7 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
       // Absence is the documented, supported state; pass it as one.
       const startRuntime=async(files)=>{
         const before=new Map(signals.map(signal=>[signal,new Set(process.listeners(signal))]));
-        try{return await createSocialRuntime({files,sdkSource:overlay,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
+        try{return await createSocialRuntime({files,origins:[frontendOrigin],stateDirectory,doors:doors ?? undefined,seedFixtures:false});}
         finally{for(const signal of signals)for(const listener of process.listeners(signal))if(!before.get(signal).has(listener)&&['onSignalInt','onSignalTerm'].includes(listener.name))process.removeListener(signal,listener);}
       };
       local=await startRuntime(archive.files);
@@ -477,22 +477,16 @@ const development=connectedModes.has(mode)?createDevelopmentSessions({appKey:SOC
   }
 }):null;
 const connected = connectedModes.has(mode) ? createConnectedApi({apiOrigin, frontendOrigin, development, platform: remote ? 'remote' : 'local'}) : null;
-const tokensCss = await readFile(overlay ? resolve(overlay, 'packages/shell/tokens.css') : fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
+const tokensCss = await readFile(fileURLToPath(import.meta.resolve('@agenticos-dev/bot-shell/tokens.css')), 'utf8');
 /*
  * The decoder for the host's binary envelope, from the SAME testkit that
  * encodes it. A source encoder paired with an installed decoder is two wire
  * formats that agree until one of them moves.
  *
- * Only the modes that actually run a local gadget have a host to decode from,
- * and those are exactly the modes that require BOT_SDK_SOURCE — the fixture
- * has no RPC at all, and this gadget does not depend on the testkit itself.
+ * Only the modes that actually run a local gadget have a host to decode
+ * from — the fixture has no RPC at all.
  */
-const DECODE_BYTES_SOURCE = overlay
-  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).DECODE_BYTES_SOURCE
-  : '';
-const ENCODE_BYTES_SOURCE = overlay
-  ? (await import(pathToFileURL(resolve(overlay, 'packages/testkit/src/rpc-bytes.js')).href)).ENCODE_BYTES_SOURCE
-  : '';
+const { DECODE_BYTES_SOURCE, ENCODE_BYTES_SOURCE } = await import('@agenticos-dev/bot-testkit/rpc-bytes');
 // Same pinned families as Studio. Embedded locally; no third-party font requests.
 const fontFaces = await Promise.all([
   ['geist', 'Geist Variable', '100 900'],
@@ -505,7 +499,6 @@ const brandCss = fontFaces.join('\n') + `\n@font-face{font-family:"CJK Sans Fall
 const bundle = await build({
   entryPoints: [fileURLToPath(new URL('../preview/main.js', import.meta.url))], bundle: true,
   write: false, format: 'esm', platform: 'browser', conditions: ['browser', 'svelte'],
-  alias: overlay ? { '@agenticos-dev/bot-shell/GadgetSplitView.svelte': resolve(overlay, 'packages/shell/GadgetSplitView.svelte') } : {},
   plugins: [{ name: 'svelte', setup(builder) { builder.onLoad({ filter: /\.svelte$/ }, async ({path}) => ({
     contents: compile(await readFile(path, 'utf8'), { filename: path, generate: 'client', css: 'injected' }).js.code,
     loader: 'js', resolveDir: fileURLToPath(new URL('../preview/', import.meta.url))
@@ -513,7 +506,7 @@ const bundle = await build({
 });
 const signals = ['SIGINT', 'SIGTERM'];
 const priorSignalListeners = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files, sdkSource: overlay,
+const runtime = mode === 'local-runtime' ? await createSocialRuntime({ files: archive.files,
   stateDirectory: await prepareLocalState(),
   origins: [`http://localhost:${port}`, `http://127.0.0.1:${port}`, 'http://social.localhost:18000'] }) : null;
 // Only the seeded runtime has a budget to report. Connected mode seeds nothing,

@@ -25,6 +25,8 @@ jobs:
       # needs its lifecycle enabled.
       - run: npm install --global pnpm@12.2.1 --no-audit --no-fund
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm test
+      # dist/ must exist before the test phase: the local-runtime preview
+      # spawns scripts/preview.mjs, which reads dist/social-content.gadget.
       - run: pnpm build
+      - run: pnpm test
       - run: pnpm validate

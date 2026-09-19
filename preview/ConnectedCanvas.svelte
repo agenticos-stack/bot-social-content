@@ -3,8 +3,8 @@
   import {LOCAL_RPC_MAX_BYTES} from '../scripts/local-rpc-contract.mjs';
   import {canvasGrantPersistToAgent, gadgetGrantResultMessage, parseGadgetActivateDoorMessage, parseGadgetGrantDoorMessage} from '../src/grant-request.js';
   import {gadgetHostFeaturesMessage, gadgetTopupResultMessage, parseGadgetAgentIntentMessage, parseGadgetTopupMessage} from '../src/agent-intent.js';
-  import {grantReceiptOutcome} from '../scripts/grant-receipt.mjs';
-  import {attachHostEvents} from '../scripts/host-events.mjs';
+  import {grantReceiptOutcome} from '@agenticos-dev/bot-devkit/doors';
+  import {attachHostEvents} from '@agenticos-dev/bot-devkit/host-events';
   import {SOCIAL_CONTENT_DEFINITION} from '../definition.ts';
   let {onDraftRequested = () => {}, onMutation = () => {}, onAgentIntent = () => {}, revision = 0} = $props();
   let frame=$state();
