@@ -21,14 +21,16 @@ import {
   generationMark as parseGenerationMark,
   itemPresentation,
   ledgerFromProtectedOverrides,
+  legacyRevisionPages,
   normalizeLedger,
+  normalizeRevisionPages,
   PHASE_FILTERS
 } from "./model.js";
 
 // Exported for the build only: `scripts/build.mjs` asserts that
 // `manifest.json`'s `storageSchemaVersion` equals this, so the declaration the
 // host reads before restoring older code cannot drift from the migrations here.
-export const CURRENT_SCHEMA_VERSION = 19;
+export const CURRENT_SCHEMA_VERSION = 20;
 
 /** LRU cap for `media_cache` — bounded so a chatty scan cannot grow storage without limit. */
 const MEDIA_CACHE_MAX_ROWS = 500;
@@ -546,6 +548,87 @@ const MIGRATIONS = {
    */
   19(sql) {
     sql.exec("ALTER TABLE batch_items ADD COLUMN title TEXT");
+  },
+
+  /*
+   * The ordered page list (carousel, session 0ce60 Phase B). A post's visual
+   * stops being one accepted image and becomes an ordered list of pages —
+   * `{ pageId, kind, mediaId, sourceMediaId, altText, mediaDigest,
+   * mediaProvenance, mediaAcceptance }` — durable BEFORE filled, so a page
+   * can hold a place in the order while it is still empty.
+   *
+   * BACKFILL derives each existing revision's faithful page list from the
+   * columns it already carries (`legacyRevisionPages` in model.js):
+   * - `ai_refinement` → one `generated` page pinned to the accepted asset,
+   *   digest and provenance carried — filing keeps refusing a guessed
+   *   ("unknown") pin exactly as before.
+   * - `keep_original` → one `original` page PER source media entry, the
+   *   exact set the revision would have shipped (publicationMedia packed
+   *   every `sourceItem.media` child). This is the one derivation that is
+   *   not literally one page: the kickoff's "one-page list" describes the
+   *   single-image revision; a multi-image keep_original post ships N media
+   *   today, so N pages is the only shape that renders and files exactly
+   *   as before.
+   * - `text_poster`, or NULL mode with a stored poster → one `poster` page
+   *   (poster bytes resolve per revision, so `mediaId` stays null).
+   * - NULL mode without a poster → the same source-media fallback publish
+   *   used, as `original` pages.
+   *
+   * `generated_media.page_id` records which page a registration answers —
+   * a delivery into page 2 can never satisfy page 3 (the per-page mark and
+   * job key live above this column).
+   */
+  20(sql) {
+    sql.exec("ALTER TABLE revisions ADD COLUMN pages_json TEXT");
+    sql.exec("ALTER TABLE generated_media ADD COLUMN page_id TEXT");
+    const revisions = rows(
+      sql.exec(
+        `SELECT r.batch_item_id, r.revision, r.accepted_visual_mode,
+                r.accepted_generated_media_id, r.accepted_generated_media_digest,
+                r.accepted_generated_media_provenance, r.accepted_generated_media_source, r.alt_text,
+                r.derived_media_refs_json,
+                i.media_json AS source_media_json,
+                (SELECT 1 FROM posters p WHERE p.batch_item_id = r.batch_item_id AND p.revision = r.revision) AS has_poster
+         FROM revisions r
+         JOIN batch_items b ON b.id = r.batch_item_id
+         JOIN items i ON i.id = b.item_id`
+      )
+    );
+    for (const row of revisions) {
+      let media = [];
+      try {
+        media = JSON.parse(row.source_media_json ?? "[]");
+      } catch {
+        media = [];
+      }
+      let derivedMediaRefs = [];
+      try {
+        derivedMediaRefs = JSON.parse(row.derived_media_refs_json ?? "[]");
+      } catch {
+        derivedMediaRefs = [];
+      }
+      const pages = legacyRevisionPages(
+        {
+          batchItemId: row.batch_item_id,
+          revision: Number(row.revision),
+          acceptedVisualMode: row.accepted_visual_mode ?? null,
+          acceptedGeneratedMediaId: row.accepted_generated_media_id ?? null,
+          acceptedGeneratedMediaDigest: row.accepted_generated_media_digest ?? null,
+          acceptedGeneratedMediaProvenance: row.accepted_generated_media_provenance ?? null,
+          acceptanceSource: row.accepted_generated_media_source ?? null,
+          altText: row.alt_text ?? null,
+          derivedMediaRefs
+        },
+        media,
+        { hasPoster: row.has_poster === 1 }
+      );
+      sql.exec(
+        "UPDATE revisions SET pages_json = ? WHERE batch_item_id = ? AND revision = ?",
+        JSON.stringify(pages),
+        row.batch_item_id,
+        row.revision
+      );
+    }
   }
 };
 
@@ -560,6 +643,20 @@ function ACCEPTED_ASSET_JOIN(alias, revisionAlias, itemAlias) {
          AND ${revisionAlias}.accepted_visual_mode = 'ai_refinement'
          AND ${revisionAlias}.accepted_generated_media_provenance = 'recorded'`;
 }
+
+/*
+ * Every generated_media id some revision of the item pinned — the legacy
+ * column pin OR a page's `mediaId` inside `pages_json` (schema 20). A page's
+ * `mediaId` for an `original` page names a SOURCE child id, which can never
+ * collide with a generated row's id, so the union stays honest. Takes TWO
+ * `batch_item_id` parameters, in this order.
+ */
+const PINNED_MEDIA_SQL = `SELECT accepted_generated_media_id AS id FROM revisions
+    WHERE batch_item_id = ? AND accepted_generated_media_id IS NOT NULL
+  UNION
+  SELECT json_extract(je.value, '$.mediaId') AS id
+    FROM revisions r, json_each(r.pages_json) je
+    WHERE r.batch_item_id = ? AND json_extract(je.value, '$.mediaId') IS NOT NULL`;
 
 function nowIso() {
   return new Date().toISOString();
@@ -1160,18 +1257,29 @@ export class Storage {
        * authorization of a correlated save reads `scope`.
        *
        * `instructionsFor` returns the whole request snapshot for THIS item —
-       * `{ instructions, instructionSources, runInstructions, imageBrief }` —
-       * because the brief is per-item: two posts in one request can resolve
-       * different source media.
+       * `{ instructions, instructionSources, runInstructions, imageBrief,
+       * imagePages }` — because the brief is per-item: two posts in one
+       * request can resolve different source media, and a page-scoped ask
+       * names different pages on different posts.
        */
       const snapshot = typeof instructionsFor === "function" ? instructionsFor(item) ?? {} : {};
+      // A page-scoped image ask names exactly the pages it covers — the mark
+      // can then never satisfy (or be read as authorizing) another page. The
+      // per-item snapshot wins over the request-level list when both exist.
+      const imagePages =
+        wanted.image && Array.isArray(snapshot.imagePages) && snapshot.imagePages.length
+          ? snapshot.imagePages.slice(0, 32)
+          : wanted.image && Array.isArray(needs?.imagePages) && needs.imagePages.length
+            ? needs.imagePages.slice(0, 32)
+            : null;
+      const scoped = imagePages ? { ...wanted, imagePages } : wanted;
       const mark = JSON.stringify({
         id: request,
         // `listBatchItems` hydrates `current_revision` to `currentRevision` —
         // reading the column name off the hydrated row stamps base: 0 forever.
         base: item.currentRevision ?? item.current_revision ?? item.revision ?? 0,
-        scope: wanted,
-        needs: wanted,
+        scope: scoped,
+        needs: scoped,
         at: stamp,
         ...(snapshot.instructions ? { instructions: snapshot.instructions } : {}),
         ...(snapshot.instructionSources ? { instructionSources: snapshot.instructionSources } : {}),
@@ -1185,10 +1293,12 @@ export class Storage {
         stamp,
         item.id
       );
-      // Unaccepted results of any other request are superseded from now on.
+      // Unaccepted results of any other request are superseded from now on —
+      // but only for the pages this ask covers: a page-scoped mark retires
+      // ITS pages' old answers, never a sibling page's in-flight work.
       // Persisted for honesty of the stored flag; status is also derived on
       // read (`generatedMediaStatuses`), which is the authority.
-      if (request) this.markGeneratedMediaSuperseded(item.id, request);
+      if (request) this.markGeneratedMediaSuperseded(item.id, request, imagePages);
     };
     if (Array.isArray(itemIds) && itemIds.length) {
       const byId = new Map(this.listBatchItems(batchId).map((item) => [item.id, item]));
@@ -1227,7 +1337,9 @@ export class Storage {
       stamp,
       batchItemId
     );
-    this.markGeneratedMediaSuperseded(batchItemId, request);
+    // The moved mark covers the pages its scope names — supersede within
+    // that scope, not across the whole item.
+    this.markGeneratedMediaSuperseded(batchItemId, request, mark.scope?.imagePages ?? null);
   }
 
   /** The owner's per-post instruction overrides — `{ image, caption }`, null meaning the saved default. */
@@ -1262,9 +1374,22 @@ export class Storage {
     if (!mark) return;
     // Owner saves (no request id) never complete generated work.
     if (request == null || mark.id !== request) return;
+    /*
+     * PAGE-SCOPED SATISFACTION. A mark whose image ask names pages
+     * (`needs.imagePages`) is cleared one page at a time: `needs.imagePages`
+     * on this call lists the pages THIS save delivered, and only those drop
+     * off. Delivering page 2 can never satisfy page 3 — an unlisted page
+     * stays outstanding even when `needs.image` is set. A mark with no page
+     * scope keeps the pre-page boolean semantic.
+     */
+    const markPages = Array.isArray(mark.needs?.imagePages) && mark.needs.imagePages.length ? mark.needs.imagePages : null;
+    const deliveredPages = new Set(Array.isArray(needs.imagePages) ? needs.imagePages.map(String) : []);
+    const remainingPages = markPages ? markPages.filter((pageId) => !deliveredPages.has(pageId)) : null;
+    const imageDone = markPages ? remainingPages.length === 0 : needs.image === true;
     const remaining = {
       caption: mark.needs.caption && !needs.caption,
-      image: mark.needs.image && !needs.image
+      image: mark.needs.image && !imageDone,
+      ...(markPages && mark.needs.image && !imageDone ? { imagePages: remainingPages } : {})
     };
     if (!remaining.caption && !remaining.image) {
       this.clearItemGeneration(batchItemId);
@@ -1940,8 +2065,8 @@ export class Storage {
           refinement_brief_json, protected_overrides_json, original_media_refs_json, derived_media_refs_json,
           publication_intent_json, ledger_json, accepted_visual_mode,
           accepted_generated_media_id, accepted_generated_media_digest,
-          accepted_generated_media_provenance, accepted_generated_media_source, alt_text, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          accepted_generated_media_provenance, accepted_generated_media_source, alt_text, pages_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         batchItemId,
         next,
         patch.caption ?? null,
@@ -1960,6 +2085,9 @@ export class Storage {
         patch.acceptedGeneratedMediaId ? (patch.acceptedGeneratedMediaProvenance ?? "recorded") : null,
         patch.acceptedGeneratedMediaId ? (patch.acceptedGeneratedMediaSource ?? null) : null,
         typeof patch.altText === "string" ? patch.altText : null,
+        // The ordered page list — every revision carries one (the caller
+        // resolves carry-forward and defaults before this write).
+        Array.isArray(patch.pages) ? JSON.stringify(patch.pages) : null,
         nowIso()
       );
       this.sql.exec(
@@ -2047,6 +2175,24 @@ export class Storage {
     return row ? { template: row.template, bytes: toUint8Array(row.png), byteLength: row.byte_length } : null;
   }
 
+  /**
+   * Whether the poster stored at `revision` carries onto the appended one —
+   * the same layout-equality rule `appendRevision` applies, exposed so the
+   * page derivation that runs BEFORE the append can answer "will the new
+   * revision have a poster" without duplicating the comparison.
+   */
+  posterCarriesTo(batchItemId, revision, nextLayout) {
+    if (!revision) return false;
+    const poster = rows(
+      this.sql.exec("SELECT template FROM posters WHERE batch_item_id = ? AND revision = ?", batchItemId, revision)
+    )[0];
+    if (!poster) return false;
+    const layoutRow = rows(
+      this.sql.exec("SELECT poster_layout_json FROM revisions WHERE batch_item_id = ? AND revision = ?", batchItemId, revision)
+    )[0];
+    return samePosterLayout(layoutRow?.poster_layout_json, nextLayout);
+  }
+
   // ---------------------------------------------------------------------
   // generated_media — AI images accepted into the gadget
   // ---------------------------------------------------------------------
@@ -2066,13 +2212,14 @@ export class Storage {
     altText = null,
     mimeType = null,
     generationRequest = null,
+    pageId = null,
     stale = false
   }) {
     // Registration never touches bytes: re-registering an id keeps its
     // delivered content (see `deliverGeneratedImage`'s immutability rule).
     this.sql.exec(
-      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, stale, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, alt_text, generation_request, page_id, stale, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          attachment_id = excluded.attachment_id, alt_text = excluded.alt_text`,
       id,
@@ -2081,6 +2228,7 @@ export class Storage {
       mimeType,
       altText,
       generationRequest,
+      pageId,
       stale ? 1 : 0,
       nowIso()
     );
@@ -2095,8 +2243,8 @@ export class Storage {
     const at = nowIso();
     this.sql.exec(
       `INSERT INTO generated_media (id, batch_item_id, attachment_id, mime_type, bytes, byte_length, alt_text,
-         generation_request, stale, content_digest, derived_from, created_at, delivered_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         generation_request, page_id, stale, content_digest, derived_from, created_at, delivered_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       source.batchItemId,
       source.attachmentId ?? null,
@@ -2105,6 +2253,7 @@ export class Storage {
       bytes.byteLength,
       source.altText ?? null,
       source.generationRequest ?? null,
+      source.pageId ?? null,
       source.stale ? 1 : 0,
       contentDigest,
       source.id,
@@ -2130,15 +2279,42 @@ export class Storage {
    * Unaccepted rows of this item answering any request other than `request`
    * are superseded. Rows some revision pinned are left alone (they read as
    * `accepted`).
+   *
+   * `pageIds` scopes the sweep: a request that re-asks ONLY page 2 retires
+   * page 2's old answers and leaves every other page's in-flight work alone —
+   * a page-3 registration must not be killed by a page-2 re-ask. An omitted
+   * (whole-post) request supersedes everything unpinned, the pre-page
+   * semantic.
    */
-  markGeneratedMediaSuperseded(batchItemId, request) {
+  markGeneratedMediaSuperseded(batchItemId, request, pageIds = null) {
+    const paged = Array.isArray(pageIds) && pageIds.length;
     this.sql.exec(
       `UPDATE generated_media SET stale = 1
        WHERE batch_item_id = ? AND generation_request IS NOT NULL AND generation_request <> ?
-         AND id NOT IN (SELECT accepted_generated_media_id FROM revisions
-                        WHERE batch_item_id = ? AND accepted_generated_media_id IS NOT NULL)`,
+         ${paged ? `AND page_id IN (${pageIds.map(() => "?").join(", ")})` : ""}
+         AND id NOT IN (${PINNED_MEDIA_SQL})`,
       batchItemId,
       request,
+      ...(paged ? pageIds.map((id) => String(id).slice(0, 200)) : []),
+      batchItemId,
+      batchItemId
+    );
+  }
+
+  /**
+   * Retire the unpinned rows registered for pages that no longer exist —
+   * a page the owner removed leaves no page for its stale answers to land
+   * on, so they read `superseded` rather than lingering as candidates.
+   */
+  retireGeneratedMediaForPages(batchItemId, pageIds) {
+    if (!Array.isArray(pageIds) || !pageIds.length) return;
+    this.sql.exec(
+      `UPDATE generated_media SET stale = 1
+       WHERE batch_item_id = ? AND page_id IN (${pageIds.map(() => "?").join(", ")})
+         AND id NOT IN (${PINNED_MEDIA_SQL})`,
+      batchItemId,
+      ...pageIds.map((id) => String(id).slice(0, 200)),
+      batchItemId,
       batchItemId
     );
   }
@@ -2147,29 +2323,38 @@ export class Storage {
    * The freshness status of every generated_media row of an item, derived
    * from current data (audit 5ccaff1 G2) — never only from what was true at
    * registration:
-   * - `accepted`   — some saved revision pinned it;
+   * - `accepted`   — some saved revision pinned it (the column pin OR a page's
+   *                  `mediaId` in `pages_json`);
    * - `legacy`     — no request id;
    * - `superseded` — answered a request that is no longer the item's latest
    *                  (or was stale when registered), never accepted;
    * - `candidate`  — answers the item's latest request, delivered or pending.
    * The latest request is the pending mark's id, else the last mark's id.
+   *
+   * PAGE-AWARE FRESHNESS: when the latest mark scopes its image ask to named
+   * pages (`scope.imagePages`), a paged row is superseded only if ITS page is
+   * inside that scope and answered by an older request — a page-3 row keeps
+   * flying while page 2 is re-asked. An unpaged row under a paged mark, or any
+   * row under an unpaged mark, keeps the whole-request comparison.
    * Returns a function `(row) => status`.
    */
   generatedMediaStatuses(batchItemId) {
     const pinned = new Set(
-      rows(
-        this.sql.exec(
-          "SELECT DISTINCT accepted_generated_media_id AS id FROM revisions WHERE batch_item_id = ? AND accepted_generated_media_id IS NOT NULL",
-          batchItemId
-        )
-      ).map((row) => row.id)
+      rows(this.sql.exec(`SELECT DISTINCT id FROM (${PINNED_MEDIA_SQL})`, batchItemId, batchItemId)).map((row) => row.id)
     );
     const item = rows(this.sql.exec("SELECT generation, last_generation FROM batch_items WHERE id = ?", batchItemId))[0];
-    const latest = parseGenerationMark(item?.generation ?? null)?.id ?? parseGenerationMark(item?.last_generation ?? null)?.id ?? null;
+    const mark = parseGenerationMark(item?.generation ?? null) ?? parseGenerationMark(item?.last_generation ?? null);
+    const latest = mark?.id ?? null;
+    const scopePages = Array.isArray(mark?.scope?.imagePages) && mark.scope.imagePages.length ? mark.scope.imagePages : null;
     return (row) => {
       if (pinned.has(row.id)) return "accepted";
       if (!row.generationRequest) return "legacy";
       if (row.stale) return "superseded";
+      if (scopePages && row.pageId) {
+        // Its page was re-asked by a different request → stale; otherwise the
+        // row still answers its own page's last ask (candidate).
+        return scopePages.includes(row.pageId) && row.generationRequest !== latest ? "superseded" : "candidate";
+      }
       if (latest !== null && row.generationRequest !== latest) return "superseded";
       return "candidate";
     };
@@ -2212,20 +2397,23 @@ export class Storage {
    * the accepted image; never `superseded`). `ready` narrows to rows whose
    * bytes landed; `original` excludes derived copies. An implicit
    * `ai_refinement` pick asks for `statuses: ["candidate"]`, `original`.
+   *
+   * `pageId` scopes the pick to rows registered FOR that page — a page's
+   * auto-fill never borrows another page's answer or an unpaged row.
    */
-  latestCandidateGeneratedMedia(batchItemId, { ready = false, statuses = ["candidate", "legacy"], original = false } = {}) {
+  latestCandidateGeneratedMedia(batchItemId, { ready = false, statuses = ["candidate", "legacy"], original = false, pageId = null } = {}) {
     const statusOf = this.generatedMediaStatuses(batchItemId);
     const found = rows(
       this.sql.exec(
         `SELECT rowid AS seq, id, batch_item_id, attachment_id, mime_type, byte_length, alt_text, generation_request,
-                stale, content_digest, derived_from, created_at, delivered_at
+                page_id, stale, content_digest, derived_from, created_at, delivered_at
          FROM generated_media
          WHERE batch_item_id = ? ${ready ? "AND bytes IS NOT NULL" : ""} ${original ? "AND derived_from IS NULL" : ""}
          ORDER BY created_at DESC, rowid DESC LIMIT 50`,
         batchItemId
       )
     ).map(hydrateGeneratedMedia);
-    const hit = found.find((row) => statuses.includes(statusOf(row)));
+    const hit = found.find((row) => statuses.includes(statusOf(row)) && (pageId === null || row.pageId === pageId));
     return hit ? this.getGeneratedMedia(hit.id) : null;
   }
 
@@ -2235,7 +2423,7 @@ export class Storage {
     return rows(
       this.sql.exec(
         `SELECT rowid AS seq, id, batch_item_id, attachment_id, mime_type, byte_length, alt_text, generation_request,
-                stale, content_digest, derived_from, created_at, delivered_at, (bytes IS NOT NULL) AS has_bytes
+                page_id, stale, content_digest, derived_from, created_at, delivered_at, (bytes IS NOT NULL) AS has_bytes
          FROM generated_media WHERE batch_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
         batchItemId,
         limit
@@ -2411,6 +2599,7 @@ function hydrateGeneratedMedia(row) {
     byteLength: row.byte_length ?? null,
     altText: row.alt_text ?? null,
     generationRequest: row.generation_request ?? null,
+    pageId: row.page_id ?? null,
     stale: Number(row.stale ?? 0) === 1,
     contentDigest: row.content_digest ?? null,
     derivedFrom: row.derived_from ?? null,
@@ -2564,8 +2753,29 @@ function hydrateRevision(row) {
     acceptedGeneratedMediaProvenance: row.accepted_generated_media_provenance ?? null,
     acceptanceSource: row.accepted_generated_media_source ?? null,
     altText: row.alt_text ?? null,
+    /*
+     * The ordered page list (schema 20), or NULL when the row predates the
+     * column — deriving it faithfully needs the source media list and the
+     * poster flag, which hydrate depth does not have; `effectiveRevisionPages`
+     * (model.js) resolves those rows with full context.
+     */
+    pages: row.pages_json ? parseRevisionPages(row.pages_json) : null,
     createdAt: row.created_at
   };
+}
+
+/**
+ * Parse a stored `pages_json`. Corrupt JSON is a data bug, not a schema the
+ * reader should guess at — return null so the caller treats the revision's
+ * pages as absent rather than fabricating a list.
+ */
+function parseRevisionPages(json) {
+  try {
+    const value = JSON.parse(json);
+    return Array.isArray(value) && value.length ? normalizeRevisionPages(value).pages ?? null : null;
+  } catch {
+    return null;
+  }
 }
 
 function hydrateOriginLink(row) {

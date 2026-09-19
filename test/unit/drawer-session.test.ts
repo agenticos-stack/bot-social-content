@@ -15,7 +15,7 @@ import { t } from "../../src/src/client/i18n.js";
 import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences } from "../../src/model.js";
+import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, visualModeFromPages } from "../../src/model.js";
 import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
@@ -29,8 +29,26 @@ function extract(startText: string, endText: string, name: string, scope: AnyRec
   return new Function("scope", `with(scope){${source.slice(start, end)}; return ${name};}`)(scope);
 }
 
-function post(id = "a", overrides: AnyRec = {}): AnyRec {
+/** The media row a page's mediaId names — found in the post's own lists, or
+ *  synthesized like the server's stored row. */
+function knownMedia(row: AnyRec, id: string): AnyRec {
+  const found = [row.generatedImage, row.generatedCandidate, ...(row.generatedHistory ?? [])]
+    .find((media: AnyRec) => media?.id === id);
+  return found ?? { id, ready: true, mimeType: "image/jpeg", status: "accepted" };
+}
+
+/** A projected page row, shaped like projectBatchItem's `pages[]` entries. */
+function pg(pageId: string, kind: string | null, mediaId: string | null, extra: AnyRec = {}): AnyRec {
   return {
+    pageId, kind, mediaId, sourceMediaId: null, altText: null,
+    mediaProvenance: null, mediaAcceptance: null,
+    generatedMedia: null, candidate: null,
+    ...extra
+  };
+}
+
+function post(id = "a", overrides: AnyRec = {}): AnyRec {
+  const merged: AnyRec = {
     id,
     batchId: "b",
     itemId: `src_${id}`,
@@ -51,11 +69,28 @@ function post(id = "a", overrides: AnyRec = {}): AnyRec {
     deliveries: [],
     ...overrides
   };
+  if (merged.pages === undefined) {
+    // What the server projects for this shape: a saved ai_refinement post is
+    // one generated page; a post with no visual pick yet is one empty page
+    // per bindable source child, each bound to it.
+    merged.pages = merged.generatedImage
+      ? [pg("pg_1", "generated", merged.generatedImage.id, {
+          sourceMediaId: "m1",
+          generatedMedia: merged.generatedImage,
+          candidate: merged.generatedCandidate && merged.generatedCandidate.id !== merged.generatedImage.id ? merged.generatedCandidate : null
+        })]
+      : (merged.sourceItem?.media ?? [])
+          .filter((m: AnyRec) => m?.kind === "image" || m?.kind === "carousel_child")
+          .map((m: AnyRec) => pg(`pg_src_${m.id}`, null, null, { sourceMediaId: m.id }));
+    if (!merged.pages.length) merged.pages = [pg("pg_1", null, null)];
+  }
+  return merged;
 }
 
 const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: false, caption: false, ...needs }, needs: { image: false, caption: false, ...needs }, at: "2026-09-14T03:00:00.000Z" });
-// A post with no picture: the only state a bare Generate exists in — once a
-// picture lands, generation goes through the ⋯ menu's Regenerate… ask.
+// A post with no picture: every page is an empty slot — Generate lives on
+// that page's own ⋯ menu. Once a picture lands, generation goes through the
+// filled page's Regenerate… intent instead.
 const imageless = { generatedImage: null, acceptedVisualMode: null };
 
 function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; hostFeatures?: Set<string> } = {}) {
@@ -117,6 +152,9 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
       calls.sequence.push("request");
       return responses.requestGeneration.shift() ?? { ok: true };
     },
+    // The footer's automatic status read — the seam exists so the extracted
+    // body can call it; these tests drive the outcome through `stage`.
+    checkGenerationStatus: async () => ({ ok: true, workRequestStatus: [] }),
     saveInstructionOverrides: async (patch: AnyRec) => {
       calls.instructionWrites.push(patch);
       calls.sequence.push("instructions");
@@ -129,6 +167,33 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     },
     saveRevisions: async (input: AnyRec) => {
       calls.revisionWrites.push(input);
+      // Apply like the server does: a pages entry rewrites the list and the
+      // legacy projection fields (visual mode, singular image, alt) derive
+      // from it — that's what the next getBatch read would show.
+      for (const rev of input.revisions ?? []) {
+        const row = db.items.find((it: AnyRec) => it.id === rev.batchItemId);
+        if (!row) continue;
+        if (rev.caption !== undefined) row.caption = rev.caption;
+        if (Array.isArray(rev.pages)) {
+          row.pages = rev.pages.map((page: AnyRec) => ({
+            ...page,
+            generatedMedia: page.kind === "generated" && page.mediaId
+              ? knownMedia(row, page.mediaId)
+              : null,
+            candidate: null
+          }));
+          row.acceptedVisualMode = visualModeFromPages(rev.pages);
+          const gen = rev.pages.find((page: AnyRec) => page.kind === "generated" && page.mediaId);
+          row.generatedImage = gen ? knownMedia(row, gen.mediaId) : null;
+          row.altText = rev.pages.find((page: AnyRec) => page.altText)?.altText ?? null;
+        }
+        if (rev.altText !== undefined) row.altText = rev.altText;
+        if (rev.acceptedVisualMode !== undefined) row.acceptedVisualMode = rev.acceptedVisualMode;
+        if (rev.acceptedGeneratedMediaId !== undefined) {
+          row.generatedImage = rev.acceptedGeneratedMediaId ? knownMedia(row, rev.acceptedGeneratedMediaId) : row.generatedImage;
+        }
+        row.revision = (row.revision ?? 0) + 1;
+      }
       return { ok: true, results: input.revisions.map(() => ({ ok: true, revision: 2 })) };
     },
     submitForReview: async (input: AnyRec) => {
@@ -171,12 +236,13 @@ async function click(root: unknown, label: string) {
   await findButton(root, label).dispatchEvent({ type: "click" });
   await flushAsyncWork();
 }
-/** The picture's ⋯ menu — the only per-image action surface once a picture
- *  exists. */
-async function openPicMenu(r: AnyRec) {
-  const trigger = buttons(r.dialog()).find((b) =>
+/** The picture's ⋯ menu — every per-page action lives on the page's own
+ *  chip, filled page or empty. `index` picks the Nth page's chip. */
+async function openPicMenu(r: AnyRec, index = 0) {
+  const triggers = buttons(r.dialog()).filter((b) =>
     String(b.className ?? "").split(" ").includes("sl-picbtn"));
-  if (!trigger) throw new Error("⋯ trigger missing in: " + labels(r.dialog()).join(" | "));
+  const trigger = triggers[index];
+  if (!trigger) throw new Error(`⋯ trigger ${index} missing in: ` + labels(r.dialog()).join(" | "));
   await trigger.dispatchEvent({ type: "click" });
   await flushAsyncWork();
 }
@@ -191,18 +257,17 @@ async function pressRegenIntent(r: AnyRec) {
   await row.dispatchEvent({ type: "click" });
   await flushAsyncWork();
 }
-/** Opens the empty slot's add menu: the dashed add-place tile is the only
- *  add trigger — a bare Generate exists only while there is no picture. */
-async function openAddMenu(r: AnyRec) {
-  const trigger = buttons(r.dialog()).find((b) =>
-    String(b.className ?? "").split(" ").includes("sl-addplace"));
-  if (!trigger) throw new Error("Add-image trigger missing in: " + labels(r.dialog()).join(" | "));
-  await trigger.dispatchEvent({ type: "click" });
-  await flushAsyncWork();
+/** The first empty page's ⋯ menu — where a page's Generate lives. */
+async function openEmptyMenu(r: AnyRec) {
+  const slots = findAll(r.dialog() as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-slot")) as any[];
+  const index = slots.findIndex((slot) =>
+    findAll(slot as never, (e: any) => String(e.className ?? "").split(" ").includes("sl-slot-frame-empty")).length > 0);
+  if (index < 0) throw new Error("No empty page in: " + labels(r.dialog()).join(" | "));
+  await openPicMenu(r, index);
 }
-/** The ＋ menu's Generate row: a bare press sends the staged brief, no run layer. */
+/** An empty page's Generate row: a bare press asks for THAT page only. */
 async function pressGenerate(r: AnyRec) {
-  await openAddMenu(r);
+  await openEmptyMenu(r);
   const item = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
   if (!item) throw new Error("Generate menu item missing");
   const done = item.dispatchEvent({ type: "click" });
@@ -393,7 +458,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
     await flushAsyncWork();
     expect(r.calls.sequence).toEqual(["instructions", "request"]);
     expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Morning light, outdoors" }]);
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
     expect(findButton(r.dialog(), t("en", "drawerSaveDraft")).disabled).toBe(true);
   });
 
@@ -434,7 +499,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
     await done;
     await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
     await click(r.dialog(), t("en", "drawerTabInstructions"));
     expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Morning light, outdoors");
   });
@@ -463,7 +528,7 @@ describe("U2: unsaved instructions are decided before a request", () => {
     await click(r.dialog(), t("en", "drawerTabOutput"));
     await pressGenerate(r);
     await flushAsyncWork();
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
   });
 });
 
@@ -475,7 +540,7 @@ describe("one outstanding request per post", () => {
   it("asks before replacing a pending caption request, and sends replace:true only when confirmed", async () => {
     const r = rig({ items: [post("a", { ...imageless, generation: pendingMark({ caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    await openAddMenu(r);
+    await openEmptyMenu(r);
     const generate = menuButton(r.dialog(), t("en", "drawerAddGenerate"));
     // The pending honesty moved to the menu row: it names the other part.
     expect(generate.getAttribute("title")).toContain("A caption request is still pending for this post.");
@@ -486,7 +551,7 @@ describe("one outstanding request per post", () => {
     await click(r.scope.leaveDialog, "Replace the pending caption request");
     await done;
     await flushAsyncWork();
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" }, replace: true }]]);
   });
 
   it("sends nothing when the owner cancels the replacement", async () => {
@@ -501,13 +566,16 @@ describe("one outstanding request per post", () => {
   it("a new post's initial request (both parts) is never doubled — the add control hides while it runs", async () => {
     const r = rig({ items: [post("a", { revision: 0, caption: "", generatedImage: null, acceptedVisualMode: null, generation: pendingMark({ image: true, caption: true }) })] });
     await r.open({ id: "b", itemId: "a" });
-    // While a slot is generating there is nothing to add to and no picture
-    // to act on: neither the add-place tile nor the ⋯ renders, so no second
-    // ask — and no silent replacement — can leave the strip. A refusal the
-    // server still reports gets the same explicit decision (next test).
+    // While the post's image need is outstanding every page is live, so no
+    // page ⋯ renders and the add-page tile stays disabled — no second ask,
+    // and no silent replacement, can leave the strip. A refusal the server
+    // still reports gets the same explicit decision (next test).
     const trigger = buttons(r.dialog()).find((b) =>
-      String(b.className ?? "").split(" ").some((c) => c === "sl-addplace" || c === "sl-picbtn"));
+      String(b.className ?? "").split(" ").includes("sl-picbtn"));
     expect(trigger).toBeUndefined();
+    const addPage = buttons(r.dialog()).find((b) =>
+      String(b.className ?? "").split(" ").includes("sl-addpage"));
+    expect(addPage === undefined || addPage.disabled).toBe(true);
     expect(r.calls.requests).toHaveLength(0);
   });
 
@@ -687,6 +755,18 @@ function gateSaves(r: AnyRec) {
     const results = input.revisions.map((rev: AnyRec) => {
       const row = r.db.items.find((item: AnyRec) => item.id === rev.batchItemId);
       if (rev.caption !== undefined) row.caption = rev.caption;
+      if (Array.isArray(rev.pages)) {
+        row.pages = rev.pages.map((page: AnyRec) => ({
+          ...page,
+          generatedMedia: page.kind === "generated" && page.mediaId ? knownMedia(row, page.mediaId) : null,
+          candidate: null
+        }));
+        row.acceptedVisualMode = visualModeFromPages(rev.pages);
+        const gen = rev.pages.find((page: AnyRec) => page.kind === "generated" && page.mediaId);
+        row.generatedImage = gen ? knownMedia(row, gen.mediaId) : null;
+        row.altText = rev.pages.find((page: AnyRec) => page.altText)?.altText ?? null;
+        row.generatedCandidate = null;
+      }
       if (rev.altText !== undefined) row.altText = rev.altText;
       if (rev.acceptedGeneratedMediaId) {
         row.generatedImage = { id: rev.acceptedGeneratedMediaId, ready: true, mimeType: "image/jpeg", status: "accepted" };
@@ -837,11 +917,11 @@ describe("R3: typing during a pending Save keeps the newer edit", () => {
     await saves.release();
     await saving;
     await flushAsyncWork();
-    expect(r.calls.revisionWrites[0].revisions[0].acceptedGeneratedMediaId).toBe("gm_cand");
+    expect(r.calls.revisionWrites[0].revisions[0].pages[0].mediaId).toBe("gm_cand");
     expect(r.db.items[0].generatedImage.id).toBe("gm_cand");
     expect(saveButton(r).disabled).toBe(false);
     const { done: second } = await startSave(r);
-    expect(r.calls.revisionWrites[1].revisions[0].acceptedGeneratedMediaId).toBe("gm_old");
+    expect(r.calls.revisionWrites[1].revisions[0].pages[0].mediaId).toBe("gm_old");
     await saves.release();
     await second;
     expect(r.db.items[0].generatedImage.id).toBe("gm_old");
@@ -1032,7 +1112,7 @@ describe("the image brief on the Instructions tab", () => {
     await click(r.dialog(), t("en", "drawerTabOutput"));
     await pressGenerate(r);
     await flushAsyncWork();
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "none", aspectRatio: "4:5" } }]]);
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "none", aspectRatio: "4:5" } }]]);
   });
 
   it("sends the picked ratio — the Instructions tab carries no run layer of its own", async () => {
@@ -1048,7 +1128,7 @@ describe("the image brief on the Instructions tab", () => {
     await flushAsyncWork();
     expect(r.calls.instructionWrites).toHaveLength(0);
     expect(r.calls.requests).toEqual([["b", ["a"], {
-      needs: { image: true },
+      needs: { image: true, imagePages: ["pg_src_m1"] },
       image: { references: "source", aspectRatio: "9:16" }
     }]]);
   });
@@ -1227,22 +1307,41 @@ describe("the post title", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The honest interim line — a multi-image source feeds every child into ONE
-// generated image today; the drawer says so until pages exist (Phase B).
+// The post's pages ARE the source's images: a multi-image source opens one
+// empty page per bindable child, numbered — and a skipped video still says so.
 // ---------------------------------------------------------------------------
 
-describe("the multi-image source note", () => {
-  it("a two-image source says so, in words, next to the strip", async () => {
-    const r = rig({ items: [post("a")] });
+describe("the source's pages", () => {
+  it("a two-image source renders two numbered empty pages — never flattened to one slot", async () => {
+    const r = rig({ items: [post("a", imageless)] });
     await r.open({ id: "b", itemId: "a" });
-    expect(String(r.dialog().textContent)).toContain(t("en", "drawerSourceImagesNote", { n: 2 }));
+    const slots = findAll(r.dialog() as never, (e: any) =>
+      String(e.className ?? "").split(" ").includes("sl-slot"));
+    expect(slots).toHaveLength(2);
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerPageEmpty", { n: 1 }));
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerPageEmpty", { n: 2 }));
   });
 
-  it("a single-image source says nothing extra", async () => {
+  it("a video the source post carried says so, in words, next to the strip", async () => {
     const r = rig({ items: [post("a", {
-      sourceItem: { id: "s1", text: "Reference text", media: [{ id: "m1", kind: "image" }] }
+      ...imageless,
+      sourceItem: { id: "s1", text: "Reference text", media: [{ id: "m1", kind: "image" }, { id: "v1", kind: "video" }] },
+      skippedVideos: [{ id: "v1", kind: "video" }]
     })] });
     await r.open({ id: "b", itemId: "a" });
-    expect(String(r.dialog().textContent)).not.toContain("still generates 1");
+    expect(String(r.dialog().textContent)).toContain(t("en", "drawerSourceVideosNote", { n: 1 }));
+  });
+
+  it("a single-image source with nothing skipped says nothing extra", async () => {
+    const r = rig({ items: [post("a", {
+      ...imageless,
+      sourceItem: { id: "s1", text: "Reference text", media: [{ id: "m1", kind: "image" }] },
+      skippedVideos: []
+    })] });
+    await r.open({ id: "b", itemId: "a" });
+    expect(String(r.dialog().textContent)).not.toContain("videos");
+    const slots = findAll(r.dialog() as never, (e: any) =>
+      String(e.className ?? "").split(" ").includes("sl-slot"));
+    expect(slots).toHaveLength(1);
   });
 });

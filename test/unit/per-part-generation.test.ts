@@ -119,7 +119,7 @@ describe("per-part generation requests", () => {
     const asked = await gadget.requestGeneration("batch-1", ["item-1"], { needs: { image: true } });
     expect(asked).toMatchObject({ ok: true, needs: { image: true, caption: false } });
     let item = await itemOf(gadget);
-    expect(item.generation.needs).toEqual({ image: true, caption: false });
+    expect(item.generation.needs).toEqual({ image: true, caption: false, imagePages: ["pg_leg_item-1_1_1"] });
 
     // A correlated save that rewrites the caption is not what was asked for.
     const refused = await gadget.saveRevision({

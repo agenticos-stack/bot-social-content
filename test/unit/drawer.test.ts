@@ -31,8 +31,18 @@ const all = (root: unknown, predicate: (element: Node) => boolean) => findAll(ro
 const buttons = (root: unknown) => all(root, (e) => e.tagName === "BUTTON");
 const buttonNamed = (root: unknown, label: string) => buttons(root).find((b) => String(b.textContent).includes(label));
 
-function post(overrides: Record<string, unknown> = {}) {
+/** A projected page row, shaped like projectBatchItem's `pages[]` entries. */
+function pg(pageId: string, kind: string | null, mediaId: string | null, extra: Record<string, unknown> = {}) {
   return {
+    pageId, kind, mediaId, sourceMediaId: null, altText: null,
+    mediaProvenance: null, mediaAcceptance: null,
+    generatedMedia: null, candidate: null,
+    ...extra
+  };
+}
+
+function post(overrides: Record<string, unknown> = {}) {
+  const merged: Record<string, any> = {
     id: "item-1",
     batchId: "batch-1",
     state: "drafting",
@@ -43,23 +53,45 @@ function post(overrides: Record<string, unknown> = {}) {
     generatedImage: { id: "gm_a", ready: true, altText: "A bowl of oats", mimeType: "image/jpeg" },
     generatedCandidate: null,
     acceptedVisualMode: "ai_refinement",
+    sourceItem: { id: "src-1", text: "Reference text", media: [{ id: "m1", kind: "image", url: "https://example/m1.jpg" }] },
     instructionOverrides: { image: null, caption: null },
     publications: [],
     deliveries: [],
     ...overrides
   };
+  if (merged.pages === undefined) {
+    // What the server projects for this shape: a saved ai_refinement post is
+    // one generated page; keep_original is one page per source child; a post
+    // with no pick yet is one empty page per bindable child.
+    const media = (merged.sourceItem?.media ?? []).filter((m: any) => m?.kind === "image" || m?.kind === "carousel_child");
+    if (merged.generatedImage) {
+      merged.pages = [pg("pg_1", "generated", merged.generatedImage.id, {
+        sourceMediaId: "m1",
+        generatedMedia: merged.generatedImage,
+        candidate: merged.generatedCandidate && merged.generatedCandidate.id !== merged.generatedImage.id ? merged.generatedCandidate : null
+      })];
+    } else if (merged.acceptedVisualMode === "keep_original" && media.length) {
+      merged.pages = media.map((m: any, i: number) => pg(`pg_src_${m.id}`, "original", m.id, { sourceMediaId: m.id }));
+    } else if (media.length) {
+      merged.pages = media.map((m: any) => pg(`pg_src_${m.id}`, null, null, { sourceMediaId: m.id }));
+    } else {
+      merged.pages = [pg("pg_1", null, null)];
+    }
+  }
+  return merged;
 }
 
 function output(item: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   const loads: string[] = [];
-  const staged: Array<string | null> = [];
+  const staged: Array<[string | null, string | null]> = [];
   const parts: string[] = [];
   const root = renderOutputPanel("en", item as never, {
     editable: true,
     saving: false,
     buffers: {},
     loadImage: (generated: { id: string }) => loads.push(generated.id),
-    onStageImage: (id: string | null) => staged.push(id),
+    // Stage is per page: (pageId, mediaId) — null mediaId unstages that page.
+    onStageImage: (pageId: string, id: string | null) => staged.push([pageId, id]),
     onRequestPart: (part: string) => parts.push(part),
     ...extra
   } as never);
@@ -94,18 +126,21 @@ describe("Output section", () => {
     expect(view.root.textContent).toContain("New image");
 
     await buttonNamed(view.root, "Use")!.dispatchEvent({ type: "click" });
-    expect(view.staged).toEqual(["gm_b"]);
+    expect(view.staged).toEqual([["pg_1", "gm_b"]]);
 
-    expect(revisionEntryFor(item as never, { imageId: "gm_b" })).toEqual({
+    // The staged candidate lands in the page list the save writes — the
+    // legacy singular fields stay out of the entry entirely.
+    expect(revisionEntryFor(item as never, {
+      pages: [{ pageId: "pg_1", kind: "generated", mediaId: "gm_b", sourceMediaId: "m1", altText: null, mediaDigest: null, mediaProvenance: null, mediaAcceptance: null }]
+    })).toEqual({
       batchItemId: "item-1",
       expectedRevision: 2,
-      acceptedVisualMode: "ai_refinement",
-      acceptedGeneratedMediaId: "gm_b"
+      pages: [{ pageId: "pg_1", kind: "generated", mediaId: "gm_b", sourceMediaId: "m1", altText: null, mediaDigest: null, mediaProvenance: null, mediaAcceptance: null }]
     });
   });
 
   it("renders the accepted image with one ⋯ menu and no set furniture", () => {
-    const view = output(post(), { imageRefsAvailable: true, strip: { menuOpen: true } });
+    const view = output(post(), { imageRefsAvailable: true, strip: { menuOpen: true, menuAnchor: "pg_1" } });
     const slots = all(view.root, (e) => {
       const cls = String(e.className).split(" ");
       return cls.includes("sl-slot") && !cls.includes("sl-slot-candidate");
@@ -119,9 +154,9 @@ describe("Output section", () => {
     // in the column header, no hover bar, no second tile.
     expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(1);
     const leads = all(view.root, (e) => String(e.className).split(" ").includes("sl-menu-lead")).map((s) => String(s.textContent));
-    expect(leads).toEqual(["Regenerate…", "Upload a replacement…", "Use the original image", "View", "Remove image"]);
+    expect(leads).toEqual(["Regenerate…", "Upload a replacement…", "Use the original image", "View", "Remove page"]);
     // Removal is the danger row.
-    const remove = buttons(view.root).find((b) => String(b.textContent).includes("Remove image"));
+    const remove = buttons(view.root).find((b) => String(b.textContent).includes("Remove page"));
     expect(String(remove!.className)).toContain("sl-menu-danger");
     // A fresh generate from the same brief is never offered on an existing
     // picture — Regenerate… is the ask that names what is wrong first.
@@ -130,7 +165,7 @@ describe("Output section", () => {
 
   it("the strip still renders one slot when only a legacy visual exists", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: "keep_original" }));
-    expect(view.root.textContent).toContain("source media");
+    expect(view.root.textContent).toContain("Source image");
     expect(all(view.root, (e) => String(e.className).includes("sl-picbtn")).length).toBeGreaterThan(0);
   });
 
@@ -146,34 +181,41 @@ describe("Output section", () => {
     expect(imageState(post({ generatedCandidate: { id: "gm_b", ready: false } }) as never)).toBe("generating");
   });
 
-  it("overlays generating on the empty slot instead of a compact note", () => {
+  it("marks the empty slot as live while its page generates, not with a compact note", () => {
     const view = output(post({
       generatedImage: null,
       acceptedVisualMode: null,
       generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
     }));
-    const frames = all(view.root, (e) => String(e.className).includes("sl-output-frame"));
-    expect(frames.some((e) => String(e.className).includes("sl-output-frame-skel"))).toBe(true);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
+    // The mark names no page scope — a pre-pages "the image" need — so the
+    // post's only page reads live: its dashed frame carries the arriving
+    // label and its ⋯ stays out of reach.
+    const empty = all(view.root, (e) => String(e.className).includes("sl-slot-frame-empty"));
+    expect(empty).toHaveLength(1);
+    expect(all(empty[0], (e) => String(e.className).includes("sl-skel-label"))).toHaveLength(1);
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(0);
     expect(view.loads).toEqual([]);
   });
 
-  it("the empty image region IS the add control — a dashed placeholder, not a note", async () => {
+  it("an empty page IS a page — dashed, numbered, with its own ⋯; the add tile grows the list", async () => {
     const toggles: string[] = [];
     const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: null }), {
-      strip: { menuOpen: false, onToggleMenu: () => toggles.push("menu") }
+      strip: { menuOpen: false, onToggleMenu: (pageId: string) => toggles.push(pageId) }
     });
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-empty"))).toHaveLength(0);
-    const place = all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"));
-    expect(place).toHaveLength(1);
-    expect(String(place[0].textContent)).toContain("＋");
-    expect(String(place[0].textContent)).toContain("Add image");
-    expect(String(place[0].textContent)).toContain("Generate, upload, or use the post's picture");
-    await place[0].dispatchEvent({ type: "click" });
-    expect(toggles).toEqual(["menu"]);
-    // No ⋯ either — there is no picture to act on yet.
-    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(0);
+    expect(all(view.root, (e) => String(e.className).includes("sl-skel-label"))).toHaveLength(0);
+    const empty = all(view.root, (e) => String(e.className).split(" ").includes("sl-slot-frame-empty"));
+    expect(empty).toHaveLength(1);
+    expect(String(empty[0].textContent)).toContain("Page 1 — empty");
+    // Growth is its own explicit tile, never a side effect.
+    const addPage = all(view.root, (e) => String(e.className).split(" ").includes("sl-addpage"));
+    expect(addPage).toHaveLength(1);
+    expect(String(addPage[0].textContent)).toContain("＋");
+    expect(String(addPage[0].textContent)).toContain("Add a page");
+    // The empty page's own ⋯ opens its menu — generate, upload, adopt, remove.
+    const picbtn = all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"));
+    expect(picbtn).toHaveLength(1);
+    await picbtn[0].dispatchEvent({ type: "click" });
+    expect(toggles).toEqual(["pg_src_m1"]);
   });
 
   it("does not overlay when the request was never submitted", () => {
@@ -182,9 +224,11 @@ describe("Output section", () => {
       acceptedVisualMode: null,
       generation: { id: "gen_1", base: 0, needs: { image: true, caption: false } }
     }), { unsubmitted: true });
-    expect(all(view.root, (e) => String(e.className).includes("sl-output-frame-skel"))).toHaveLength(0);
-    // Unsubmitted is not "generating": the add placeholder is usable again.
-    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"))).toHaveLength(1);
+    expect(all(view.root, (e) => String(e.className).includes("sl-skel-label"))).toHaveLength(0);
+    // Unsubmitted is not "generating": the page's ⋯ and the add tile are usable.
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(1);
+    const addPage = all(view.root, (e) => String(e.className).split(" ").includes("sl-addpage"))[0];
+    expect(addPage.disabled).toBe(false);
   });
 
   it("rewrites the caption in the same field", () => {
@@ -206,16 +250,18 @@ describe("Output section", () => {
     expect(pubs.root.textContent).toContain("Publishes to");
   });
 
-  it("the add-image menu offers Generate, Upload and the post's own picture", async () => {
-    const adopted: string[] = [];
-    const uploaded: string[] = [];
+  it("an empty page's menu offers Generate, Upload and the post's own picture", async () => {
+    const adopted: Array<[unknown, unknown]> = [];
+    const uploaded: unknown[] = [];
+    const generated: unknown[] = [];
     const view = output(post({ generatedImage: null, acceptedVisualMode: null }), {
       imageRefsAvailable: true,
       strip: {
         menuOpen: true,
-        onMenuGenerate: () => view.parts.push("image"),
-        onMenuAdoptSource: () => adopted.push("reference"),
-        onMenuUpload: () => uploaded.push("upload")
+        menuAnchor: "pg_src_m1",
+        onMenuGenerate: (slot: unknown) => generated.push(slot),
+        onMenuAdoptSource: (slot: unknown, child: unknown) => adopted.push([slot, child]),
+        onMenuUpload: (slot: unknown) => uploaded.push(slot)
       }
     });
     const generate = buttonNamed(view.root, "Generate a new image")!;
@@ -223,16 +269,22 @@ describe("Output section", () => {
     // The row says the resolved brief it would run under.
     expect(generate.textContent).toContain("4:5");
     await generate.dispatchEvent({ type: "click" });
-    expect(view.parts).toEqual(["image"]);
+    expect(generated).toHaveLength(1);
+    expect((generated[0] as { page: { pageId: string } }).page.pageId).toBe("pg_src_m1");
     await buttonNamed(view.root, "Upload an image")!.dispatchEvent({ type: "click" });
-    expect(uploaded).toEqual(["upload"]);
-    await buttonNamed(view.root, "Use the post's own picture")!.dispatchEvent({ type: "click" });
-    expect(adopted).toEqual(["reference"]);
+    expect((uploaded[0] as { page: { pageId: string } }).page.pageId).toBe("pg_src_m1");
+    await buttonNamed(view.root, "Use the original image")!.dispatchEvent({ type: "click" });
+    expect(adopted).toHaveLength(1);
+    expect((adopted[0][0] as { page: { pageId: string } }).page.pageId).toBe("pg_src_m1");
+    expect(adopted[0][1]).toBe("m1");
   });
 
   it("says so when the post has no usable picture to adopt", () => {
-    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), { imageRefsAvailable: false, strip: { menuOpen: true } });
-    const adopt = buttonNamed(view.root, "Use the post's own picture")!;
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null, sourceItem: { id: "s", text: "", media: [] } }), {
+      imageRefsAvailable: false,
+      strip: { menuOpen: true, menuAnchor: "pg_1" }
+    });
+    const adopt = buttonNamed(view.root, "Use the original image")!;
     expect(adopt).toBeTruthy();
     expect(adopt.disabled).toBe(true);
     expect(adopt.textContent).toContain("no usable picture");
@@ -242,7 +294,7 @@ describe("Output section", () => {
     // An image made before the text exists is likely to be made again once
     // the brief changes: the row stays pressable and names the quality risk —
     // never a price, which the owner never weighs.
-    const view = output(post({ caption: "", generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
+    const view = output(post({ caption: "", generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true, menuAnchor: "pg_src_m1" } });
     const row = buttonNamed(view.root, "Generate a new image")!;
     expect(row.disabled).toBe(false);
     const warn = all(row, (e) => String(e.className).split(" ").includes("sl-menu-warn"))[0];
@@ -250,7 +302,7 @@ describe("Output section", () => {
     expect(row.textContent).not.toContain("priced as");
     // A post that does have a caption keeps the brief summary — basis and
     // ratio, with no spend named anywhere.
-    const captioned = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true } });
+    const captioned = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true, menuAnchor: "pg_src_m1" } });
     const captionRow = buttonNamed(captioned.root, "Generate a new image")!;
     expect(captionRow.textContent).toContain("From the post's image");
     expect(captionRow.textContent).toContain("4:5");
@@ -277,23 +329,30 @@ describe("Output section", () => {
     });
   });
 
-  it("offers image generation through the menu and Rewrite caption inline, each honest about what it keeps", async () => {
-    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), { strip: { menuOpen: true, onMenuGenerate: () => view.parts.push("image") } });
+  it("offers image generation through the empty page's menu and Rewrite caption inline, each honest about what it keeps", async () => {
+    const generated: unknown[] = [];
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null }), {
+      strip: { menuOpen: true, menuAnchor: "pg_src_m1", onMenuGenerate: (slot: unknown) => generated.push(slot) }
+    });
     const image = buttonNamed(view.root, "Generate a new image")!;
     const caption = buttonNamed(view.root, "Rewrite caption")!;
     expect(caption.getAttribute("title")).toContain("Keeps the accepted image.");
     await image.dispatchEvent({ type: "click" });
     await caption.dispatchEvent({ type: "click" });
-    expect(view.parts).toEqual(["image", "caption"]);
+    expect((generated[0] as { page: { pageId: string } }).page.pageId).toBe("pg_src_m1");
+    expect(view.parts).toEqual(["caption"]);
   });
 
-  it("offers no second ask while the image request runs — the add control is absent, not hidden", () => {
-    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }), { strip: { menuOpen: true } });
+  it("offers no second ask while the image request runs — no page ⋯ and the add tile disabled", () => {
+    const view = output(post({ generation: { id: "gen_1", base: 2, needs: { image: true, caption: false } } }), { strip: { menuOpen: true, menuAnchor: "pg_1" } });
     expect(view.root.textContent).not.toContain("waiting for the agent");
     expect(view.root.textContent).not.toContain("An image request is still pending for this post.");
-    // There is nothing to add to while a slot is generating: no trigger, so
-    // the menu has no anchor and no Generate row exists to double the spend.
-    expect(all(view.root, (e) => ["sl-addplace", "sl-picbtn"].some((c) => String(e.className).split(" ").includes(c)))).toHaveLength(0);
+    // There is nothing to act on while the post's image need is outstanding:
+    // no ⋯ trigger, so no Generate row exists to double the spend — and
+    // adding a page waits for the run to settle.
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-picbtn"))).toHaveLength(0);
+    const addPage = all(view.root, (e) => String(e.className).split(" ").includes("sl-addpage"))[0];
+    expect(addPage === undefined || addPage.disabled).toBe(true);
     expect(buttonNamed(view.root, "Generate a new image")).toBeUndefined();
     // The caption side still names what is outstanding rather than looking
     // like an unfilled form.
@@ -305,7 +364,9 @@ describe("Output section", () => {
   });
 
   it("keeps the generate row honest while the other part is pending — marked, still pressable", () => {
-    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }), { strip: { menuOpen: true } });
+    const view = output(post({ generatedImage: null, acceptedVisualMode: null, generation: { id: "gen_1", base: 2, needs: { image: false, caption: true } } }), {
+      strip: { menuOpen: true, menuAnchor: "pg_src_m1" }
+    });
     const image = buttonNamed(view.root, "Generate a new image")!;
     expect(image.disabled).toBe(false);
     expect(image.getAttribute("data-pending")).toBe("caption");
@@ -315,17 +376,20 @@ describe("Output section", () => {
     expect(caption.getAttribute("title")).toContain("Already requested");
   });
 
-  it("the ⋯ Regenerate… row hands the image to the host's conversation — or says why it cannot", async () => {
-    const slots: number[] = [];
-    const view = output(post(), { strip: { menuOpen: true, agentIntent: true, onRegenIntent: (slot: number) => slots.push(slot) } });
+  it("the ⋯ Regenerate… row hands the page to the host's conversation — or says why it cannot", async () => {
+    const slots: unknown[] = [];
+    const view = output(post(), { strip: { menuOpen: true, menuAnchor: "pg_1", agentIntent: true, onRegenIntent: (slot: unknown) => slots.push(slot) } });
     const row = buttonNamed(view.root, "Regenerate…")!;
     expect(row.disabled).toBe(false);
     expect(row.textContent).toContain("Say what should change in the conversation");
     await row.dispatchEvent({ type: "click" });
-    expect(slots).toEqual([1]);
+    expect(slots).toHaveLength(1);
+    // The hand-off names THIS page — its id and its place in the strip.
+    expect((slots[0] as { page: { pageId: string }; index: number }).page.pageId).toBe("pg_1");
+    expect((slots[0] as { page: { pageId: string }; index: number }).index).toBe(1);
     // A host that never announced the contract: the row stays visible but
     // disabled, naming the reason — no inline fallback ever renders.
-    const off = output(post(), { strip: { menuOpen: true, agentIntent: false } });
+    const off = output(post(), { strip: { menuOpen: true, menuAnchor: "pg_1", agentIntent: false } });
     const dead = buttonNamed(off.root, "Regenerate…")!;
     expect(dead.disabled).toBe(true);
     expect(dead.textContent).toContain("This workspace can't open the conversation.");
@@ -340,7 +404,7 @@ describe("Output section", () => {
     const view = output(post({ generatedImage: null, acceptedVisualMode: null }));
     const visual = all(view.root, (e) => e.tagName === "INPUT" && String(e.getAttribute("name") ?? "").includes("visual"));
     expect(visual).toHaveLength(0);
-    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addplace"))).toHaveLength(1);
+    expect(all(view.root, (e) => String(e.className).split(" ").includes("sl-addpage"))).toHaveLength(1);
     expect(view.loads).toEqual([]);
   });
 
@@ -387,7 +451,7 @@ describe("Output section", () => {
     const root = renderOutputPanel("zh-HK", post() as never, {
       editable: true,
       buffers: {},
-      strip: { menuOpen: true, agentIntent: true }
+      strip: { menuOpen: true, menuAnchor: "pg_1", agentIntent: true }
     } as never);
     // The picture's ⋯ menu — regenerate is the conversation, not a blind retry.
     expect(root.textContent).toContain("重新生成…");
@@ -395,18 +459,18 @@ describe("Output section", () => {
     expect(root.textContent).toContain("上載替換…");
     expect(root.textContent).toContain("改用原帖圖片");
     expect(root.textContent).toContain("檢視");
-    expect(root.textContent).toContain("移除圖片");
+    expect(root.textContent).toContain("移除此頁");
     expect(root.textContent).toContain("重新撰寫文案");
-    // No image yet — the dashed tile carries the add menu.
+    // No image yet — the page is a dashed slot, the add tile its own control.
     const empty = renderOutputPanel("zh-HK", post({ generatedImage: null, acceptedVisualMode: null }) as never, {
       editable: true,
       buffers: {},
-      strip: { menuOpen: true }
+      strip: { menuOpen: true, menuAnchor: "pg_src_m1" }
     } as never);
-    expect(empty.textContent).toContain("＋");
-    expect(empty.textContent).toContain("加入圖片");
+    expect(empty.textContent).toContain("第 1 頁 — 空白");
+    expect(empty.textContent).toContain("新增一頁");
     expect(empty.textContent).toContain("生成新圖片");
-    expect(empty.textContent).toContain("採用原帖圖片");
+    expect(empty.textContent).toContain("改用原帖圖片");
     const pubs = pubsHost("zh-HK", post({ destinationBindings: ["FB_MAIN"] }));
     expect(pubs.root.textContent).toContain("發佈至");
     expect(pubs.root.textContent).toContain("FB_MAIN");
@@ -427,20 +491,24 @@ describe("unsaved changes and footer reasons", () => {
   it("gives Save and Review a specific reason when disabled", () => {
     expect(footerState("en", post() as never, {}).save).toEqual({ disabled: true, reason: "No unsaved changes." });
     expect(footerState("en", post() as never, { buffers: { caption: "新文案內容" } }).save.disabled).toBe(false);
+    // An unfilled page blocks the review — named by its own number.
     expect(footerState("en", post({ generatedImage: null, acceptedVisualMode: null }) as never, {}).review).toEqual({
       disabled: true,
-      reason: "Accept a generated image before publishing."
+      reason: "Page 1 has no image — fill it or remove the page."
     });
     expect(footerState("en", post({ generatedImage: { id: "gm_a", ready: false } }) as never, {}).review.reason).toBe(
       "The accepted image has not arrived yet."
     );
-    // A staged ready candidate is what publish will file once saved.
+    // A staged ready candidate is what publish will file once saved — the
+    // staged page list carries it.
     expect(footerState("en", post({
       generatedImage: null,
       generatedCandidate: { id: "gm_b", ready: true },
       publicationIntent: { publishMode: "publish_now" },
       destinationBindings: ["FB_MAIN"]
-    }) as never, { buffers: { imageId: "gm_b" } }).review.disabled).toBe(false);
+    }) as never, {
+      buffers: { pages: [{ pageId: "pg_src_m1", kind: "generated", mediaId: "gm_b", sourceMediaId: "m1", altText: null, mediaDigest: null, mediaProvenance: null, mediaAcceptance: null }] }
+    }).review.disabled).toBe(false);
   });
 
   it("names the destination on the primary, and a chosen time turns it into Schedule", () => {
@@ -519,17 +587,18 @@ describe("Reference section", () => {
     const adopt = buttonNamed(root, "Use original")!;
     await adopt.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference"]);
-    // The Post tab's picture menu carries the same choice, the same rule.
+    // The Post tab's page menu carries the same choice, the same rule.
     const output = renderOutputPanel("en", post({ sourceItem }) as never, {
       editable: true,
       buffers: {},
       imageRefsAvailable: true,
-      strip: { menuOpen: true, onMenuAdoptSource: () => adopted.push("reference") }
+      strip: { menuOpen: true, menuAnchor: "pg_1", onMenuAdoptSource: () => adopted.push("reference") }
     } as never);
     await buttonNamed(output, "Use the original image")!.dispatchEvent({ type: "click" });
     expect(adopted).toEqual(["reference", "reference"]);
-    // Already the adopted source, or no usable picture: disabled, not hidden.
-    const adoptedAlready = renderReferencePanel("en", post({ sourceItem, acceptedVisualMode: "keep_original" }) as never, {
+    // Already the adopted source — every bindable child is an original page —
+    // or no usable picture: disabled, not hidden.
+    const adoptedAlready = renderReferencePanel("en", post({ sourceItem, acceptedVisualMode: "keep_original", generatedImage: null }) as never, {
       editable: true, imageRefsAvailable: true, onAdoptSource: () => adopted.push("again")
     } as never);
     expect(buttonNamed(adoptedAlready, "Use original")!.disabled).toBe(true);

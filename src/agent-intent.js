@@ -84,6 +84,22 @@ function imageOf(value) {
   return { mediaId, aspectRatio, references, thumbnail };
 }
 
+/*
+ * The page the intent is about — `pageId` names it durably, `index` its
+ * 1-based place for the conversation's wording. Optional: an intent on a
+ * single-image post carries none, and older canvases parse fine either way.
+ */
+function pageOf(value) {
+  if (!value || typeof value !== "object") return null;
+  // Page ids outlive a post's own id space — `pg_leg_<batchItemId>_<rev>_<n>`
+  // embeds one — so the bound is the page field's own, not BATCH_ITEM's.
+  const pageId =
+    typeof value.pageId === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value.pageId) ? value.pageId : null;
+  if (!pageId) return null;
+  const index = Number.isInteger(value.index) && value.index >= 1 && value.index <= 10 ? value.index : null;
+  return { pageId, index };
+}
+
 function suggestedRepliesOf(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -113,7 +129,7 @@ export function gadgetHostFeaturesMessage(features) {
  * the parser reads them — a canvas that cannot describe the image does not
  * send a half-context the conversation would have to guess at.
  */
-export function gadgetAgentIntentMessage({ intent, post, image, suggestedReplies = [], locale = null, requestId = null } = {}) {
+export function gadgetAgentIntentMessage({ intent, post, image, page = null, suggestedReplies = [], locale = null, requestId = null } = {}) {
   if (!AGENT_INTENTS.includes(intent)) throw new Error(`Unknown agent intent ${intent}.`);
   const postValue = postOf(post);
   const imageValue = imageOf(image);
@@ -124,6 +140,7 @@ export function gadgetAgentIntentMessage({ intent, post, image, suggestedReplies
     intent,
     post: postValue,
     image: imageValue,
+    page: pageOf(page),
     suggestedReplies: suggestedRepliesOf(suggestedReplies),
     locale: locale === "zh-HK" ? "zh-HK" : "en"
   };
@@ -140,6 +157,7 @@ export function parseGadgetAgentIntentMessage(data) {
     intent: data.intent,
     post,
     image,
+    page: pageOf(data.page),
     suggestedReplies: suggestedRepliesOf(data.suggestedReplies),
     locale: data.locale === "zh-HK" ? "zh-HK" : "en"
   };

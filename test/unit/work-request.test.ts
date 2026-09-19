@@ -393,9 +393,9 @@ describe("a canvas request the platform can file", () => {
       items: [
         {
           itemId: "instagram:IG_MAIN:p1",
+          pageId: "pg_src_m_p1",
           parts: { caption: false, image: true },
-          imagePrompt: "A bowl of congee with scallions",
-          captionPrompt: "Write a caption"
+          imagePrompt: "A bowl of congee with scallions"
         }
       ]
     });

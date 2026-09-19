@@ -45,35 +45,46 @@ function post(overrides: AnyRec = {}): AnyRec {
 }
 
 describe("alt text", () => {
-  it("is editable in Post, counts as unsaved work, and saves with the revision", async () => {
-    const typed: string[] = [];
-    const root = renderOutputPanel("en", post() as never, { editable: true, buffers: {}, onAltTextInput: (v: string) => typed.push(v) } as never);
+  it("is editable per page in Post, counts as unsaved work, and saves with the revision", async () => {
+    const typed: Array<[string, string]> = [];
+    const root = renderOutputPanel("en", post() as never, {
+      editable: true, buffers: {}, onAltTextInput: (pageId: string, v: string) => typed.push([pageId, v])
+    } as never);
     const field = byId(root, "sl-drawer-alt-text");
     expect(field.value).toBe("A bowl of oats");
     field.value = "Oats with berries";
     await field.dispatchEvent({ type: "input" });
-    expect(typed).toEqual(["Oats with berries"]);
+    // The edit names its page — the client's working list carries it to Save.
+    expect(typed).toEqual([["pg_leg_item-1_2_1", "Oats with berries"]]);
 
-    const buffers = { altText: "Oats with berries" };
-    expect(dirtyParts(post() as never, buffers)).toMatchObject({ altText: true, any: true });
+    // The saved page, as the projection carries it — provenance facts ride
+    // along unchanged in a pages save.
+    const savedPage = {
+      pageId: "pg_leg_item-1_2_1", kind: "generated", mediaId: "gm_a", sourceMediaId: null,
+      altText: "A bowl of oats", mediaDigest: null, mediaProvenance: "recorded", mediaAcceptance: null
+    };
+    const buffers = { pages: [{ ...savedPage, altText: "Oats with berries" }] };
+    expect(dirtyParts(post() as never, buffers)).toMatchObject({ pages: true, any: true });
     expect(footerState("en", post() as never, { buffers }).save.disabled).toBe(false);
-    expect(revisionEntryFor(post() as never, buffers)).toEqual({ batchItemId: "item-1", expectedRevision: 2, altText: "Oats with berries" });
+    expect(revisionEntryFor(post() as never, buffers)).toEqual({ batchItemId: "item-1", expectedRevision: 2, pages: buffers.pages });
     // Emptying it clears the saved alt text rather than carrying it forward.
-    expect(revisionEntryFor(post() as never, { altText: "  " })).toMatchObject({ altText: null });
-    expect(dirtyParts(post() as never, { altText: "A bowl of oats" }).any).toBe(false);
+    expect(revisionEntryFor(post() as never, {
+      pages: [{ ...savedPage, altText: null }]
+    })).toMatchObject({ pages: [{ altText: null }] });
+    expect(dirtyParts(post() as never, { pages: [savedPage] }).any).toBe(false);
   });
 });
 
 describe("accepted image provenance", () => {
   it("explains unknown provenance and re-accepts the pinned image on request", async () => {
-    const asked: string[] = [];
+    let asked = 0;
     const root = renderOutputPanel("en", post({ acceptedGeneratedMediaProvenance: "unknown" }) as never, {
-      editable: true, buffers: {}, onReacceptImage: (id: string) => asked.push(id)
+      editable: true, buffers: {}, onReacceptImage: () => { asked += 1; }
     } as never);
     expect(root.textContent).toContain("The accepted image's origin could not be confirmed.");
     const again = all(root, (e) => e.tagName === "BUTTON" && e.getAttribute("data-action") === "reaccept-image")[0];
     await again.dispatchEvent({ type: "click" });
-    expect(asked).toEqual(["gm_a"]);
+    expect(asked).toBe(1);
     expect(renderOutputPanel("en", post() as never, { editable: true, buffers: {} } as never).textContent).not.toContain("could not be confirmed");
   });
 

@@ -661,12 +661,17 @@ describe("a request whose turn ended with work outstanding", () => {
     await openDrawer(document);
     await click(buttonText(document.body, "Check status"));
     // The re-ask is the footer's Retry: while the request's mark still reads
-    // as running the strip offers no add control, so no second ask — and no
-    // silent replacement — can leave it.
+    // as running every page stays pending — no ⋯ control on any of them —
+    // and the add-page tile is disabled, so no second ask — and no silent
+    // replacement — can leave it.
     expect(findAll(document.body, (element) => {
       const cls = String(element.className ?? "").split(" ");
-      return element.tagName === "BUTTON" && (cls.includes("sl-addplace") || cls.includes("sl-picbtn"));
+      return element.tagName === "BUTTON" && cls.includes("sl-picbtn");
     })).toHaveLength(0);
+    for (const tile of findAll(document.body, (element) => {
+      const cls = String(element.className ?? "").split(" ");
+      return element.tagName === "BUTTON" && cls.includes("sl-addpage");
+    })) expect((tile as { disabled?: boolean }).disabled).toBe(true);
     await click(buttonText(document.body, "Retry"));
     const sent = calls.requests[0]?.[2] as { needs?: Record<string, boolean>; replace?: boolean };
     expect(sent?.needs).toMatchObject({ image: true, caption: true });

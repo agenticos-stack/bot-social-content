@@ -371,7 +371,9 @@ describe("migration 16 (no longer guesses)", () => {
       ["revisions", "alt_text"],
       ["publications", "last_checked_at"],
       ["publications", "provider_id"],
-      ["publications", "receipt_url"]
+      ["publications", "receipt_url"],
+      ["revisions", "pages_json"],
+      ["generated_media", "page_id"]
     ]) {
       db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
     }
@@ -387,7 +389,7 @@ describe("migration 16 (no longer guesses)", () => {
     ).run(CAPTION);
     db.prepare("UPDATE batch_items SET current_revision = 1 WHERE id = 'item-1'").run();
 
-    expect(gadget.storage.migrate()).toBe(19);
+    expect(gadget.storage.migrate()).toBe(20);
     expect(gadget.storage.getRevision("item-1", 1)).toMatchObject({
       acceptedGeneratedMediaId: null,
       acceptedGeneratedMediaDigest: null,

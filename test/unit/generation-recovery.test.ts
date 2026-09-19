@@ -185,15 +185,14 @@ const buttonText = (root: unknown, text: string) =>
   findAll(root, (element) => element.tagName === "BUTTON" && String(element.textContent ?? "").trim() === text)[0];
 const partButton = (root: unknown, part: string) =>
   findAll(root, (element) => element.getAttribute?.("data-part") === part)[0];
-// The image part's control is the empty slot's add menu: the dashed
-// add-place tile opens it, and its Generate row is the pressable action — a
-// bare Generate exists only while there is no picture. A pending request
-// marks the row (`data-requested`) without disabling it — a re-ask always
-// asks first.
+// The image part's control is the empty page's ⋯ chip: it opens that page's
+// menu, whose Generate row is the pressable action — a bare Generate exists
+// only while the page has no picture. A pending request marks the row
+// (`data-requested`) without disabling it — a re-ask always asks first.
 const imageAdd = (root: unknown) =>
   findAll(root, (element) => {
     const cls = String(element.className ?? "").split(" ");
-    return element.tagName === "BUTTON" && cls.includes("sl-addplace");
+    return element.tagName === "BUTTON" && cls.includes("sl-picbtn");
   })[0];
 const imageGenerate = (root: unknown) =>
   findAll(
@@ -236,15 +235,18 @@ describe("a generation request saved before the handoff", () => {
     expect(imageGenerate(document.body)?.disabled).toBe(false);
     expect(partButton(document.body, "caption")?.disabled).toBe(false);
 
-    // The empty image region IS the add control: a dashed placeholder its own
-    // size — no framed empty under an "accepted image" heading.
+    // The empty page is a dashed frame its own size, named by number — its ⋯
+    // chip carries every way a picture joins it, and the separate ＋ tile is
+    // the only way the post itself grows.
     expect(
-      findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
-      "giant empty image frame still rendered"
-    ).toHaveLength(0);
-    expect(findAll(document.body, (element) => element.classList?.contains("sl-addplace")).length).toBeGreaterThan(0);
+      findAll(document.body, (element) => element.classList?.contains("sl-slot-frame-empty")).length,
+      "the empty page's dashed frame missing"
+    ).toBeGreaterThan(0);
+    expect(findAll(document.body, (element) => element.classList?.contains("sl-picbtn")).length).toBeGreaterThan(0);
+    expect(findAll(document.body, (element) => element.classList?.contains("sl-addpage")).length).toBeGreaterThan(0);
     expect(String(document.body.textContent)).not.toContain("Accepted image");
-    expect(String(document.body.textContent)).toContain("Add image");
+    expect(String(document.body.textContent)).toContain("Page 1 — empty");
+    expect(String(document.body.textContent)).toContain("Add a page");
 
     // Card, drawer and per-part copy agree: nothing implies an agent queue
     // for a request that was never submitted.
@@ -301,11 +303,12 @@ describe("a generation request saved before the handoff", () => {
     expect(buttonText(document.body, "繼續生成"), "no zh-HK resume action").toBeTruthy();
     expect(text).toContain("未確認已開始");
     expect(text).not.toContain("正在等待代理處理");
-    expect(text).toContain("加入圖片");
+    expect(text).toContain("第 1 頁 — 空白");
+    expect(text).toContain("新增一頁");
     expect(
-      findAll(document.body, (element) => element.classList?.contains("sl-output-frame-empty")),
-      "giant empty image frame still rendered"
-    ).toHaveLength(0);
+      findAll(document.body, (element) => element.classList?.contains("sl-slot-frame-empty")).length,
+      "the empty page's dashed frame missing"
+    ).toBeGreaterThan(0);
   });
 });
 

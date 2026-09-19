@@ -48,9 +48,25 @@ describe("gadget:agent-intent — the ⋯ hand-off", () => {
       intent: "image.regenerate",
       post,
       image,
+      page: null,
       suggestedReplies: ["Too dark", "太暗了"],
       locale: "zh-HK"
     });
+  });
+
+  it("carries the page the intent is about — named, bounded, and optional", () => {
+    const message = gadgetAgentIntentMessage({
+      intent: "image.regenerate", post, image,
+      page: { pageId: "pg_src_m1", index: 2 },
+      requestId: "ai_1"
+    });
+    expect(parseGadgetAgentIntentMessage(message).page).toEqual({ pageId: "pg_src_m1", index: 2 });
+    // An intent on a single-image post carries none; a malformed one drops
+    // to null rather than guessing at which page the words meant.
+    expect(gadgetAgentIntentMessage({ intent: "image.regenerate", post, image }).page).toBeNull();
+    expect(gadgetAgentIntentMessage({ intent: "image.regenerate", post, image, page: { pageId: "not a page id", index: 2 } }).page).toBeNull();
+    expect(gadgetAgentIntentMessage({ intent: "image.regenerate", post, image, page: { pageId: "pg_1", index: 99 } }).page).toEqual({ pageId: "pg_1", index: null });
+    expect(parseGadgetAgentIntentMessage({ type: "gadget:agent-intent", intent: "image.regenerate", post, image, page: "2" }).page).toBeNull();
   });
 
   it("refuses an intent that cannot name the image — a half-context is worse than none", () => {

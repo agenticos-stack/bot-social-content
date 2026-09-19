@@ -96,13 +96,20 @@ import {
   GENERATION_IMAGE_RATIOS,
   GENERATION_REFERENCE_MODES,
   sourceImageReferences,
+  sourceMediaEntry,
+  skippedSourceVideos,
+  normalizeRevisionPages,
+  legacyRevisionPages,
+  defaultRevisionPages,
+  effectiveRevisionPages,
+  visualModeFromPages,
+  MAX_PAGES_PER_POST,
   itemPresentation,
 
   posterPngConstraints,
   validatePosterLayout,
   validateRevisionDraft,
   normalizeOpenInstagramPosts,
-  publicationMedia,
   isPublisherAddressableUrl,
   posterAltText,
   sourceMediaAltText,
@@ -1025,29 +1032,68 @@ export class Gadget extends DurableObject {
       const source = batchItem?.sourceItem ?? (batchItem?.itemId ? this.storage.getItem(batchItem.itemId) : null);
       if (!source?.id) continue;
       if (source.sourceLabel) labels.add(source.sourceLabel);
-      items.push({
+      /*
+       * ONE WORK-REQUEST ITEM PER PAGE. The platform keys a generation job on
+       * (batchItem, request, page) — the item's page is the job key's page
+       * part — so a post whose image ask covers pages 2 and 3 describes two
+       * items, each carrying its own page's reference list from the durable
+       * brief. The caption is the post's own part, not a page's: it rides an
+       * unpaged item so its job keeps the pre-page whole-item identity.
+       */
+      const scopePages =
+        mark.scope.image === true && Array.isArray(mark.scope.imagePages) && mark.scope.imagePages.length
+          ? mark.scope.imagePages
+          : null;
+      const briefPage = (pageId) =>
+        Array.isArray(mark.imageBrief?.pages) ? mark.imageBrief.pages.find((entry) => entry?.pageId === pageId) : null;
+      const shared = {
         itemId: source.id,
         batchItemId: batchItem.id,
-        parts: { caption: mark.scope.caption === true, image: mark.scope.image === true },
         ...(instructionFingerprint(mark.instructions) ? { instructionsRef: instructionFingerprint(mark.instructions) } : {}),
-        ...(typeof mark.instructions?.image === "string" && mark.instructions.image
-          ? { imagePrompt: mark.instructions.image.slice(0, 4000) }
-          : {}),
-        ...(typeof mark.instructions?.caption === "string" && mark.instructions.caption
-          ? { captionPrompt: mark.instructions.caption.slice(0, 4000) }
-          : {}),
-        /*
-         * The image brief rides the mark verbatim: the aspect ratio is always
-         * explicit, and `imageReferences` PRESENT — even empty — is the
-         * declaration that an edit against the post's image was asked for,
-         * which the platform must resolve or refuse (never silently drop).
-         */
-        ...(mark.imageBrief?.aspectRatio ? { aspectRatio: mark.imageBrief.aspectRatio } : {}),
-        ...(mark.imageBrief && mark.imageBrief.references !== undefined
-          ? { imageReferences: mark.imageBrief.references }
-          : {}),
         base: mark.base ?? 0
-      });
+      };
+      if (mark.scope.caption === true || !scopePages) {
+        items.push({
+          ...shared,
+          parts: { caption: mark.scope.caption === true, image: mark.scope.image === true && !scopePages },
+          ...(typeof mark.instructions?.caption === "string" && mark.instructions.caption
+            ? { captionPrompt: mark.instructions.caption.slice(0, 4000) }
+            : {}),
+          ...(!scopePages && typeof mark.instructions?.image === "string" && mark.instructions.image
+            ? { imagePrompt: mark.instructions.image.slice(0, 4000) }
+            : {}),
+          /*
+           * The image brief rides the mark verbatim: the aspect ratio is
+           * always explicit, and `imageReferences` PRESENT — even empty — is
+           * the declaration that an edit against the post's image was asked
+           * for, which the platform must resolve or refuse (never silently
+           * drop). Unpaged asks carry the whole-brief list, as before.
+           */
+          ...(!scopePages && mark.imageBrief?.aspectRatio ? { aspectRatio: mark.imageBrief.aspectRatio } : {}),
+          ...(!scopePages && mark.imageBrief && mark.imageBrief.references !== undefined
+            ? { imageReferences: mark.imageBrief.references }
+            : {})
+        });
+      }
+      for (const pageId of scopePages ?? []) {
+        const pageBrief = briefPage(pageId);
+        items.push({
+          ...shared,
+          pageId,
+          parts: { caption: false, image: true },
+          ...(typeof mark.instructions?.image === "string" && mark.instructions.image
+            ? { imagePrompt: mark.instructions.image.slice(0, 4000) }
+            : {}),
+          ...(mark.imageBrief?.aspectRatio ? { aspectRatio: mark.imageBrief.aspectRatio } : {}),
+          /*
+           * THIS PAGE'S reference list — PRESENT, even empty, is the
+           * declaration that an edit against this page's own source image was
+           * asked for. A page whose brief names no list asked for no edit
+           * (the "none" mode), which an absent key records.
+           */
+          ...(pageBrief && pageBrief.references !== undefined ? { imageReferences: pageBrief.references } : {})
+        });
+      }
     }
     // ALL OR NOTHING. A request with no durable identity, or with no item
     // carrying it, is one no approval could be correlated to.
@@ -1070,7 +1116,8 @@ export class Gadget extends DurableObject {
       requestId,
       batchId,
       sourceLabel: [...labels].join(", "),
-      itemIds: items.map((entry) => entry.itemId),
+      // One entry per source item — a post's per-page items share its id.
+      itemIds: [...new Set(items.map((entry) => entry.itemId))],
       // The methods these parts are delivered through, so the platform never
       // has to guess which write answers the ask.
       intake: deliveryIntake(parts),
@@ -1880,6 +1927,46 @@ export class Gadget extends DurableObject {
         ? this.storage.getGeneratedMedia(latest.acceptedGeneratedMediaId)
         : null;
     const generatedImage = pinnedImage && pinnedImage.batchItemId === batchItem.id ? pinnedImage : null;
+    /*
+     * The post's ordered pages — the revision's stored list when one exists,
+     * else the derivation its legacy columns imply, else the source-derived
+     * default. One page is a single-image post; two or more a carousel.
+     * Empty pages ride along: they persist, hold their place, and block
+     * publication until filled or removed.
+     */
+    const effectivePages = effectiveRevisionPages(latest, sourceItem, { hasPoster: currentPoster !== null });
+    const statusOf = this.storage.generatedMediaStatuses(batchItem.id);
+    const pages = effectivePages.map((page) => {
+      const row = page.kind === "generated" && page.mediaId ? this.storage.getGeneratedMedia(page.mediaId) : null;
+      /*
+       * The page's own newest proposal — a registration bound to THIS page
+       * that is not the image it already holds. `ready` distinguishes the
+       * two things it can be: a delivered image the owner may keep ("Use"),
+       * or a registration still waiting on bytes (the slot's "arriving"
+       * overlay). A single-page post also counts an unpaged row — its only
+       * page is the unambiguous target.
+       */
+      let candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id, { pageId: page.pageId });
+      if (!candidateRow && effectivePages.length === 1) {
+        candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id);
+      }
+      return {
+        pageId: page.pageId,
+        kind: page.kind,
+        mediaId: page.mediaId,
+        sourceMediaId: page.sourceMediaId,
+        altText: page.altText,
+        mediaProvenance: page.mediaProvenance,
+        mediaAcceptance: page.mediaAcceptance,
+        // The page's generated asset, projected like `generatedImage` —
+        // `ready` says its bytes landed; `status` its freshness.
+        generatedMedia: row && row.batchItemId === batchItem.id ? projectGeneratedMedia(row, statusOf(row)) : null,
+        candidate:
+          candidateRow && candidateRow.id !== page.mediaId && candidateRow.batchItemId === batchItem.id
+            ? projectGeneratedMedia(candidateRow, statusOf(candidateRow))
+            : null
+      };
+    });
     // Candidate or legacy only — a superseded result is history, never offered.
     const candidateRow = this.storage.latestCandidateGeneratedMedia(batchItem.id);
     const generatedCandidate =
@@ -1992,6 +2079,16 @@ export class Gadget extends DurableObject {
       // The owner's explicit visual pick for the latest revision — NULL when
       // none was ever recorded (see migration 15: NULL ≠ `keep_original`).
       acceptedVisualMode: latest?.acceptedVisualMode ?? null,
+      /*
+       * THE ORDERED PAGES — the post's visual as a list. One filled page
+       * publishes as a single image; two or more as a carousel sharing one
+       * ratio and one instruction. An empty page (kind: null) persists,
+       * holds its order, and blocks filing until filled or removed.
+       */
+      pages,
+      // Source album videos nothing carried over — the editor discloses
+      // them rather than silently dropping them from the carousel.
+      skippedVideos: skippedSourceVideos(sourceItem).map((entry) => ({ id: entry.id, kind: entry.kind })),
       ledger: latest?.ledger ?? { spans: [], media: [] },
       state: batchItem.state,
       approval: batchItem.version
@@ -2048,6 +2145,7 @@ export class Gadget extends DurableObject {
        * was made under.
        */
       let needs = null;
+      let needsPages = null;
       const replace = options && typeof options === "object" && options.replace === true;
       /*
        * `options.instructions` — the one-off "this generation only" layer. It
@@ -2070,7 +2168,7 @@ export class Gadget extends DurableObject {
           const valid =
             raw !== null &&
             typeof raw === "object" &&
-            Object.keys(raw).every((key) => ["image", "caption"].includes(key)) &&
+            Object.keys(raw).every((key) => ["image", "caption", "imagePages"].includes(key)) &&
             [raw.image, raw.caption].every((value) => value === undefined || typeof value === "boolean") &&
             (raw.image === true || raw.caption === true);
           if (!valid) {
@@ -2079,6 +2177,30 @@ export class Gadget extends DurableObject {
               code: "generation_needs_invalid",
               message: "Ask for the image, the caption, or both — `needs` takes { image, caption } booleans with at least one true."
             };
+          }
+          /*
+           * `needs.imagePages` names the exact page ids this image ask covers —
+           * a page-scoped regenerate can then never satisfy, or be read as
+           * authorizing, another page. Requires `image`; each entry is a page
+           * id of the post's own page list (checked per item below).
+           */
+          const rawPages = raw.imagePages;
+          if (rawPages !== undefined) {
+            const validPages =
+              raw.image === true &&
+              Array.isArray(rawPages) &&
+              rawPages.length > 0 &&
+              rawPages.length <= MAX_PAGES_PER_POST &&
+              rawPages.every((id) => typeof id === "string" && id.trim() && id.length <= 200) &&
+              new Set(rawPages).size === rawPages.length;
+            if (!validPages) {
+              return {
+                ok: false,
+                code: "generation_needs_invalid",
+                message: "`needs.imagePages` takes the post's own page ids (1–10, no duplicates) and requires `image: true`."
+              };
+            }
+            needsPages = rawPages.map((id) => id.trim());
           }
           needs = { image: raw.image === true, caption: raw.caption === true };
         }
@@ -2189,6 +2311,7 @@ export class Gadget extends DurableObject {
        */
       const snapshots = new Map();
       const unresolved = [];
+      const unknownPages = [];
       for (const item of draftable) {
         const effective = effectiveInstructions(config, item.instructionOverrides, runInstructions);
         const snapshot = {
@@ -2199,26 +2322,83 @@ export class Gadget extends DurableObject {
         for (const part of ["image", "caption"]) if (runInstructions[part]) run[part] = runInstructions[part];
         if (Object.keys(run).length) snapshot.runInstructions = run;
         if (wantsImage) {
+          /*
+           * THE ASK IS PER PAGE. The post's effective page list decides what
+           * "the image" even means: an unscoped image ask covers every page
+           * (a three-image source asks for its three pages), and
+           * `needs.imagePages` narrows it to exactly the named pages — each
+           * must be one of THIS post's own pages or the whole call refuses.
+           */
+          const sourceItem = this.storage.getItem(item.itemId);
+          const revision = this.storage.latestRevision(item.id);
+          const pages = effectiveRevisionPages(revision, sourceItem, {
+            hasPoster: this.storage.getPoster(item.id, item.currentRevision) !== null
+          });
+          const asked = needsPages ?? pages.map((page) => page.pageId);
+          const known = new Set(pages.map((page) => page.pageId));
+          const missing = asked.filter((pageId) => !known.has(pageId));
+          if (missing.length) {
+            unknownPages.push({ batchItemId: item.id, itemId: item.itemId, pageIds: missing });
+            continue;
+          }
+          snapshot.imagePages = asked;
           const mode = imageAsk?.references ?? config?.posterReferences ?? "source";
           const brief = { aspectRatio: imageAsk?.aspectRatio ?? config?.posterAspectRatio ?? "4:5" };
-          if (mode === "source") {
-            const references = sourceImageReferences(this.storage.getItem(item.itemId));
-            if (!references.length) {
-              unresolved.push({ batchItemId: item.id, itemId: item.itemId });
-              continue;
+          const briefPages = [];
+          const union = [];
+          const seenRef = new Set();
+          let failed = false;
+          for (const pageId of asked) {
+            const page = pages.find((entry) => entry.pageId === pageId);
+            if (mode === "source") {
+              /*
+               * PAGE K REFERENCES SOURCE CHILD K ALONE — the page's own bound
+               * child, never the blended every-child set (and never another
+               * post's media). A declared reference that resolves to nothing
+               * refuses the whole call rather than silently generating a
+               * text-to-image the owner did not ask for.
+               */
+              const references = page?.sourceMediaId
+                ? sourceImageReferences(sourceItem, new Set([page.sourceMediaId]))
+                : [];
+              if (!references.length) {
+                unresolved.push({ batchItemId: item.id, itemId: item.itemId, pageId });
+                failed = true;
+                break;
+              }
+              briefPages.push({ pageId, references });
+              for (const ref of references) {
+                if (seenRef.has(ref.id)) continue;
+                seenRef.add(ref.id);
+                union.push(ref);
+              }
+            } else {
+              // "none" — the page explicitly carries NO reference list, which
+              // is a different statement from an empty one.
+              briefPages.push({ pageId });
             }
-            brief.references = references;
           }
+          if (failed) continue;
+          if (mode === "source") brief.references = union;
+          brief.pages = briefPages;
           snapshot.imageBrief = brief;
         }
         snapshots.set(item.id, snapshot);
+      }
+      if (unknownPages.length) {
+        return {
+          ok: false,
+          code: "generation_page_unknown",
+          message: "That page is not part of this post — nothing was requested.",
+          items: unknownPages
+        };
       }
       if (unresolved.length) {
         return {
           ok: false,
           code: "reference_unavailable",
           message:
-            "This post's own image could not be used as a reference — nothing was requested and nothing was charged. Upload an image instead, or generate without the post's image.",
+            "This page's own image could not be used as a reference — nothing was requested and nothing was charged. Upload an image instead, or generate without the post's image.",
           items: unresolved
         };
       }
@@ -2492,14 +2672,30 @@ export class Gadget extends DurableObject {
       return { ok: false, code: "nothing_to_resume", message: "This request has nothing left to generate." };
     }
     const outstanding = { caption: mark.needs.caption === true, image: mark.needs.image === true };
+    /*
+     * ONLY WHAT REMAINS IS FILED, PER PAGE TOO. `draftingWorkRequest` fans
+     * out the mark's immutable scope; a resume drops the page items whose
+     * pages already delivered (`needs.imagePages` is the outstanding set)
+     * and an unpaged item keeps only the flags still outstanding.
+     */
+    const outstandingPages = new Set(Array.isArray(mark.needs.imagePages) ? mark.needs.imagePages : []);
+    const pagedScope = Array.isArray(mark.scope?.imagePages) && mark.scope.imagePages.length > 0;
+    const items = (workRequest.items ?? []).flatMap((entry) => {
+      if (typeof entry.pageId === "string" && entry.pageId) {
+        return outstanding.image && outstandingPages.has(entry.pageId)
+          ? [{ ...entry, parts: { caption: false, image: true } }]
+          : [];
+      }
+      const parts = { caption: outstanding.caption, image: outstanding.image && !pagedScope };
+      return parts.caption || parts.image ? [{ ...entry, parts }] : [];
+    });
+    if (!items.length) {
+      return { ok: false, code: "nothing_to_resume", message: "This request has nothing left to generate." };
+    }
     return {
       ok: true,
       request: mark.id,
-      workRequest: {
-        ...workRequest,
-        parts: { ...outstanding },
-        items: (workRequest.items ?? []).map((entry) => ({ ...entry, parts: { ...outstanding } }))
-      }
+      workRequest: { ...workRequest, parts: { ...outstanding }, items }
     };
   }
 
@@ -2600,7 +2796,8 @@ export class Gadget extends DurableObject {
     ledger,
     generationRequest,
     acceptedGeneratedMediaId,
-    altText
+    altText,
+    pages
   }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem) {
@@ -2629,6 +2826,23 @@ export class Gadget extends DurableObject {
     const config = this.storage.getConfig();
     const sourceItem = this.storage.getItem(batchItem.itemId);
     const previous = this.storage.latestRevision(batchItemId);
+    /*
+     * The ordered page list this save writes, when the caller names one.
+     * `pages` IS the revision's visual: an explicit list re-derives the
+     * legacy singular fields from itself (mode, pin, refs, alt text) so old
+     * readers keep working, and every page's media must belong to THIS post —
+     * a page never carries another post's image.
+     */
+    let normalizedPages = null;
+    if (pages !== undefined) {
+      const normalized = normalizeRevisionPages(pages);
+      if (!normalized.ok) {
+        return { ok: false, issues: [{ code: normalized.code, severity: "block", message: normalized.message }] };
+      }
+      normalizedPages = normalized.pages;
+      const pageScopeIssue = unrequestedPageIssue(batchItem, generationRequest, normalizedPages, previous?.pages ?? []);
+      if (pageScopeIssue) return { ok: false, issues: [pageScopeIssue] };
+    }
     const refinement = normalizeRefinementBrief(
       refinementBrief === undefined
         ? (previous?.refinementBrief ?? (previous ? null : config?.refinementBrief))
@@ -2670,7 +2884,7 @@ export class Gadget extends DurableObject {
      * carries the previous pick forward, like the caption; an explicit null
      * clears it.
      */
-    const visualMode = acceptedVisualMode === undefined ? (previous?.acceptedVisualMode ?? null) : acceptedVisualMode;
+    let visualMode = acceptedVisualMode === undefined ? (previous?.acceptedVisualMode ?? null) : acceptedVisualMode;
     const overrides =
       protectedOverrides === undefined
         ? (previous?.protectedOverrides ?? [])
@@ -2731,11 +2945,11 @@ export class Gadget extends DurableObject {
           source: "original"
         }))
       : [];
-    const originals =
+    let originals =
       originalMediaRefs === undefined
         ? (previous?.originalMediaRefs ?? (batchItem.currentRevision === 0 ? normalizeAssetRefs(sourceMedia) : []))
         : normalizeAssetRefs(originalMediaRefs);
-    const derived =
+    let derived =
       derivedMediaRefs === undefined ? (previous?.derivedMediaRefs ?? []) : normalizeAssetRefs(derivedMediaRefs, "derived");
 
     /*
@@ -2816,7 +3030,168 @@ export class Gadget extends DurableObject {
         }
       }
     }
-    const effectiveAltText = altText === undefined ? (previous?.altText ?? null) : altText;
+    let effectiveAltText = altText === undefined ? (previous?.altText ?? null) : altText;
+
+    /*
+     * An explicit `pages` list resolves each page's media against THIS post
+     * and re-derives the legacy singular fields from the result. Every
+     * generated page's row must be this item's delivered registration;
+     * every source page's mediaId must be one of this post's own source
+     * children — a page never carries another post's image.
+     */
+    let nextPages = null;
+    if (normalizedPages) {
+      const sourceIds = new Set(
+        (Array.isArray(sourceItem?.media) ? sourceItem.media : [])
+          .filter((entry) => typeof entry?.id === "string" && entry.id)
+          .map((entry) => entry.id)
+      );
+      const previousById = new Map((previous?.pages ?? []).map((page) => [page.pageId, page]));
+      const resolved = [];
+      for (let index = 0; index < normalizedPages.length; index += 1) {
+        const page = normalizedPages[index];
+        if (page.kind === "original") {
+          const sourceEntry = sourceMediaEntry(sourceItem, page.mediaId);
+          if (!sourceIds.has(page.mediaId) || !sourceEntry) {
+            return {
+              ok: false,
+              issues: [
+                {
+                  code: "page_source_unknown",
+                  severity: "block",
+                  message: `Page ${index + 1} names an image that is not part of this post.`
+                }
+              ]
+            };
+          }
+          /*
+           * Pages fill by image — a video child is disclosed as skipped,
+           * never bound. A legacy `keep_original` row that already carries
+           * the video stays saveable verbatim (migration 20 kept it
+           * faithful); it just cannot be bound anew.
+           */
+          const carriedOriginal = previousById.get(page.pageId);
+          if (sourceEntry.kind === "video" && !(carriedOriginal?.kind === "original" && carriedOriginal.mediaId === page.mediaId)) {
+            return {
+              ok: false,
+              issues: [
+                {
+                  code: "page_source_video",
+                  severity: "block",
+                  message: `Page ${index + 1} names a video — pages carry images; the post discloses the video as skipped.`
+                }
+              ]
+            };
+          }
+          resolved.push({ ...page, sourceMediaId: page.sourceMediaId ?? page.mediaId });
+          continue;
+        }
+        if (page.kind === "generated") {
+          const row = this.storage.getGeneratedMedia(page.mediaId);
+          if (!row || row.batchItemId !== batchItemId || !row.bytes) {
+            return {
+              ok: false,
+              issues: [
+                {
+                  code: "generated_media_invalid",
+                  severity: "block",
+                  message: `Page ${index + 1}'s generated image does not belong to this post or has not arrived yet.`
+                }
+              ]
+            };
+          }
+          const carried = previousById.get(page.pageId);
+          const carriedSame = carried?.kind === "generated" && carried.mediaId === page.mediaId;
+          const status = statusOf(row);
+          /*
+           * Same rule as the singular pin, per page: a correlated generation
+           * save accepts its own request's result only. A carried-forward
+           * page keeps its recorded facts verbatim — including an "unknown"
+           * provenance, which filing keeps refusing.
+           */
+          if (correlated && !carriedSame &&
+              (status === "superseded" || status === "legacy" || row.generationRequest !== generationRequest)) {
+            return {
+              ok: false,
+              issues: [
+                {
+                  code: "generated_media_not_current",
+                  severity: "block",
+                  message: `Page ${index + 1}'s image does not answer this generation request. Only the owner can accept an older image.`
+                }
+              ]
+            };
+          }
+          /*
+           * An "unknown" provenance is the one fact a carried page MAY
+           * upgrade: the owner re-accepting the same image explicitly
+           * (`mediaAcceptance: "owner_explicit"`) is exactly what
+           * `saveRevision({ acceptedGeneratedMediaId })` did to a legacy
+           * pin — the same act, paged. Nothing else about the pin moves.
+           */
+          const reaccepted = carriedSame && page.mediaAcceptance === "owner_explicit" && carried.mediaProvenance === "unknown";
+          resolved.push({
+            ...page,
+            mediaDigest: carriedSame && carried.mediaDigest ? carried.mediaDigest : await digestBytes(row.bytes),
+            mediaProvenance: reaccepted ? "recorded" : carriedSame ? (carried.mediaProvenance ?? "recorded") : "recorded",
+            mediaAcceptance: reaccepted
+              ? "owner_explicit"
+              : carriedSame
+                ? (carried.mediaAcceptance ?? (correlated ? "generation" : "owner_explicit"))
+                : correlated
+                  ? "generation"
+                  : "owner_explicit"
+          });
+          continue;
+        }
+        // `poster` | empty (kind: null) — mediaId-free by contract.
+        resolved.push(page);
+      }
+      normalizedPages = resolved;
+      // The page list is authoritative; the singular columns mirror its
+      // first generated page so pre-pages readers keep working.
+      visualMode = visualModeFromPages(resolved);
+      const firstGenerated = resolved.find((page) => page.kind === "generated") ?? null;
+      pinnedId = firstGenerated?.mediaId ?? null;
+      pinnedDigest = firstGenerated?.mediaDigest ?? null;
+      pinnedProvenance = firstGenerated?.mediaProvenance ?? null;
+      pinnedSource = firstGenerated?.mediaAcceptance ?? null;
+      originals = resolved
+        .filter((page) => page.kind === "original")
+        .map((page) => {
+          const entry = sourceMediaEntry(sourceItem, page.mediaId);
+          return entry ? { assetId: entry.id, kind: entry.kind, url: entry.url, source: "original" } : null;
+        })
+        .filter(Boolean);
+      derived = resolved
+        .filter((page) => page.kind === "generated")
+        .map((page) => ({ assetId: page.mediaId, kind: "image", source: "derived" }));
+      effectiveAltText = resolved[0]?.altText ?? null;
+      nextPages = resolved;
+    } else {
+      /*
+       * No explicit list — the pages this revision stands for are the ones
+       * its legacy fields already describe: the singular pin becomes one
+       * generated page, `keep_original` becomes the source media pack,
+       * `text_poster` (or a stored poster under a NULL pick) one poster
+       * page. Exactly the migration-20 derivation, applied to new writes.
+       */
+      nextPages = legacyRevisionPages(
+        {
+          batchItemId,
+          revision: batchItem.currentRevision + 1,
+          acceptedVisualMode: visualMode,
+          acceptedGeneratedMediaId: pinnedId,
+          acceptedGeneratedMediaDigest: pinnedDigest,
+          acceptedGeneratedMediaProvenance: pinnedProvenance,
+          acceptanceSource: pinnedSource,
+          altText: effectiveAltText,
+          derivedMediaRefs: derived
+        },
+        sourceItem?.media,
+        { hasPoster: this.storage.posterCarriesTo(batchItemId, batchItem.currentRevision, layout) }
+      );
+    }
 
     const result = this.storage.appendRevision(batchItemId, expectedRevision, {
       caption: effectiveCaption,
@@ -2834,9 +3209,22 @@ export class Gadget extends DurableObject {
       acceptedGeneratedMediaDigest: pinnedDigest,
       acceptedGeneratedMediaProvenance: pinnedProvenance,
       acceptedGeneratedMediaSource: pinnedSource,
-      altText: effectiveAltText
+      altText: effectiveAltText,
+      pages: nextPages
     });
     if (!result.ok) return conflictResult(result.revision);
+
+    /*
+     * A page the save dropped leaves nowhere for its pending work to land —
+     * its unaccepted registrations retire as superseded history rather than
+     * lingering as candidates for a page that no longer exists.
+     */
+    if (normalizedPages && previous?.pages) {
+      const dropped = previous.pages
+        .map((page) => page.pageId)
+        .filter((pageId) => !normalizedPages.some((page) => page.pageId === pageId));
+      if (dropped.length) this.storage.retireGeneratedMediaForPages(batchItemId, dropped);
+    }
 
     this.storage.updateBatchItem(batchItemId, this.nextStateAfterEdit(batchItem));
     /*
@@ -2856,9 +3244,34 @@ export class Gadget extends DurableObject {
       acceptedGeneratedMediaId !== undefined &&
       acceptedGeneratedMediaId !== null &&
       this.storage.getGeneratedMedia(pinnedId)?.generationRequest === generationRequest;
+    /*
+     * The pages THIS save delivered for the request: a generated page counts
+     * only when its row was registered under THIS request id — a carried or
+     * owner-side page completes nothing. Under a paged mark these ids shrink
+     * `needs.imagePages`; under an unpaged mark the `image` flag carries the
+     * pre-page meaning.
+     */
+    const deliveredPageIds = [];
+    if (correlated) {
+      if (normalizedPages) {
+        for (const page of normalizedPages) {
+          if (page.kind !== "generated") continue;
+          if (this.storage.getGeneratedMedia(page.mediaId)?.generationRequest === generationRequest) {
+            deliveredPageIds.push(page.pageId);
+          }
+        }
+      } else if (acceptedForRequest) {
+        const pinnedPage = this.storage.getGeneratedMedia(pinnedId)?.pageId;
+        if (pinnedPage) deliveredPageIds.push(pinnedPage);
+      }
+    }
     this.storage.satisfyItemGeneration(batchItemId, {
       request: correlated ? generationRequest : null,
-      needs: { caption: caption !== undefined, image: acceptedForRequest }
+      needs: {
+        caption: caption !== undefined,
+        image: acceptedForRequest || deliveredPageIds.length > 0,
+        ...(deliveredPageIds.length ? { imagePages: deliveredPageIds } : {})
+      }
     });
     this.storage.clearGenerationIfAllDrafted(batchItem.batchId);
     await this.broadcast({ type: "revision", batchItemId, revision: result.revision });
@@ -2963,7 +3376,17 @@ export class Gadget extends DurableObject {
       acceptedGeneratedMediaDigest: previous?.acceptedGeneratedMediaDigest ?? null,
       acceptedGeneratedMediaProvenance: previous?.acceptedGeneratedMediaProvenance ?? null,
       acceptedGeneratedMediaSource: previous?.acceptanceSource ?? null,
-      altText: previous?.altText ?? null
+      altText: previous?.altText ?? null,
+      /*
+       * Pages carry verbatim — a poster materialization changes no page
+       * structure. A pre-pages row derives its list from its own legacy
+       * columns, with a poster counted as present: this save is storing one.
+       */
+      pages:
+        previous?.pages ??
+        legacyRevisionPages(previous ?? { batchItemId, revision: batchItem.currentRevision + 1 }, this.storage.getItem(batchItem.itemId)?.media, {
+          hasPoster: true
+        })
     });
     if (!result.ok) return conflictResult(result.revision);
 
@@ -2994,7 +3417,7 @@ export class Gadget extends DurableObject {
     return this.enqueueMutation(() => this.saveGeneratedImageLocked(args));
   }
 
-  async saveGeneratedImageLocked({ batchItemId, attachmentId, altText, mimeType, generationRequest }) {
+  async saveGeneratedImageLocked({ batchItemId, attachmentId, altText, mimeType, generationRequest, pageId }) {
     const batchItem = this.storage.getBatchItem(batchItemId);
     if (!batchItem || batchItem.active === false) {
       return {
@@ -3025,6 +3448,62 @@ export class Gadget extends DurableObject {
       const staleIssue = staleGenerationIssue(batchItem, request);
       if (staleIssue) return { ok: false, issues: [staleIssue] };
     }
+    /*
+     * The page this registration answers, checked against the mark's own
+     * scope: a page-scoped ask admits only a page it names — a delivery for
+     * page 3 under a page-2 ask is refused here, not after its bytes land.
+     * An unpaged mark takes no page; an unpaged (owner-side) registration
+     * carries none.
+     */
+    const mark = generationMark(batchItem.generation);
+    const scopePages = Array.isArray(mark?.scope?.imagePages) && mark.scope.imagePages.length ? mark.scope.imagePages : null;
+    let page = typeof pageId === "string" && pageId.trim() ? pageId.trim().slice(0, 200) : null;
+    if (request !== null && scopePages) {
+      /*
+       * A one-page scope is unambiguous: an unpaged registration can only
+       * mean that page, so it is bound to it rather than refused. With two
+       * or more pages outstanding an unnamed delivery answers nothing —
+       * the platform must say which page it generated.
+       */
+      if (!page && scopePages.length === 1) page = scopePages[0];
+      if (!page || !scopePages.includes(page)) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generation_page_unknown",
+              severity: "block",
+              message: "This image does not answer a page the current generation request asked for."
+            }
+          ]
+        };
+      }
+    } else if (request === null && page !== null) {
+      /*
+       * An owner-side registration still names a real page: an upload for a
+       * page the post does not have would dangle a binding no save can ever
+       * resolve, so it is refused with the same issue a scoped ask uses.
+       */
+      const latestRev = this.storage.latestRevision(batchItem.id);
+      const sourceItem = this.storage.getItem(batchItem.itemId);
+      const knownPages = new Set(
+        effectiveRevisionPages(latestRev, sourceItem, {
+          hasPoster: this.storage.getPoster(batchItem.id, batchItem.currentRevision) !== null
+        }).map((entry) => entry.pageId)
+      );
+      if (!knownPages.has(page)) {
+        return {
+          ok: false,
+          issues: [
+            {
+              code: "generation_page_unknown",
+              severity: "block",
+              message: "This image names a page the post does not have."
+            }
+          ]
+        };
+      }
+    }
     this.storage.saveGeneratedMedia({
       id,
       batchItemId,
@@ -3032,6 +3511,7 @@ export class Gadget extends DurableObject {
       altText: typeof altText === "string" ? altText.slice(0, 1000) : null,
       mimeType: typeof mimeType === "string" ? mimeType : null,
       generationRequest: request,
+      pageId: page,
       // Reaching here means the named request is the item's current mark —
       // a stale one was refused above, so the row is never filed stale.
       stale: false
@@ -3054,6 +3534,9 @@ export class Gadget extends DurableObject {
       attachmentId: row.attachmentId,
       mimeType: row.mimeType,
       generationRequest: row.generationRequest ?? null,
+      // The page the registration answers — the platform's delivery call
+      // echoes it back so the right page clears.
+      pageId: row.pageId ?? null,
       createdAt: row.createdAt
     })) };
   }
@@ -3126,9 +3609,16 @@ export class Gadget extends DurableObject {
     // Freshness is re-derived NOW, not taken from registration time: a row
     // whose request was superseded in between completes nothing.
     if (row.generationRequest && this.storage.generatedMediaStatuses(row.batchItemId)(stored) === "candidate") {
+      /*
+       * THE PAGE DELIVERS ITS PAGE ALONE. A registration for page 2 clears
+       * page 2 off the mark's remaining `imagePages` — page 3 stays
+       * outstanding (and vice versa could never happen: the row's `pageId`
+       * was admitted against the scope at registration). An unpaged row
+       * satisfies the unpaged whole-image need, as before.
+       */
       this.storage.satisfyItemGeneration(row.batchItemId, {
         request: row.generationRequest,
-        needs: { image: true }
+        needs: { image: true, ...(row.pageId ? { imagePages: [row.pageId] } : {}) }
       });
     }
     const batchItem = this.storage.getBatchItem(row.batchItemId);
@@ -3367,222 +3857,345 @@ export class Gadget extends DurableObject {
     const sourceOrigin = sourceItem ? this.storage.getSource(sourceItem.sourceBinding)?.origin ?? null : null;
     const isOpenSource = sourceOrigin === "open";
     const warnings = [];
-    let packedMedia = publicationMedia({
-      derivedMediaRefs: revision.derivedMediaRefs,
-      sourceMedia: sourceItem?.media,
-      fallbackAltText: sourceMediaAltText(sourceItem)
+    /*
+     * THE POST PUBLISHES ITS PAGES, IN ORDER. One filled page files a single
+     * image; two or more file a carousel under one caption — the ratio and
+     * instruction they were generated with are already the carousel's own.
+     * An empty page refuses by name and says the fix; nothing is split
+     * across posts and nothing ships unreviewed.
+     *
+     * The page list resolves EVERY legacy shape faithfully (the same
+     * `legacyRevisionPages` migration 20 wrote): a singular generated pin
+     * is one generated page, `keep_original` is the source media pack, a
+     * text poster one poster page — so this is the only publish path, for
+     * old revisions and new.
+     */
+    const pages = effectiveRevisionPages(revision, sourceItem, {
+      hasPoster: this.storage.getPoster(batchItemId, revision.revision) !== null
     });
-    let posterShipped = false;
     /*
-     * An accepted AI-generated image is the visual when this revision was
-     * saved under `ai_refinement` — it ships exactly like a stored poster
-     * (bytes → `uploadMedia` → publisher-addressable URL), with the same
-     * JPEG-only destination rule applied to whatever format was delivered.
-     * `ai_refinement` chosen but no bytes delivered is not "fine": for an
-     * open source that is the same refusal the missing poster gets.
-     */
-    /*
-     * The asset shipped is the one THIS revision pinned (migration 16), never
-     * the newest registration — a later image cannot change what files
-     * without a new revision. A pin whose bytes changed since review (a
-     * re-delivery to the same row) refuses rather than filing unseen pixels.
-     */
-    const wantsGenerated = revision.acceptedVisualMode === "ai_refinement";
-    const pinnedRow =
-      wantsGenerated && revision.acceptedGeneratedMediaId
-        ? this.storage.getGeneratedMedia(revision.acceptedGeneratedMediaId)
-        : null;
-    const generatedImage = pinnedRow && pinnedRow.batchItemId === batchItemId && pinnedRow.bytes ? pinnedRow : null;
-    /*
-     * No pin, or a pin whose provenance is unknown (migration 16's guess), is
-     * not a reviewed image. Refused before anything is uploaded; the owner
-     * accepts an image again, which writes a new revision.
+     * A revision saved under `ai_refinement` stands for a generated image:
+     * no generated page at all means no image was ever reviewed — refused
+     * before anything is uploaded, exactly the pre-page refusal.
      */
     if (
-      wantsGenerated &&
-      (!revision.acceptedGeneratedMediaId || revision.acceptedGeneratedMediaProvenance === "unknown")
+      revision.acceptedVisualMode === "ai_refinement" &&
+      !pages.some((page) => page.kind === "generated")
     ) {
       return {
         ok: false,
         code: "generated_image_review_required",
-        message: revision.acceptedGeneratedMediaId
-          ? "It is not known which generated image was reviewed for this version. Nothing was filed; accept the image again, then submit."
-          : "No generated image has been accepted for this version. Nothing was filed; accept an image, then submit."
+        message: "It is not known which generated image was reviewed. Nothing was filed; accept the image again, then submit."
       };
     }
-    if (generatedImage && revision.acceptedGeneratedMediaDigest) {
-      const digest = await digestBytes(generatedImage.bytes);
-      if (digest !== revision.acceptedGeneratedMediaDigest) {
-        return {
-          ok: false,
-          code: "generated_image_changed",
-          message:
-            "The generated image stored for this post no longer matches the one that was reviewed. Nothing was filed; review the image and save again."
-        };
-      }
-    }
-    if (wantsGenerated && generatedImage?.bytes) {
-      const { mimeType, extension } = posterMimeType(generatedImage.bytes);
-      const jpegOnly = bindings.some((binding) =>
-        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
-      );
-      if (jpegOnly && mimeType !== "image/jpeg") {
-        return {
-          ok: false,
-          code: "generated_image_format_stale",
-          message:
-            "The accepted generated image is a PNG, which Instagram's publish container rejects. Nothing was filed; accept a JPEG copy of the image, then submit again."
-        };
-      }
-      try {
-        const uploaded = await socialUploadMedia(this.env, {
-          dataBase64: bytesToBase64(generatedImage.bytes),
-          mimeType,
-          filename: `generated-${batchItemId}-r${revision.revision}.${extension}`
-        });
-        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
-          packedMedia = {
-            ok: true,
-            media: [
-              {
-                assetId: uploaded.assetId,
-                url: uploaded.url,
-                kind: "image",
-                // The accepted asset's own alt text is the description;
-                // absent, fall back to the post's source description.
-                // Revision alt text, then the asset's, then the source's.
-                altText: revision.altText || generatedImage.altText || sourceMediaAltText(sourceItem),
-                mimeType: uploaded.mimeType ?? mimeType,
-                byteSize: uploaded.byteSize ?? generatedImage.byteLength,
-                width: null,
-                height: null
-              }
-            ]
-          };
-          posterShipped = true;
-        } else {
-          // Refused, not warned: filing on would ship the source photo in place
-          // of the generated image the owner reviewed.
-          return {
-            ok: false,
-            code: "generated_image_not_shipped",
-            message: isDoorRefusal(uploaded) ? uploaded.message : "The generated image could not be prepared for publishing. Nothing was filed; try submitting again."
-          };
-        }
-      } catch (error) {
-        return {
-          ok: false,
-          code: "generated_image_not_shipped",
-          message: `The generated image could not be uploaded (${errorMessage(error)}). Nothing was filed; try submitting again.`
-        };
-      }
-    } else if (wantsGenerated && !generatedImage?.bytes) {
-      /*
-       * Generated-image mode with no stored image is refused for EVERY source,
-       * not only an open one. Shipping the source photograph instead was a
-       * silent substitution: the owner reviewed a generated image and would
-       * have approved someone's reference picture.
-       */
-      return {
-        ok: false,
-        code: "generated_image_required",
-        message: "This post was saved with a generated image, but that image has not arrived yet. Wait for it, or save a different visual, before submitting."
-      };
-    }
-    const poster = this.storage.getPoster(batchItemId, revision.revision);
-    // The visual pick is real: `keep_original` ships the source media even
-    // when a poster exists — the drawer's "Source media" pick would be a lie
-    // otherwise. A revision with no recorded pick (NULL — legacy saves and
-    // agent writes that never named a mode) keeps the ship-when-stored
-    // behaviour it was reviewed under.
-    const visualMode = revision.acceptedVisualMode ?? null;
-    const wantsPoster = visualMode !== "ai_refinement" && visualMode !== "keep_original";
-    if (poster && !posterShipped && wantsPoster) {
-      // The stored bytes carry their format — sniffed, never assumed: a
-      // JPEG renders for Instagram's container, a PNG still ships where a
-      // destination accepts it.
-      const { mimeType, extension } = posterMimeType(poster.bytes);
-      /*
-       * A stored PNG under a JPEG-only destination is a draft saved before
-       * the format rule existed: filing it would reach the provider and hold
-       * at `media_not_ready`, indistinguishable from a slow upload. The owner
-       * path is a fresh render — the drawer's Continue saves one — so refuse
-       * here, while the refusal can still name the fix.
-       */
-      const jpegOnly = bindings.some((binding) =>
-        JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
-      );
-      if (jpegOnly && mimeType !== "image/jpeg") {
-        return {
-          ok: false,
-          code: "poster_format_stale",
-          message:
-            "The saved poster is a PNG, which Instagram's publish container rejects — re-render it as JPEG (Continue to publish saves a fresh one) and submit again."
-        };
-      }
-      try {
-        const uploaded = await socialUploadMedia(this.env, {
-          dataBase64: bytesToBase64(poster.bytes),
-          mimeType,
-          filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
-        });
-        if (!isDoorRefusal(uploaded) && uploaded?.url && isPublisherAddressableUrl(uploaded.url)) {
-          /*
-           * GUD-005: the provider holds media filed without alt text — the
-           * poster describes itself by the copy it renders. Width/height come
-           * from the template, never from sniffed bytes.
-           */
-          let width = null;
-          let height = null;
-          try {
-            ({ width, height } = posterPngConstraints(poster.template));
-          } catch {
-            // A template the schema no longer knows ships without dims.
-          }
-          packedMedia = {
-            ok: true,
-            media: [
-              {
-                assetId: uploaded.assetId,
-                url: uploaded.url,
-                kind: "image",
-                altText: revision.altText || posterAltText(revision.posterLayout),
-                mimeType: uploaded.mimeType ?? mimeType,
-                byteSize: uploaded.byteSize ?? poster.byteLength,
-                width,
-                height
-              }
-            ]
-          };
-          posterShipped = true;
-        } else {
-          warnings.push({
-            code: "poster_not_shipped",
-            message: isDoorRefusal(uploaded) ? uploaded.message : "The poster upload did not return a publisher-addressable URL — the post carries the source media."
-          });
-        }
-      } catch (error) {
-        warnings.push({
-          code: "poster_not_shipped",
-          message: `The poster could not be uploaded (${errorMessage(error)}) — the post carries the source media.`
-        });
-      }
-    } else if (wantsPoster && revision.posterLayout && !(revision.derivedMediaRefs ?? []).length) {
-      warnings.push({
-        code: "poster_not_shipped",
-        message: "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
-      });
-    }
-    if (isOpenSource && !posterShipped) {
+    /*
+     * An OPEN source's photos are another company's republication: the post
+     * must carry a generated visual (a generated page or the poster), or
+     * nothing files — checked on the page list itself, before any source
+     * media is even resolved.
+     */
+    if (
+      isOpenSource &&
+      !pages.some((page) => page.kind === "generated" || page.kind === "poster")
+    ) {
       return {
         ok: false,
         code: "poster_required",
-        message: "This post comes from an account you watch, not one you own — publishing another company's photo needs a generated visual (the text poster or an accepted generated image). Produce one for this post, or publish from an account you own."
+        message:
+          "This post comes from an account you watch, not one you own — publishing another company's photo needs a generated visual (the text poster or an accepted generated image). Produce one for this post, or publish from an account you own."
       };
     }
-    if (!packedMedia.ok) {
-      return { ok: false, code: packedMedia.code, message: packedMedia.message };
+    /*
+     * An empty page refuses by name and says the fix — EXCEPT the one shape
+     * that is not an unfilled slot: a post whose source carries no bindable
+     * media and whose only page is the derived empty one. That is a text
+     * post, and it files with no media exactly as it used to.
+     */
+    const emptyIndex = pages.findIndex((page) => !page.kind);
+    const bindableSourceMedia = (Array.isArray(sourceItem?.media) ? sourceItem.media : []).some(
+      (entry) => typeof entry?.id === "string" && entry.id
+    );
+    const textOnlyPost = pages.length === 1 && emptyIndex === 0 && !bindableSourceMedia;
+    if (emptyIndex !== -1 && !textOnlyPost) {
+      return {
+        ok: false,
+        code: "page_empty",
+        message: `Page ${emptyIndex + 1} has no image — fill it or remove the page, then submit again.`
+      };
     }
+    const jpegOnly = bindings.some((binding) =>
+      JPEG_ONLY_IMAGE_PROVIDERS.has(this.storage.getDestination(binding)?.provider ?? "")
+    );
+    const poster = this.storage.getPoster(batchItemId, revision.revision);
+    /*
+     * Uploads happen once per distinct asset — two poster pages share the
+     * revision's one render, and a repeated generated row uploads once.
+     * `posterUpload` stays `undefined` until the first poster page resolves
+     * it: a stored render that can't be uploaded becomes `null`, and the
+     * page falls back to its own bound source child, disclosed.
+     */
+    const uploaded = new Map();
+    let posterUpload;
+    let posterRefusalMessage = null;
+    const media = [];
+    let shippedSourceMedia = false;
+    let posterShipped = false;
+    for (let index = 0; index < pages.length; index += 1) {
+      const page = pages[index];
+      const at = index + 1;
+      const pageAlt = page.altText || (index === 0 ? revision.altText : null);
+      // A falsy kind is an unfilled slot; only the text-post shape reaches
+      // here (every other empty page was refused above), and it packs nothing.
+      if (!page.kind) continue;
+      if (page.kind === "original") {
+        const entry = sourceMediaEntry(sourceItem, page.mediaId);
+        if (!entry || !isPublisherAddressableUrl(entry.url)) {
+          return {
+            ok: false,
+            code: "media_unaddressable",
+            message: `Page ${at}'s image is not reachable by the publisher — nothing was filed.`
+          };
+        }
+        shippedSourceMedia = true;
+        media.push({
+          assetId: entry.id,
+          url: entry.url,
+          kind: entry.kind === "video" ? "video" : "image",
+          altText: pageAlt || entry.alt || sourceMediaAltText(sourceItem)
+        });
+        continue;
+      }
+      if (page.kind === "generated") {
+        const row = page.mediaId ? this.storage.getGeneratedMedia(page.mediaId) : null;
+        if (!row || row.batchItemId !== batchItemId || !row.bytes) {
+          /*
+           * A legacy `derivedMediaRefs` asset is not a generated_media row —
+           * it is a stored publisher-addressable ref, and the pre-page packer
+           * shipped it as-is. The page carries its own ref; the same fallback
+           * packs it here. Only when neither resolves is the page refused.
+           */
+          const ref = (Array.isArray(revision.derivedMediaRefs) ? revision.derivedMediaRefs : []).find(
+            (entry) => (entry?.assetId ?? entry?.id) === page.mediaId
+          );
+          if (ref && isPublisherAddressableUrl(ref.url)) {
+            media.push({
+              assetId: ref.assetId ?? ref.id,
+              url: ref.url,
+              kind: ref.kind === "video" ? "video" : "image",
+              altText: pageAlt || ref.altText || sourceMediaAltText(sourceItem)
+            });
+            continue;
+          }
+          return {
+            ok: false,
+            code: "generated_image_required",
+            message: `Page ${at} was saved with a generated image that has not arrived yet. Wait for it, or save a different visual, before submitting.`
+          };
+        }
+        /*
+         * No provenance (migration 16's guess) is not a reviewed image, and
+         * bytes that changed since review are not the reviewed image — the
+         * same refusals the singular pin enforced, per page.
+         */
+        if (page.mediaProvenance === "unknown") {
+          return {
+            ok: false,
+            code: "generated_image_review_required",
+            message: `It is not known which generated image was reviewed for page ${at}. Nothing was filed; accept the image again, then submit.`
+          };
+        }
+        if (page.mediaDigest) {
+          const digest = await digestBytes(row.bytes);
+          if (digest !== page.mediaDigest) {
+            return {
+              ok: false,
+              code: "generated_image_changed",
+              message: `The generated image stored for page ${at} no longer matches the one that was reviewed. Nothing was filed; review the image and save again.`
+            };
+          }
+        }
+        let pack = uploaded.get(row.id);
+        let refusalMessage = null;
+        if (pack === undefined) {
+          const { mimeType, extension } = posterMimeType(row.bytes);
+          if (jpegOnly && mimeType !== "image/jpeg") {
+            return {
+              ok: false,
+              code: "generated_image_format_stale",
+              message: `Page ${at}'s generated image is a PNG, which Instagram's publish container rejects. Nothing was filed; accept a JPEG copy of the image, then submit again.`
+            };
+          }
+          try {
+            const up = await socialUploadMedia(this.env, {
+              dataBase64: bytesToBase64(row.bytes),
+              mimeType,
+              filename: `generated-${batchItemId}-r${revision.revision}-p${at}.${extension}`
+            });
+            if (isDoorRefusal(up)) {
+              refusalMessage = up.message;
+            } else if (up?.url && isPublisherAddressableUrl(up.url)) {
+              pack = {
+                assetId: up.assetId,
+                url: up.url,
+                kind: "image",
+                mimeType: up.mimeType ?? mimeType,
+                byteSize: up.byteSize ?? row.byteLength,
+                width: null,
+                height: null
+              };
+            }
+          } catch (error) {
+            return {
+              ok: false,
+              code: "generated_image_not_shipped",
+              message: `Page ${at}'s generated image could not be uploaded (${errorMessage(error)}). Nothing was filed; try submitting again.`
+            };
+          }
+          uploaded.set(row.id, pack ?? null);
+          pack = uploaded.get(row.id);
+        }
+        if (!pack) {
+          // Refused, not warned: filing on would ship the source photo in
+          // place of the generated image the owner reviewed.
+          return {
+            ok: false,
+            code: "generated_image_not_shipped",
+            message: refusalMessage || "The generated image could not be prepared for publishing. Nothing was filed; try submitting again."
+          };
+        }
+        media.push({ ...pack, altText: pageAlt || row.altText || sourceMediaAltText(sourceItem) });
+        continue;
+      }
+      // page.kind === "poster" — the revision's own render, shared by every
+      // poster page (the posters table holds one render per revision).
+      if (posterUpload === undefined) {
+        posterUpload = null;
+        if (poster) {
+          const { mimeType, extension } = posterMimeType(poster.bytes);
+          /*
+           * A stored PNG under a JPEG-only destination is a draft saved
+           * before the format rule existed: filing it would hold at
+           * `media_not_ready`, indistinguishable from a slow upload.
+           */
+          if (jpegOnly && mimeType !== "image/jpeg") {
+            return {
+              ok: false,
+              code: "poster_format_stale",
+              message:
+                "The saved poster is a PNG, which Instagram's publish container rejects — re-render it as JPEG (Continue to publish saves a fresh one) and submit again."
+            };
+          }
+          try {
+            const up = await socialUploadMedia(this.env, {
+              dataBase64: bytesToBase64(poster.bytes),
+              mimeType,
+              filename: `poster-${batchItemId}-r${revision.revision}.${extension}`
+            });
+            if (isDoorRefusal(up)) {
+              posterRefusalMessage = up.message ?? null;
+            } else if (up?.url && isPublisherAddressableUrl(up.url)) {
+              let width = null;
+              let height = null;
+              try {
+                ({ width, height } = posterPngConstraints(poster.template));
+              } catch {
+                // A template the schema no longer knows ships without dims.
+              }
+              posterUpload = {
+                assetId: up.assetId,
+                url: up.url,
+                kind: "image",
+                mimeType: up.mimeType ?? mimeType,
+                byteSize: up.byteSize ?? poster.byteLength,
+                width,
+                height
+              };
+            }
+          } catch {
+            posterUpload = null;
+          }
+        }
+      }
+      if (posterUpload) {
+        posterShipped = true;
+        media.push({ ...posterUpload, altText: pageAlt || posterAltText(revision.posterLayout) });
+        continue;
+      }
+      /*
+       * The poster could not ship — the page falls back to its OWN bound
+       * source child, disclosed, the way the single-image post used to fall
+       * back to the source pack. No bound child means the page has no image
+       * at all, which is a refusal, not a silent drop.
+       */
+      const fallback = page.sourceMediaId ? sourceMediaEntry(sourceItem, page.sourceMediaId) : null;
+      if (fallback && isPublisherAddressableUrl(fallback.url)) {
+        warnings.push({
+          code: "poster_not_shipped",
+          message: posterRefusalMessage
+            ? `Page ${at}'s poster can't be sent to the publisher (${posterRefusalMessage}) — the page carries the source image.`
+            : `Page ${at}'s poster can't be sent to the publisher — the page carries the source image.`
+        });
+        shippedSourceMedia = true;
+        media.push({
+          assetId: fallback.id,
+          url: fallback.url,
+          kind: fallback.kind === "video" ? "video" : "image",
+          altText: pageAlt || fallback.alt || sourceMediaAltText(sourceItem)
+        });
+        continue;
+      }
+      return {
+        ok: false,
+        code: "poster_not_shipped",
+        message: `Page ${at}'s poster could not be uploaded and the page has no source image to fall back to. Nothing was filed.`
+      };
+    }
+    /*
+     * An OPEN source's photos are another company's republication: filing
+     * any source-derived media needs a generated visual in its place. The
+     * check runs on what SHIPPED — a poster page that fell back to the
+     * source child still publishes company pixels.
+     */
+    if (isOpenSource && shippedSourceMedia) {
+      return {
+        ok: false,
+        code: "poster_required",
+        message:
+          "This post comes from an account you watch, not one you own — publishing another company's photo needs a generated visual (the text poster or an accepted generated image). Produce one for this post, or publish from an account you own."
+      };
+    }
+    /*
+     * A poster layout with no render to ship — the same warning the old
+     * path gave when the visual couldn't be sent and the post carried the
+     * source media instead.
+     */
+    if (
+      !posterShipped &&
+      revision.posterLayout &&
+      (revision.acceptedVisualMode ?? null) !== "keep_original" &&
+      (revision.acceptedVisualMode ?? null) !== "ai_refinement" &&
+      !pages.some((page) => page.kind === "poster" || page.kind === "generated")
+    ) {
+      warnings.push({
+        code: "poster_not_shipped",
+        message:
+          "The generated poster can't be sent to the publisher — the post carries the source media. The poster image is downloadable from the batch drawer."
+      });
+    }
+    /*
+     * Source-album videos no page carries — disclosed by count, never
+     * silently dropped. A page bound to a video child does carry it
+     * (legacy `keep_original` behavior), so only the un-carried count.
+     */
+    const carriedSourceIds = new Set(pages.filter((page) => page.kind === "original").map((page) => page.mediaId));
+    const skippedVideos = skippedSourceVideos(sourceItem).filter((video) => !carriedSourceIds.has(video.id));
+    if (skippedVideos.length) {
+      warnings.push({
+        code: "source_video_skipped",
+        message: `${skippedVideos.length} video${skippedVideos.length === 1 ? "" : "s"} from the source post were not carried into this post — it publishes without ${skippedVideos.length === 1 ? "it" : "them"}.`
+      });
+    }
+    const packedMedia = { ok: true, media };
 
     // TASK-015: the attribution the door carries is the observation record the
     // ledger stands on, checked against it here rather than assumed.
@@ -4308,6 +4921,43 @@ function unrequestedPartIssue(storage, batchItem, { generationRequest, caption, 
   return null;
 }
 
+/**
+ * A correlated save under a PAGE-scoped mark may only fill the pages the
+ * request named. "Regenerate page 2" must not write a generated image onto
+ * page 3 — each page is compared against the previous revision's own list,
+ * so a carried-forward fill is never misread as new work. Runs only when the
+ * mark scopes pages; an unpaged image scope keeps `unrequestedPartIssue`'s
+ * whole-visual check, and owner saves (no request id) are never limited.
+ */
+function unrequestedPageIssue(batchItem, generationRequest, pages, previousPages) {
+  if (typeof generationRequest !== "string" || !generationRequest) return null;
+  const mark = generationMark(batchItem.generation);
+  if (!mark || mark.id !== generationRequest) return null;
+  const scopePages = Array.isArray(mark.scope?.imagePages) && mark.scope.imagePages.length ? mark.scope.imagePages : null;
+  const previousById = new Map((previousPages ?? []).map((page) => [page.pageId, page]));
+  for (const page of pages ?? []) {
+    if (page?.kind !== "generated") continue;
+    const carried = previousById.get(page.pageId);
+    const carriedSame = carried?.kind === "generated" && carried.mediaId === page.mediaId;
+    if (carriedSame) continue;
+    if (!mark.scope.image) {
+      return {
+        code: "generation_part_not_requested",
+        severity: "block",
+        message: "This request asked for a new caption only, so the post's images were left as they are."
+      };
+    }
+    if (scopePages && !scopePages.includes(page.pageId)) {
+      return {
+        code: "generation_page_not_requested",
+        severity: "block",
+        message: "This request asked for a different page — the rest of the post's pages were left as they are."
+      };
+    }
+  }
+  return null;
+}
+
 function instructionOverridesOf(batchItem) {
   const stored = batchItem?.instructionOverrides ?? {};
   const text = (value) => (typeof value === "string" && value.trim() ? value : null);
@@ -4348,6 +4998,8 @@ function projectGeneratedMedia(row, status = null) {
     deliveredAt: row.deliveredAt,
     digest: row.contentDigest,
     generationRequest: row.generationRequest,
+    // The page the registration answers (schema 20; null = unpaged/legacy).
+    pageId: row.pageId ?? null,
     derivedFrom: row.derivedFrom ?? null,
     // "accepted" | "candidate" | "superseded" | "legacy" (derived on read).
     status,
@@ -4506,12 +5158,25 @@ function exportableGenerationMark(mark) {
   } catch {
     return mark;
   }
-  const references = parsed?.imageBrief?.references;
-  if (!Array.isArray(references)) return mark;
-  parsed.imageBrief.references = references.flatMap((ref) =>
-    typeof ref?.id === "string" && ref.id ? [{ id: ref.id }] : []
-  );
-  return JSON.stringify(parsed);
+  const scrubReferences = (references) =>
+    Array.isArray(references)
+      ? references.flatMap((ref) => (typeof ref?.id === "string" && ref.id ? [{ id: ref.id }] : []))
+      : references;
+  const brief = parsed?.imageBrief;
+  if (!brief || typeof brief !== "object") return mark;
+  let touched = false;
+  if (Array.isArray(brief.references)) {
+    brief.references = scrubReferences(brief.references);
+    touched = true;
+  }
+  if (Array.isArray(brief.pages)) {
+    brief.pages = brief.pages.map((page) =>
+      page && typeof page === "object" && Array.isArray(page.references)
+        ? ((touched = true), { ...page, references: scrubReferences(page.references) })
+        : page
+    );
+  }
+  return touched ? JSON.stringify(parsed) : mark;
 }
 
 function escapeHtml(value) {

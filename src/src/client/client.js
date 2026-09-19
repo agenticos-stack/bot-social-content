@@ -67,6 +67,8 @@ import {
   renderPublishControls,
   renderReferencePanel,
   revisionEntryFor,
+  pagesOfItem,
+  workingPages,
   REGEN_SUGGESTION_KEYS
 } from "./drawer.js";
 import { detectProtectedLiterals, generationDisplayStage, generationMark, itemPresentation, platformStage, postFiled, sourceImageReferences } from "../../model.js";
@@ -354,6 +356,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-picbtn:hover:not(:disabled) { background: var(--sl-hover); }
 .sl-slot-media .sl-picbtn:disabled { opacity: .5; }
 @media (prefers-reduced-motion: reduce) { .sl-picbtn { transition: none; } }
+/* The page number rides on the frame — an empty page names itself the way
+   the refusal does ("page 3 has no image" points at this slot). */
+.sl-slot-num { position: absolute; top: 8px; right: 8px; z-index: 2; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: rgba(255,255,255,.92); border: 1px solid var(--sl-line); color: var(--sl-ink-2); font-size: 11px; font-weight: 650; line-height: 20px; text-align: center; box-shadow: var(--sl-e-1); }
+/* An unfilled page: the same frame size as the picture that will fill it,
+   dashed — the slot that blocks filing until it has an image. */
+.sl-slot-frame-empty { border-style: dashed; border-color: var(--sl-line-strong); background: var(--sl-surface-2); display: flex; align-items: center; justify-content: center; }
+/* "Add a page" is the strip's only growth control — a quiet dashed tile the
+   size of a page, never a menu: growth is the one thing it does. */
+.sl-addpage { width: 100%; min-height: 44px; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 8px 10px; cursor: pointer; }
+.sl-addpage:hover:not(:disabled) { background: var(--sl-hover); color: var(--sl-ink); }
+.sl-addpage:disabled { opacity: .5; }
+.sl-pages-rule { margin: 0; }
+/* Per-page alt text fields stack under the caption — each labelled by page. */
+.sl-alt-group { display: flex; flex-direction: column; gap: 8px; }
+.sl-alt-group .sl-alt-text + .sl-alt-text { margin-top: 2px; }
 /* The empty slot is the add control — a dashed placeholder the exact size of
    the picture that will replace it, so the panel never jumps when one lands. */
 .sl-addplace { width: 100%; aspect-ratio: 4 / 5; border: 1.5px dashed var(--sl-line-strong); border-radius: var(--sl-radius-card); background: transparent; color: var(--sl-ink-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; text-align: center; padding: 10px; cursor: pointer; }
@@ -1542,7 +1559,7 @@ function App() {
      * a generation — filing stays the durable requestGeneration the agent
      * submits after the owner approves the plan.
      */
-    const postAgentIntent = (item) => {
+    const postAgentIntent = (item, slot = null) => {
       if (!hostFeatures.has("agent-intent")) return;
       const brief = imageBriefOf(item);
       try {
@@ -1550,11 +1567,14 @@ function App() {
           intent: "image.regenerate",
           post: { batchId: batch.id, batchItemId: item.id, title: item.title ?? null },
           image: {
-            mediaId: item.generatedImage?.id ?? null,
+            // The image the conversation corrects is the SLOT's picture, not
+            // the post's first one — page 2's regen talks about page 2.
+            mediaId: slot?.generated?.id ?? item.generatedImage?.id ?? null,
             aspectRatio: brief.ratio,
             references: brief.useSource ? "source" : "none",
             thumbnail: intentThumbnail()
           },
+          page: slot ? { pageId: slot.page.pageId, index: slot.index } : null,
           suggestedReplies: REGEN_SUGGESTION_KEYS.map((key) => t(locale, key)),
           locale
         }), "*");
@@ -1610,7 +1630,7 @@ function App() {
      * picks, the schedule field's chosen local time, and the top-up ask's
      * in-flight/outcome flags. Like the buffers, one entry per post.
      */
-    const drawerUi = new Map(); // batchItemId -> { menuOpen?, menuAnchor?, destOpen?, picking?, scheduledAt?, picked?, candidateDismissed?, topupPending?, topupDone?, topupCancelled? }
+    const drawerUi = new Map(); // batchItemId -> { menuOpen?, menuAnchor? (a pageId), destOpen?, picking?, scheduledAt?, picked?, dismissedCandidates? (Set), topupPending?, topupDone?, topupCancelled? }
     const uiOf = (id) => drawerUi.get(id) ?? {};
     const patchUi = (id, patch) => drawerUi.set(id, { ...uiOf(id), ...patch });
     // Every change to a buffered field bumps that field's edit version, so a
@@ -1827,7 +1847,7 @@ function App() {
       if (failed) announce(failed, "");
       if (!live) return false;
       if (!failed) {
-        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource", "pages"]);
         ownerUploads.delete(item.id);
       }
       await refetchItems();
@@ -1835,9 +1855,28 @@ function App() {
       return !failed;
     };
 
-    const pickOwnerUpload = (item, file) => {
+    /**
+     * The visual commits that are decisions, not drafts: page structure
+     * (add/remove/fill), source adoption, visual mode. They save at once —
+     * exactly what `acceptedVisualMode` did before pages existed — so an
+     * empty page the owner made persists and blocks filing until filled.
+     * The staged `pages` buffer is reserved for edits that go through Save:
+     * a staged candidate pick and per-page alt text.
+     */
+    const applyPages = (item, nextPages) => applyVisual(item, { pages: nextPages });
+
+    /** A fresh durable page id — unique inside this post's list. */
+    const newPageId = (item) => {
+      const taken = new Set(workingPages(item, bufferOf(item.id)).map((page) => page.pageId));
+      for (let n = 1; ; n += 1) {
+        const id = `pg_own_${Date.now().toString(36)}_${n}`;
+        if (!taken.has(id)) return id;
+      }
+    };
+
+    const pickOwnerUpload = (item, pageId = null, file = null) => {
       if (file) {
-        ownerUploads.set(item.id, file);
+        ownerUploads.set(item.id, { file, pageId });
         patchBuffer(item.id, { imageSource: "upload" });
         redraw();
         return;
@@ -1848,7 +1887,7 @@ function App() {
       input.addEventListener("change", () => {
         const chosen = input.files?.[0];
         if (!chosen) return;
-        ownerUploads.set(item.id, chosen);
+        ownerUploads.set(item.id, { file: chosen, pageId });
         patchBuffer(item.id, { imageSource: "upload" });
         redraw();
       });
@@ -1856,15 +1895,21 @@ function App() {
     };
 
     const adoptOwnerUpload = async (item) => {
-      const file = ownerUploads.get(item.id);
+      const upload = ownerUploads.get(item.id);
+      const file = upload?.file ?? upload ?? null;
+      const pageId = upload?.pageId ?? null;
       if (!file || saving) return;
       saving = true;
       redrawFooter();
       let failed = null;
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
+        // The upload answers the PAGE it was picked for — the row carries
+        // the binding, so the save pins it into exactly that slot and a
+        // delivery for another page can never fill this one.
         const registered = await rpc.saveGeneratedImage({
           batchItemId: item.id,
+          pageId,
           altText: file.name.replace(/\.[^.]+$/, "") || null,
           mimeType: file.type || null
         });
@@ -1874,14 +1919,19 @@ function App() {
           const delivered = await rpc.deliverGeneratedImage({ id: registered.id, bytes });
           if (delivered?.ok === false) failed = revisionIssue(delivered);
           else {
-            const result = await rpc.saveRevisions({
-              revisions: [{
-                batchItemId: item.id,
-                expectedRevision: item.revision ?? 0,
-                acceptedVisualMode: "ai_refinement",
-                acceptedGeneratedMediaId: registered.id
-              }]
-            });
+            const pages = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, kind: "generated", mediaId: registered.id } : page
+            );
+            const result = pageId
+              ? await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, pages }] })
+              : await rpc.saveRevisions({
+                    revisions: [{
+                      batchItemId: item.id,
+                      expectedRevision: item.revision ?? 0,
+                      acceptedVisualMode: "ai_refinement",
+                      acceptedGeneratedMediaId: registered.id
+                    }]
+                  });
             failed = revisionIssue(result);
           }
         }
@@ -1893,7 +1943,7 @@ function App() {
       if (failed) announce(failed, "");
       if (!live) return;
       if (!failed) {
-        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource"]);
+        dropBufferFields(item.id, ["imageId", "visualMode", "imageSource", "pages"]);
         ownerUploads.delete(item.id);
       }
       await refetchItems();
@@ -1942,7 +1992,7 @@ function App() {
                 target.generation = one.generation ?? null;
                 target.phase = null;
               }
-              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText", "publicationIntent"]);
+              acknowledgeFields(job.item.id, job.snapshot, ["caption", "imageId", "altText", "pages", "publicationIntent"]);
               captionConflicts.delete(job.item.id);
               if (note) note.textContent = t(locale, "drawerRevisionSaved", { n: one.revision });
             } else {
@@ -2225,7 +2275,7 @@ function App() {
      * menu's Generate) means the staged brief's own one-off rules apply.
      * Returns true only when a request was actually filed.
      */
-    const requestPart = async (item, part, runInstruction = null) => {
+    const requestPart = async (item, part, runInstruction = null, scopePages = null) => {
       if (saving) return;
       const parts = [part];
       // Any outstanding part — the other one, the same one, or the request a
@@ -2316,6 +2366,10 @@ function App() {
       const options = { needs };
       let brief = null;
       if (part === "image") {
+        // A page-scoped ask names exactly the pages it covers — a page's
+        // own Generate, never the whole post's. `null` keeps the legacy
+        // meaning: every page the post has.
+        if (Array.isArray(scopePages) && scopePages.length) needs.imagePages = scopePages;
         brief = imageBriefOf(item);
         options.image = { references: brief.useSource ? "source" : "none", aspectRatio: brief.ratio };
         const oneOff = runInstruction !== null ? String(runInstruction).trim() : brief.oneOff.trim();
@@ -3045,7 +3099,15 @@ function App() {
           editable,
           saving,
           imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
-          onAdoptSource: () => { void applyVisual(item, { acceptedVisualMode: "keep_original" }); }
+          onAdoptSource: () => {
+            // Adopt the post's own pictures: every page bound to a source
+            // child takes THAT child — page k keeps child k, never the
+            // blended set. Pages with no binding stay as they are.
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.sourceMediaId ? { ...page, kind: "original", mediaId: page.sourceMediaId } : page
+            );
+            void applyVisual(item, { pages: list });
+          }
         });
       } else if (activeTab === "instructions") {
         // The brief lives here per the accepted mockup: the settings a
@@ -3074,7 +3136,18 @@ function App() {
         panel = renderHistoryPanel(locale, item, {
           editable,
           onUseImage: (mediaId) => {
-            patchBuffer(item.id, { imageId: mediaId });
+            // A history pick stages into the page it was generated for —
+            // a page-2 image never displaces page 1. An unpaged row lands
+            // on the first page, the single-image meaning it always had.
+            const row = (item.generatedHistory ?? []).find((media) => media.id === mediaId) ?? null;
+            const targetId = row?.pageId ?? workingPages(item, bufferOf(item.id))[0]?.pageId ?? null;
+            if (targetId) {
+              const saved = pagesOfItem(item).find((page) => page.pageId === targetId) ?? null;
+              const list = workingPages(item, bufferOf(item.id)).map((page) =>
+                page.pageId === targetId ? { ...page, kind: "generated", mediaId, sourceMediaId: page.sourceMediaId ?? saved?.sourceMediaId ?? null } : page
+              );
+              patchBuffer(item.id, { pages: list });
+            }
             activeTab = "output";
             redraw();
             announce(t(locale, "drawerHistoryImageStaged"), "");
@@ -3097,19 +3170,31 @@ function App() {
             patchBuffer(item.id, { caption: value });
             redrawFooter();
           },
-          onAltTextInput: (value) => {
-            patchBuffer(item.id, { altText: value });
+          onAltTextInput: (pageId, value) => {
+            // Alt text is per page — the edit lands in the working list and
+            // saves with Save like every other buffered field.
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, altText: value.trim() ? value : null } : page
+            );
+            patchBuffer(item.id, { pages: list });
             redrawFooter();
           },
           destinationLabel,
           captionConflict: captionConflicts.get(item.id) ?? null,
-          onReacceptImage: async (mediaId) => {
+          onReacceptImage: async () => {
+            // The same explicit re-accept the singular pin performed, per
+            // page: every generated page whose provenance is "unknown" is
+            // marked owner-explicit in one save.
             if (saving) return;
+            const list = workingPages(item, bufferOf(item.id)).map((page) => {
+              const projected = (item.pages ?? []).find((entry) => entry.pageId === page.pageId);
+              return projected?.mediaProvenance === "unknown" ? { ...page, mediaAcceptance: "owner_explicit" } : page;
+            });
             saving = true;
             redrawFooter();
             let result;
             try {
-              result = await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, acceptedVisualMode: "ai_refinement", acceptedGeneratedMediaId: mediaId }] });
+              result = await rpc.saveRevisions({ revisions: [{ batchItemId: item.id, expectedRevision: item.revision ?? 0, pages: list }] });
             } catch (error) {
               result = { ok: false, message: error instanceof Error ? error.message : String(error) };
             } finally {
@@ -3128,9 +3213,14 @@ function App() {
             captionConflicts.delete(item.id);
             redraw();
           },
-          onStageImage: (mediaId) => {
-            if (mediaId) patchBuffer(item.id, { imageId: mediaId });
-            else dropBufferFields(item.id, ["imageId"]);
+          onStageImage: (pageId, mediaId) => {
+            // A candidate pick stages into ITS page — never a neighbour's —
+            // and unstaging restores the page's saved fill.
+            const saved = pagesOfItem(item).find((page) => page.pageId === pageId) ?? null;
+            const list = workingPages(item, bufferOf(item.id)).map((page) =>
+              page.pageId === pageId ? { ...page, kind: mediaId ? "generated" : (saved?.kind ?? null), mediaId: mediaId ?? (saved?.mediaId ?? null) } : page
+            );
+            patchBuffer(item.id, { pages: list });
             redraw();
           },
           imageBrief: imageBriefOf(item),
@@ -3152,7 +3242,7 @@ function App() {
             menuOpen: uiOf(item.id).menuOpen === true,
             menuAnchor: uiOf(item.id).menuAnchor ?? null,
             agentIntent: hostFeatures.has("agent-intent"),
-            candidateDismissed: uiOf(item.id).candidateDismissed ?? null,
+            dismissedCandidates: uiOf(item.id).dismissedCandidates ?? null,
             onToggleMenu: (anchor) => {
               const ui = uiOf(item.id);
               // Re-clicking the control that owns the open menu closes it;
@@ -3168,28 +3258,44 @@ function App() {
                 bodyEl.querySelector(".sl-menu")?.scrollIntoView?.({ block: "nearest" });
               }
             },
+            // Adding a page is an explicit structural commit — the new
+            // empty slot persists, holds its place at the end, and blocks
+            // filing until filled or removed.
+            onAddPage: () => {
+              const list = [...workingPages(item, bufferOf(item.id)), { pageId: newPageId(item), kind: null, mediaId: null, sourceMediaId: null, altText: null }];
+              void applyPages(item, list);
+            },
             // A chosen row closes the popover immediately — the action's own
             // redraw comes later (or not at all, when the ask is refused).
-            onMenuGenerate: () => { patchUi(item.id, { menuOpen: false }); redraw(); void requestPart(item, "image"); },
-            onMenuUpload: () => { patchUi(item.id, { menuOpen: false }); redraw(); pickOwnerUpload(item); },
-            onMenuAdoptSource: () => { patchUi(item.id, { menuOpen: false }); redraw(); void applyVisual(item, { acceptedVisualMode: "keep_original" }); },
+            onMenuGenerate: (slot) => { patchUi(item.id, { menuOpen: false }); redraw(); void requestPart(item, "image", null, [slot.page.pageId]); },
+            onMenuUpload: (slot) => { patchUi(item.id, { menuOpen: false }); redraw(); pickOwnerUpload(item, slot.page.pageId); },
+            onMenuAdoptSource: (slot, sourceMediaId) => {
+              patchUi(item.id, { menuOpen: false });
+              const list = workingPages(item, bufferOf(item.id)).map((page) =>
+                page.pageId === slot.page.pageId ? { ...page, kind: "original", mediaId: sourceMediaId, sourceMediaId } : page
+              );
+              void applyPages(item, list);
+            },
             // Regenerate is a conversation hand-off: the intent carries this
-            // image's context to the host, which opens the chat. The menu
+            // page's context to the host, which opens the chat. The menu
             // closes and the layout does not move — the drawer keeps its state
             // for when the owner returns.
-            onRegenIntent: () => {
+            onRegenIntent: (slot) => {
               patchUi(item.id, { menuOpen: false });
               redraw();
-              postAgentIntent(item);
+              postAgentIntent(item, slot);
             },
-            onRemoveSlot: () => {
+            onRemoveSlot: (slot) => {
               patchUi(item.id, { menuOpen: false });
-              dropBufferFields(item.id, ["imageId"]);
-              void applyVisual(item, { acceptedVisualMode: null });
+              const list = workingPages(item, bufferOf(item.id)).filter((page) => page.pageId !== slot.page.pageId);
+              void applyPages(item, list);
             },
             onViewSlot: () => { patchUi(item.id, { menuOpen: false }); redraw(); void openPreview(item); },
-            onDismissCandidate: () => {
-              patchUi(item.id, { candidateDismissed: item.generatedCandidate?.id ?? null });
+            onDismissCandidate: (candidateId) => {
+              const ui = uiOf(item.id);
+              const dismissed = new Set(ui.dismissedCandidates ?? []);
+              if (candidateId) dismissed.add(candidateId);
+              patchUi(item.id, { dismissedCandidates: dismissed });
               redraw();
             }
           }

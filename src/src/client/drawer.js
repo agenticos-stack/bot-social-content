@@ -14,9 +14,9 @@
 
 import { el, replace } from "./dom.js";
 import { t } from "./i18n.js";
-import { JPEG_ONLY_PROVIDERS } from "./image-acceptance.js";
+import { CAROUSEL_PROVIDERS, JPEG_ONLY_PROVIDERS } from "./image-acceptance.js";
 import { computePosterLayout, drawPoster } from "./poster.js";
-import { generationMark } from "../../model.js";
+import { defaultRevisionPages, effectiveRevisionPages, generationMark, MAX_PAGES_PER_POST } from "../../model.js";
 
 export const DRAWER_TABS = Object.freeze(["output", "reference", "instructions", "history"]);
 
@@ -87,10 +87,11 @@ export function dirtyParts(item, buffers = {}, defaults = {}) {
   const visualImage = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
   const visualMode = buffers.visualMode !== undefined && buffers.visualMode !== (item?.acceptedVisualMode ?? null);
   const visual = visualImage || visualMode;
+  const pages = Array.isArray(buffers.pages) && pagesSignature(buffers.pages) !== pagesSignature(pagesOfItem(item));
   const instructions = dirtyInstructionParts(item, buffers, ["image", "caption"], defaults).length > 0;
   // No `publication`: the footer's destination picks and a chosen schedule
   // time are transient — the intent is what was pressed, never a saved field.
-  return { caption, altText, visual, instructions, any: caption || altText || visual || instructions };
+  return { caption, altText, visual, pages, instructions, any: caption || altText || visual || pages || instructions };
 }
 
 /** The workspace instruction defaults the fields are prefilled from. */
@@ -155,14 +156,17 @@ export function recordedBindings(item) {
  */
 export function revisionEntryFor(item, buffers = {}) {
   const dirty = dirtyParts(item, buffers);
-  if (!dirty.caption && !dirty.visual && !dirty.altText && !dirty.publication) return null;
+  if (!dirty.caption && !dirty.visual && !dirty.altText && !dirty.pages && !dirty.publication) return null;
   return {
     batchItemId: item.id,
     expectedRevision: item.revision ?? 0,
     ...(dirty.caption ? { caption: buffers.caption } : {}),
+    // Pages carry their own alt text and fills — when the list itself is the
+    // edit, the legacy singular fields stay out of the entry entirely.
+    ...(dirty.pages ? { pages: buffers.pages.map(workingPage) } : {}),
     // An emptied alt text clears it (null); omitted carries the saved one forward.
-    ...(dirty.altText ? { altText: buffers.altText.trim() ? buffers.altText : null } : {}),
-    ...(dirty.visual
+    ...(!dirty.pages && dirty.altText ? { altText: buffers.altText.trim() ? buffers.altText : null } : {}),
+    ...(!dirty.pages && dirty.visual
       ? buffers.visualMode === "keep_original"
         ? { acceptedVisualMode: "keep_original" }
         : buffers.visualMode === null
@@ -273,18 +277,31 @@ export function destinationBlock(item, buffers, destinations, binding) {
   const row = (destinations ?? []).find((entry) => (entry.binding ?? entry.destinationBinding) === binding) ?? null;
   if (!row) return null;
   if (row.granted === false) return "publishAccessRevoked";
-  const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null) ? buffers.imageId : null;
-  const keepOriginal = buffers.visualMode === "keep_original" || item?.acceptedVisualMode === "keep_original";
-  const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || keepOriginal || item?.posterStored);
-  const hasImage = Boolean(staged) || Boolean(item?.generatedImage && item.generatedImage.ready === true) || legacyVisual;
-  if (row.provider === "instagram" && !hasImage) return "drawerDestIgNeedsImage";
-  // What actually ships: the staged pick once saved, else the accepted image.
-  const shipped = staged
-    ? ((item?.generatedCandidate?.id === staged ? item.generatedCandidate : null)
-      ?? (item?.generatedHistory ?? []).find((media) => media?.id === staged) ?? null)
-    : item?.generatedImage ?? null;
-  const generatedShips = staged ? Boolean(shipped) : (item?.acceptedVisualMode ?? null) === "ai_refinement";
-  if (JPEG_ONLY_PROVIDERS.has(row.provider) && generatedShips && shipped?.mimeType === "image/png") return "drawerDestNeedsJpeg";
+  const pages = workingPages(item, buffers);
+  const filled = pages.filter((page) => page.kind);
+  const textOnly = textOnlyPages(item, pages);
+  // Instagram needs at least one image that actually ships — a generated
+  // page whose bytes never landed counts for nothing.
+  const shippedReady = filled.some((page) =>
+    page.kind === "generated" ? generatedRowFor(item, page)?.ready === true : true
+  );
+  if (row.provider === "instagram" && !shippedReady) return "drawerDestIgNeedsImage";
+  // An unfilled page blocks everywhere — the destination row names the block
+  // and the strip numbers the slot; the last empty page of a text post is
+  // the one shape that still files.
+  if (pages.some((page) => !page.kind) && !textOnly) return "drawerDestEmptyPage";
+  // Two or more filled pages file as ONE carousel — the destination must
+  // take the album, not just an image.
+  if (filled.length >= 2 && !CAROUSEL_PROVIDERS.has(row.provider)) return "drawerDestNoCarousel";
+  // What actually ships: the staged page list once saved, else the saved
+  // pages. Any generated page still carrying a PNG blocks a JPEG-only door —
+  // re-render or pick the JPEG, the server refuses it either way.
+  if (
+    JPEG_ONLY_PROVIDERS.has(row.provider) &&
+    filled.some((page) => page.kind === "generated" && generatedRowFor(item, page)?.mimeType === "image/png")
+  ) {
+    return "drawerDestNeedsJpeg";
+  }
   return null;
 }
 
@@ -307,9 +324,11 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
       : { disabled: false, reason: null };
 
   const caption = (buffers.caption ?? item?.caption ?? "").trim();
-  const staged = typeof buffers.imageId === "string" && buffers.imageId !== (item?.generatedImage?.id ?? null);
-  const keepOriginal = buffers.visualMode === "keep_original" || item?.acceptedVisualMode === "keep_original";
-  const legacyVisual = !item?.generatedImage && (item?.acceptedVisualMode === "text_poster" || keepOriginal || item?.posterStored);
+  const pages = workingPages(item, buffers);
+  const emptyIndex = pages.findIndex((page) => !page.kind);
+  const textOnly = textOnlyPages(item, pages);
+  const filled = pages.filter((page) => page.kind);
+  const arriving = filled.some((page) => page.kind === "generated" && generatedRowFor(item, page) && generatedRowFor(item, page).ready !== true);
   const img = imageState(item);
   const cap = captionState(item);
   // What the primary would actually file: the chosen set minus every option
@@ -319,8 +338,9 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
   if (saving) review = { disabled: true, reason: t(locale, "saving") };
   else if ((item?.revision ?? 0) === 0 && !caption) review = { disabled: true, reason: t(locale, "drawerReviewNeedsOutput") };
   else if (!caption) review = { disabled: true, reason: t(locale, "drawerReviewNeedsCaption") };
-  else if (!staged && item?.generatedImage && item.generatedImage.ready !== true) review = { disabled: true, reason: t(locale, "drawerReviewImageNotArrived") };
-  else if (!staged && !item?.generatedImage && !legacyVisual) review = { disabled: true, reason: t(locale, "drawerReviewNeedsImage") };
+  else if (arriving) review = { disabled: true, reason: t(locale, "drawerReviewImageNotArrived") };
+  else if (emptyIndex !== -1 && !textOnly) review = { disabled: true, reason: t(locale, "drawerReviewPageEmpty", { n: emptyIndex + 1 }) };
+  else if (!filled.length && !textOnly) review = { disabled: true, reason: t(locale, "drawerReviewNeedsImage") };
   else if (img === "requested" || img === "generating") review = { disabled: true, reason: t(locale, "drawerPublishBusyImage") };
   else if (cap === "requested") review = { disabled: true, reason: t(locale, "drawerPublishBusyCaption") };
   else if (!fileable.length) review = { disabled: true, reason: t(locale, "drawerPublishNeedsDestination") };
@@ -342,20 +362,89 @@ export function footerState(locale, item, { buffers = {}, saving = false, defaul
 // ---------------------------------------------------------------------------
 
 /*
- * The ordered accepted set — one element today, because a revision accepts a
- * single generated image (`revisions.accepted_generated_media_id`). The array
- * is the Phase 2 contract: the strip renders whatever it holds, each picture
- * carries its own index, and every action names its own slot. `legacy` marks
- * a slot whose picture is not a generated image — the source media adopted
- * as-is, or an earlier text poster the revision kept.
+ * THE ORDERED PAGES — the unit the strip edits. One filled page publishes as
+ * a single image, two or more as a carousel under one caption, one ratio and
+ * one instruction. A page exists before it is filled: `kind: null` is the
+ * durable empty slot a generation, an upload or a source image lands in, and
+ * it blocks filing until filled or removed. A post always keeps at least one
+ * page — the server refuses an empty list, so the last page's remove stays
+ * disabled rather than offering a refusal.
+ *
+ * `pagesOfItem` reads the server's own projection. When an item predates it
+ * (an older fixture), the shared derivation runs on the item's legacy fields
+ * exactly as the server would; a never-saved post gets the source-bound
+ * empty pages `defaultRevisionPages` describes.
  */
-function imageSlots(item) {
-  const image = item?.generatedImage ?? null;
-  const legacy = image ? null
-    : item?.acceptedVisualMode === "keep_original" ? "source"
-      : item?.acceptedVisualMode === "text_poster" || (item?.acceptedVisualMode == null && item?.posterStored) ? "poster"
-        : null;
-  return [{ index: 1, image, legacy }];
+const WORKING_PAGE_KEYS = ["pageId", "kind", "mediaId", "sourceMediaId", "altText", "mediaDigest", "mediaProvenance", "mediaAcceptance"];
+
+function workingPage(page) {
+  return {
+    pageId: page.pageId,
+    kind: page.kind ?? null,
+    mediaId: page.mediaId ?? null,
+    sourceMediaId: page.sourceMediaId ?? null,
+    altText: page.altText ?? null,
+    mediaDigest: page.mediaDigest ?? null,
+    mediaProvenance: page.mediaProvenance ?? null,
+    mediaAcceptance: page.mediaAcceptance ?? null
+  };
+}
+
+function legacyRevisionOf(item) {
+  return {
+    batchItemId: item?.id,
+    revision: item?.revision ?? 0,
+    acceptedVisualMode: item?.acceptedVisualMode ?? null,
+    acceptedGeneratedMediaId: item?.generatedImage?.id ?? null,
+    acceptedGeneratedMediaDigest: item?.generatedImage?.digest ?? null,
+    acceptedGeneratedMediaProvenance: item?.acceptedGeneratedMediaProvenance ?? null,
+    acceptanceSource: null,
+    derivedMediaRefs: item?.derivedMediaRefs ?? [],
+    altText: item?.altText ?? null
+  };
+}
+
+export function pagesOfItem(item) {
+  const raw =
+    Array.isArray(item?.pages) && item.pages.length
+      ? item.pages
+      : (item?.revision ?? 0) > 0
+        ? effectiveRevisionPages(legacyRevisionOf(item), item?.sourceItem, { hasPoster: item?.posterStored === true })
+        : defaultRevisionPages(item?.sourceItem);
+  return raw.map(workingPage);
+}
+
+/** The working page list — the staged edit where one exists, else the saved pages. */
+export function workingPages(item, buffers = {}) {
+  return Array.isArray(buffers.pages) ? buffers.pages.map(workingPage) : pagesOfItem(item);
+}
+
+function pagesSignature(pages) {
+  return JSON.stringify((pages ?? []).map((page) => WORKING_PAGE_KEYS.map((key) => page[key] ?? null)));
+}
+
+/*
+ * The generated row a page points at, wherever it lives in the projection —
+ * the page's own `generatedMedia`, the accepted image, the candidate, or the
+ * history list a staged pick came from.
+ */
+function generatedRowFor(item, page) {
+  if (page?.kind !== "generated" || !page.mediaId) return null;
+  const projected = (item?.pages ?? []).find((entry) => entry?.pageId === page.pageId)?.generatedMedia ?? null;
+  if (projected?.id === page.mediaId) return projected;
+  if (item?.generatedImage?.id === page.mediaId) return item.generatedImage;
+  if (item?.generatedCandidate?.id === page.mediaId) return item.generatedCandidate;
+  return (item?.generatedHistory ?? []).find((media) => media?.id === page.mediaId) ?? null;
+}
+
+/*
+ * The text-post shape the server still files: exactly one empty page and no
+ * bindable source media. Every other empty page blocks — the strip, the
+ * destination list and the footer all read it through this one rule.
+ */
+function textOnlyPages(item, pages) {
+  if (pages.length !== 1 || pages[0].kind) return false;
+  return !(item?.sourceItem?.media ?? []).some((entry) => typeof entry?.id === "string" && entry.id);
 }
 
 /**
@@ -385,38 +474,36 @@ function columnLabel(text, action, id = null) {
  * imageBrief?: { useSource, ratio, oneOffOpen, oneOff, saveOneOff },
  * imageRefsAvailable?: bool, uploadPreview?: { name },
  * captionConflict?: { caption }, onResolveCaptionConflict("keep"|"use"),
- * strip?: { menuOpen, menuAnchor ("place" = empty slot's add menu, "pic" = the
- *   picture's ⋯ menu), agentIntent (host can carry an image intent into the
- *   conversation), candidateDismissed, onToggleMenu(anchor), onMenuGenerate(),
- *   onMenuUpload(), onMenuAdoptSource(), onRegenIntent(n), onRemoveSlot(n),
- *   onViewSlot(n), onDismissCandidate() } }`.
+ * strip?: { menuOpen, menuAnchor (the open ⋯ menu's pageId), agentIntent
+ *   (host can carry an image intent into the conversation),
+ *   dismissedCandidates (Set of candidate ids), onToggleMenu(pageId),
+ *   onAddPage(), onMenuGenerate(slot), onMenuUpload(slot),
+ *   onMenuAdoptSource(slot, sourceMediaId), onRegenIntent(slot),
+ *   onRemoveSlot(slot), onViewSlot(slot), onDismissCandidate(candidateId) } }`.
  *
- * `buffers` = `{ caption?, altText?, imageId?, visualMode?, imageSource?,
- * instructions?, imageBrief? }` — `imageBrief` stages the NEXT Generate ask;
- * it is not content and is never part of a Save.
+ * `buffers` = `{ caption?, altText?, pages?, imageSource?, instructions?,
+ * imageBrief? }` — `pages` is the staged working page list (`{ pageId, kind,
+ * mediaId, sourceMediaId, altText }`) until Save; `imageBrief` stages the
+ * NEXT Generate ask and is never part of a Save.
  */
 export function renderOutputPanel(locale, item, ctx) {
   const buffers = ctx.buffers ?? {};
   const editable = ctx.editable === true;
-  const accepted = item.generatedImage ?? null;
-  const candidate = item.generatedCandidate ?? null;
-  const staged = typeof buffers.imageId === "string" && buffers.imageId !== (accepted?.id ?? null) ? buffers.imageId : null;
   const imgState = imageState(item);
   const capState = captionState(item);
-  const imageBusy = imgState === "requested" || imgState === "generating";
   const unsubmitted = ctx.unsubmitted === true;
-  const overlayBusy = imageBusy && !unsubmitted;
+  // "Saved but never submitted" is not live work: its slots stay usable and
+  // the add-page tile stays pressable — the status line names why instead.
+  const imageBusy = (imgState === "requested" || imgState === "generating") && !unsubmitted;
   const strip = ctx.strip ?? {};
   const brief = ctx.imageBrief ?? { useSource: true, ratio: "4:5", oneOff: "", saveOneOff: false };
   const refsAvailable = ctx.imageRefsAvailable === true;
-  const showCandidate = Boolean(candidate && candidate.ready === true && strip.candidateDismissed !== candidate.id);
   const uploadPreview = ctx.uploadPreview ?? null;
-  // How many images the source post actually carries — the honesty line
-  // counts every image-kind child, not only the ones reachable as https
-  // references (that subset is what the brief uses, not what the post has).
-  const sourceImageCount = (item.sourceItem?.media ?? []).filter(
-    (media) => media?.kind === "image" || media?.kind === "carousel_child"
-  ).length;
+  // The working page list — the saved pages, or the staged edit while one
+  // is buffered. One filled page files as a single image; two or more as
+  // one carousel. An empty page is a slot that still needs its image.
+  const pages = workingPages(item, buffers);
+  const skippedVideos = item?.skippedVideos ?? [];
 
   // One request at a time per post: while a part is outstanding, the OTHER
   // part's affordance says what is pending — never a silent replace.
@@ -449,198 +536,271 @@ export function renderOutputPanel(locale, item, ctx) {
   };
 
   /*
-   * THE STRIP. One slot per accepted picture — one today. Every action on an
-   * existing picture lives on the picture itself: one ⋯ opens the merged
-   * menu, so nothing per-image sits in the column header. Generating
-   * overlays the slot's own frame — including an empty first slot — so a
-   * request never reads as a second tile, and a live slot carries no ⋯:
-   * there is nothing to act on yet, and a second ask during a live one is
+   * THE STRIP — one slot per page, in page order. Every action on a page
+   * lives on the page itself: one ⋯ opens that page's menu, so nothing
+   * per-image sits in the column header. An empty page is a real slot — the
+   * dashed frame that blocks filing, numbered like the rest. Generating
+   * overlays the slot's own frame, so a request never reads as a second
+   * tile, and a live slot carries no ⋯: a second ask during a live one is
    * the double spend the regenerate conversation exists to prevent.
    */
-  const hasPicture = (slot) => Boolean(slot.image) || Boolean(slot.legacy);
-  const slots = imageSlots(item);
-  const slotNode = (slot) => {
-    const media = el("div", { class: "sl-slot-media" });
-    media.appendChild(figure(slot.image, {
-      extra: `sl-slot-frame${slot.image ? " sl-output-frame-accepted" : ""}`,
-      legacy: slot.legacy,
-      skel: overlayBusy
-    }));
-    // `picControls` is declared below with the rest of the menu machinery;
-    // slotNode runs only once the strip is assembled, after it exists.
-    if (editable && hasPicture(slot) && !overlayBusy) media.appendChild(picControls(slot));
-    return el("div", { class: "sl-slot", role: "listitem" }, media);
-  };
-
-  // One menu holds every way a picture joins the set — generate under the
-  // resolved brief (its row says so), upload, or adopt the post's own picture
-  // where one exists. It is a POPOVER anchored to its control, never a block
-  // in the column: trapped in the 176px media column every row wrapped to
-  // three lines. `.sl-addwrap` is the anchor; the menu sizes to its own
-  // content (238–300px) and overhangs the column.
   const menuRow = (title, sub, onclick, disabled = false, warn = false, itemCls = null) =>
     el("button", { type: "button", role: "menuitem", class: `sl-menu-item${itemCls ? ` ${itemCls}` : ""}`, disabled: disabled || null, onclick }, [
       el("span", { class: "sl-menu-lead" }, title),
       sub ? el("span", { class: `sl-menu-sub${warn ? " sl-menu-warn" : ""}` }, sub) : null
     ]);
-  // The menu's Generate row carries the same pending honesty the old segment
-  // did: a requested part names itself, another pending part is named too.
-  // Its sub names the brief — basis and ratio — never a price: the owner does
-  // not weigh image cost; a paused run asks for a top-up, not a decision.
-  // The no-caption note stays for the same reason it always did — an image
-  // drawn before the words exist usually needs another pass — as quality
-  // copy, with nothing to spend named in it.
-  const captionEmpty = !String(buffers.caption ?? item.caption ?? "").trim();
-  const generateItem = menuRow(t(locale, "drawerAddGenerate"),
-    captionEmpty
-      ? t(locale, "drawerAddNoCaption")
-      : t(locale, "drawerAddGenerateSub", {
-          ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
-          ratio: brief.ratio
-        }),
-    () => strip.onMenuGenerate?.(), false, captionEmpty);
-  if (imageBusy) {
-    generateItem.setAttribute("title", unsubmitted ? t(locale, "drawerRequestNotSubmitted") : t(locale, "drawerPartAlreadyRequested"));
-    generateItem.setAttribute("data-requested", "true");
-  } else if (outstanding.includes("caption")) {
-    generateItem.setAttribute("title", t(locale, "drawerPartOtherPendingCaption"));
-    generateItem.setAttribute("data-pending", "caption");
-  }
-  // The menu belongs to the control that opened it — the click names its
-  // anchor. Without a name (older callers) it is the empty slot's when there
-  // is no picture, the picture's ⋯ otherwise.
-  const emptyEditable = editable && !slots.some(hasPicture) && !overlayBusy && !showCandidate;
-  const menuAnchor = strip.menuAnchor ?? (emptyEditable ? "place" : "pic");
-  const expanded = (anchor) => (strip.menuOpen && menuAnchor === anchor ? "true" : "false");
-  const addMenu = editable && strip.menuOpen && menuAnchor === "place"
-    ? el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerAddImage") }, [
-        generateItem,
-        el("div", { class: "sl-menu-sep", role: "separator" }),
-        menuRow(t(locale, "drawerAddUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
-        menuRow(
-          t(locale, "drawerAddSource"),
-          refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
-          () => strip.onMenuAdoptSource?.(),
-          !refsAvailable || item.acceptedVisualMode === "keep_original"
-        )
-      ])
-    : null;
-  // The control and its popover travel together — the menu is anchored to
-  // whichever control opened it, sized by its own content, never the column.
-  // `end` keeps a right-edge control's menu inside the sheet once the
-  // columns collapse to one (narrow): it flips the anchor under 520px.
-  // `menuAnchor` names the control that owns the open menu; when state does
-  // not say (older callers), it belongs to the first control rendered.
-  const addWrap = (control, anchor, end = false) =>
-    el("span", { class: `sl-addwrap${end ? " sl-addwrap-end" : ""}`, "data-addanchor": anchor }, [
-      control,
-      addMenu && menuAnchor === anchor ? addMenu : null
-    ].filter(Boolean));
+
+  const sourceImages = (item?.sourceItem?.media ?? []).filter(
+    (media) => (media?.kind === "image" || media?.kind === "carousel_child") && typeof media?.id === "string" && media.id
+  );
+  const needsPages = new Set(generationMark(item?.generation)?.needs?.imagePages ?? []);
+  // A mark written before page scope exists (needs.image with no imagePages)
+  // names "the image" — every page is its unambiguous target, so every slot
+  // is live while it runs.
+  const unscopedImageNeed = Boolean(generationMark(item?.generation)?.needs?.image) && !needsPages.size;
+  const projectedPages = new Map((item?.pages ?? []).map((entry) => [entry.pageId, entry]));
+  const savedPages = new Map(pagesOfItem(item).map((entry) => [entry.pageId, entry]));
+  const dismissed = strip.dismissedCandidates ?? null;
+
+  const slots = pages.map((page, index) => {
+    const projected = projectedPages.get(page.pageId) ?? null;
+    const generated = generatedRowFor(item, page);
+    const sourceChild = page.kind === "original" ? (item?.sourceItem?.media ?? []).find((media) => media?.id === page.mediaId) ?? null : null;
+    // The page's own proposal, projected under it; on a one-page post the
+    // legacy post-level `generatedCandidate` is the same row, so it stands
+    // in for canvases whose projection predates per-page candidates (and
+    // for a live arrival the read brought in after open).
+    let candidate = projected?.candidate && projected.candidate.id !== page.mediaId ? projected.candidate : null;
+    if (!candidate && pages.length === 1 && item?.generatedCandidate && item.generatedCandidate.id !== page.mediaId) {
+      candidate = item.generatedCandidate;
+    }
+    // The page's own outstanding ask or a registration still waiting on its
+    // bytes — either way the slot is live, never clickable.
+    // "Requested but never submitted" is not live work: the slot stays
+    // usable so the ask can be made again (the status line says why).
+    const pending =
+      (!unsubmitted && (unscopedImageNeed || needsPages.has(page.pageId))) ||
+      Boolean(candidate && candidate.ready !== true);
+    const saved = savedPages.get(page.pageId) ?? null;
+    const staged = Boolean(page.kind === "generated" && page.mediaId && page.mediaId !== (saved?.mediaId ?? null));
+    return { index: index + 1, page, generated, sourceChild, candidate, pending, staged };
+  });
+  const multi = slots.length > 1;
 
   /*
-   * THE EMPTY SLOT IS THE ADD CONTROL, and it is the size of the picture that
-   * will land in it: a dashed placeholder at the frame's own aspect ratio
-   * carries ＋ / Add image / the three ways one arrives. A text link under a
-   * hollow frame moved everything below it the moment an image arrived; this
-   * box never changes shape. Once a picture exists its own ⋯ carries every
-   * action; a generating slot keeps its skeleton instead.
+   * A page's figure: its generated image when ready, the "arriving" state
+   * for a registered-but-undelivered one, the bound source photo for an
+   * original page, the stored poster for a poster page — and the dashed
+   * empty slot when nothing fills it yet. The page number rides on the
+   * frame so an empty page names itself the way a refusal does.
    */
-  const addPlace = emptyEditable
-    ? addWrap(el("button", {
-        type: "button",
-        class: "sl-addplace",
-        "aria-haspopup": "menu",
-        "aria-expanded": expanded("place"),
-        disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.("place")
-      }, [
-        el("span", { class: "sl-addplace-plus" }, "＋"),
-        el("span", null, t(locale, "drawerAddImage")),
-        el("span", { class: "sl-addplace-hint" }, t(locale, "drawerAddPlaceHint"))
-      ]), "place")
-    : null;
+  const slotFigure = (slot) => {
+    const page = slot.page;
+    if (page.kind === "generated" && slot.generated) {
+      return figure(slot.generated, {
+        extra: `sl-slot-frame${slot.generated.ready === true ? " sl-output-frame-accepted" : ""}`,
+        skel: slot.pending
+      });
+    }
+    if (page.kind === "original" && slot.sourceChild) {
+      const frame = el("div", { class: "sl-output-frame sl-slot-frame sl-output-frame-accepted" });
+      const img = el("img", { class: "sl-pc-canvas", src: slot.sourceChild.url, alt: slot.sourceChild.alt || t(locale, "drawerPageSourceAlt", { n: slot.index }) });
+      img.addEventListener("error", () => {
+        img.replaceWith(el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerHistoryVisualSource")));
+      });
+      frame.appendChild(img);
+      if (slot.pending) frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
+      return frame;
+    }
+    if (page.kind === "poster") {
+      const canvas = posterCanvas(locale, item);
+      if (canvas) {
+        const frame = el("div", { class: "sl-output-frame sl-slot-frame sl-output-frame-accepted" }, [canvas]);
+        if (slot.pending) frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
+        return frame;
+      }
+      return figure(null, { extra: "sl-slot-frame", legacy: "poster", skel: slot.pending });
+    }
+    if (page.kind === "generated") {
+      // A generated binding whose row is gone (or a legacy derived ref the
+      // projection cannot show) still reads as a visual, never as empty.
+      return figure(null, { extra: "sl-slot-frame sl-output-frame-accepted", legacy: "poster", skel: slot.pending });
+    }
+    // The empty page: the same frame size as the picture that will fill it,
+    // dashed and named by number — the refusal `page N has no image` points
+    // at exactly this slot.
+    const frame = el("div", { class: "sl-output-frame sl-slot-frame sl-slot-frame-empty" }, [
+      el("span", { class: "sl-pc-media-empty sl-output-empty", role: "status" }, t(locale, "drawerPageEmpty", { n: slot.index }))
+    ]);
+    if (slot.pending) frame.appendChild(el("span", { class: "sl-skel-label" }, t(locale, "drawerCandidatePending")));
+    return frame;
+  };
 
   /*
-   * THE ⋯ ON THE PICTURE. Once a picture exists every image action is
-   * something done to THAT picture: regenerate (hands the image's context to
-   * the host's conversation — never a direct generate, since a blind rerun of
-   * the same brief returns the same picture), upload a replacement, adopt the
-   * source photo, view, remove. The chip is legible at rest on any image —
-   * solid surface, dark glyph, a small shadow — not a hover scrim.
+   * THE ⋯ ON A PAGE. Every action is done to THAT page: regenerate (hands
+   * the page's context to the host's conversation on a filled page — never a
+   * direct rerun, since a blind repeat of the same brief returns the same
+   * picture), generate under the resolved brief on an empty one, upload a
+   * file, adopt one of THIS post's own source images, view, remove. The
+   * chip is legible at rest on any image — solid surface, dark glyph, a
+   * small shadow — not a hover scrim.
    *
    * Regenerate is only offered when the host announced it can carry an agent
    * intent into the conversation (`strip.agentIntent`). On a host that never
-   * said so, the row stays visible but disabled, naming the reason — there is
-   * no inline fallback, because the conversation IS the regenerate surface.
+   * said so, the row stays visible but disabled, naming the reason — there
+   * is no inline fallback, because the conversation IS the regenerate
+   * surface.
    */
-  const picMenuFor = (slot) =>
-    el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerImgActions") }, [
+  const captionEmpty = !String(buffers.caption ?? item.caption ?? "").trim();
+  const pageMenuFor = (slot) => {
+    const page = slot.page;
+    const rows = [];
+    if (page.kind) {
+      rows.push(
+        menuRow(
+          t(locale, "drawerPicRegen"),
+          strip.agentIntent ? t(locale, "drawerPicRegenSub") : t(locale, "drawerPicRegenOff"),
+          () => strip.onRegenIntent?.(slot),
+          !strip.agentIntent
+        )
+      );
+    } else {
+      const generate = menuRow(
+        t(locale, "drawerAddGenerate"),
+        captionEmpty
+          ? t(locale, "drawerAddNoCaption")
+          : t(locale, "drawerAddGenerateSub", {
+              ref: t(locale, brief.useSource ? "drawerBriefOn" : "drawerBriefOff"),
+              ratio: brief.ratio
+            }),
+        () => strip.onMenuGenerate?.(slot),
+        false,
+        captionEmpty
+      );
+      if (imageBusy) {
+        generate.setAttribute("title", unsubmitted ? t(locale, "drawerRequestNotSubmitted") : t(locale, "drawerPartAlreadyRequested"));
+        generate.setAttribute("data-requested", "true");
+      } else if (outstanding.includes("caption")) {
+        generate.setAttribute("title", t(locale, "drawerPartOtherPendingCaption"));
+        generate.setAttribute("data-pending", "caption");
+      }
+      rows.push(generate);
+    }
+    rows.push(
       menuRow(
-        t(locale, "drawerPicRegen"),
-        strip.agentIntent ? t(locale, "drawerPicRegenSub") : t(locale, "drawerPicRegenOff"),
-        () => strip.onRegenIntent?.(slot.index),
-        !strip.agentIntent
-      ),
-      menuRow(t(locale, "drawerPicUpload"), t(locale, "drawerAddUploadSub"), () => strip.onMenuUpload?.()),
+        t(locale, page.kind ? "drawerPicUpload" : "drawerAddUpload"),
+        t(locale, "drawerAddUploadSub"),
+        () => strip.onMenuUpload?.(slot)
+      )
+    );
+    for (const [childIndex, child] of sourceImages.entries()) {
+      const bound = page.kind === "original" && page.mediaId === child.id;
+      rows.push(
+        menuRow(
+          t(locale, sourceImages.length === 1 ? "drawerPicSource" : "drawerPageSourceN", { n: childIndex + 1 }),
+          bound ? t(locale, "drawerPageSourceInUse") : child.id === page.sourceMediaId ? t(locale, "drawerPageSourceBound") : null,
+          () => strip.onMenuAdoptSource?.(slot, child.id),
+          bound || !refsAvailable
+        )
+      );
+    }
+    if (!sourceImages.length) {
+      rows.push(menuRow(t(locale, "drawerPicSource"), t(locale, "drawerAddSourceNone"), () => {}, true));
+    }
+    rows.push(el("div", { class: "sl-menu-sep", role: "separator" }));
+    if (page.kind) {
+      rows.push(menuRow(t(locale, "drawerPicView"), null, () => strip.onViewSlot?.(slot), page.kind === "generated" && slot.generated?.ready !== true));
+    }
+    rows.push(
       menuRow(
-        t(locale, "drawerPicSource"),
-        refsAvailable ? t(locale, "drawerAddSourceSub") : t(locale, "drawerAddSourceNone"),
-        () => strip.onMenuAdoptSource?.(),
-        !refsAvailable || item.acceptedVisualMode === "keep_original"
-      ),
-      el("div", { class: "sl-menu-sep", role: "separator" }),
-      menuRow(t(locale, "drawerPicView"), null, () => strip.onViewSlot?.(slot.index), slot.image?.ready !== true),
-      menuRow(t(locale, "drawerPicRemove"), null, () => strip.onRemoveSlot?.(slot.index), false, false, "sl-menu-danger")
-    ]);
+        t(locale, "drawerPageRemove"),
+        slots.length === 1 ? t(locale, "drawerPageRemoveLast") : null,
+        () => strip.onRemoveSlot?.(slot),
+        slots.length === 1,
+        false,
+        "sl-menu-danger"
+      )
+    );
+    return el("div", { class: "sl-menu", role: "menu", "aria-label": t(locale, "drawerImgActions") }, rows);
+  };
   const picControls = (slot) =>
-    el("span", { class: "sl-addwrap sl-addwrap-pic", "data-addanchor": "pic" }, [
+    el("span", { class: "sl-addwrap sl-addwrap-pic", "data-addanchor": slot.page.pageId }, [
       el("button", {
         type: "button",
         class: "sl-picbtn",
         "aria-haspopup": "menu",
-        "aria-expanded": expanded("pic"),
-        "aria-label": t(locale, "drawerImgActions"),
+        "aria-expanded": strip.menuOpen && strip.menuAnchor === slot.page.pageId ? "true" : "false",
+        "aria-label": t(locale, multi ? "drawerPageActions" : "drawerImgActions", { n: slot.index }),
         disabled: ctx.saving || null,
-        onclick: () => strip.onToggleMenu?.("pic")
+        onclick: () => strip.onToggleMenu?.(slot.page.pageId)
       }, "⋯"),
-      strip.menuOpen && menuAnchor === "pic" ? picMenuFor(slot) : null
+      strip.menuOpen && strip.menuAnchor === slot.page.pageId ? pageMenuFor(slot) : null
     ].filter(Boolean));
 
-  // Built in strip order: the accepted slot loads before the candidate beside
-  // it. An EMPTY slot is not furniture — when the post can still be edited the
-  // dashed `.sl-addplace` placeholder IS the add control, so the slot itself
-  // only renders for a picture, a generating skeleton, or the locked view.
-  const slotNodes = slots.filter((slot) => hasPicture(slot) || overlayBusy || !editable).map(slotNode);
+  const slotNode = (slot) => {
+    const media = el("div", { class: "sl-slot-media" });
+    media.appendChild(slotFigure(slot));
+    if (multi) media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(slot.index)));
+    if (editable && !slot.pending) media.appendChild(picControls(slot));
+    const node = el("div", { class: "sl-slot", role: "listitem" }, media);
+    // An original page names which of the post's own source photos it keeps —
+    // the strip is honest about what is generated and what came with the post.
+    if (slot.page.kind === "original" && slot.sourceChild) {
+      const n = sourceImages.findIndex((child) => child.id === slot.sourceChild.id) + 1;
+      node.appendChild(
+        el("div", { class: "sl-slot-cap" }, t(locale, multi ? "drawerPageSourceN" : "drawerRefImageLabel", { n: Math.max(n, 1) }))
+      );
+    }
+    return node;
+  };
 
-  // The candidate sits BESIDE the slot it would replace — never in its place,
-  // and it is built after the accepted slots so media loads in strip order.
-  // "Keep current" on an untouched candidate dismisses the proposal (the image
-  // stays in History); on a staged one it unstages, the existing meaning.
-  const candidateSlot = showCandidate
-    ? el("div", { class: "sl-slot sl-slot-candidate", role: "listitem" }, [
-        el("div", { class: "sl-slot-media" }, [
-          figure(candidate, { extra: "sl-slot-frame sl-output-frame-candidate" })
-        ]),
-        el("div", { class: "sl-slot-cap" }, [
-          el("b", null, t(locale, "drawerImgNew")),
-          ` ${t(locale, staged === candidate.id ? "drawerCandidateStaged" : "drawerImgNewNote")}`
-        ]),
-        facts(candidate),
-        candidate.status === "legacy" ? el("p", { class: "sl-field-note" }, t(locale, "drawerCandidateLegacy")) : null,
-        editable
-          ? el("div", { class: "sl-slot-acts" }, [
-              staged === candidate.id
-                ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(null) }, t(locale, "drawerKeepCurrent"))
-                : el("button", { type: "button", class: "sl-primary sl-sm sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(candidate.id) }, t(locale, "drawerUseCandidate")),
-              staged === candidate.id ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.() }, t(locale, "drawerKeepCurrentShort"))
-            ].filter(Boolean))
-          : null
+  // A page's delivered proposal sits UNDER its own slot — never in its
+  // place — so "new image" is always read against the page it answers.
+  // "Keep current" on an untouched candidate dismisses it (it stays in
+  // History); on a staged one it unstages, the existing meaning.
+  const candidateCard = (slot) => {
+    const candidate = slot.candidate;
+    if (!candidate || candidate.ready !== true) return null;
+    if (dismissed && dismissed.has(candidate.id)) return null;
+    const stagedHere = slot.staged && slot.page.mediaId === candidate.id;
+    return el("div", { class: "sl-slot sl-slot-candidate", role: "listitem" }, [
+      el("div", { class: "sl-slot-media" }, [figure(candidate, { extra: "sl-slot-frame sl-output-frame-candidate" })]),
+      el("div", { class: "sl-slot-cap" }, [
+        el("b", null, t(locale, multi ? "drawerImgNewPage" : "drawerImgNew", { n: slot.index })),
+        ` ${t(locale, stagedHere ? "drawerCandidateStaged" : "drawerImgNewNote")}`
+      ]),
+      facts(candidate),
+      candidate.status === "legacy" ? el("p", { class: "sl-field-note" }, t(locale, "drawerCandidateLegacy")) : null,
+      editable
+        ? el("div", { class: "sl-slot-acts" }, [
+            stagedHere
+              ? el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(slot.page.pageId, null) }, t(locale, "drawerKeepCurrent"))
+              : el("button", { type: "button", class: "sl-primary sl-sm sl-use-candidate", disabled: ctx.saving || null, onclick: () => ctx.onStageImage?.(slot.page.pageId, candidate.id) }, t(locale, "drawerUseCandidate")),
+            stagedHere ? null : el("button", { type: "button", class: "sl-secondary", disabled: ctx.saving || null, onclick: () => strip.onDismissCandidate?.(candidate.id) }, t(locale, "drawerKeepCurrentShort"))
+          ].filter(Boolean))
+        : null
+    ]);
+  };
+
+  // Built in strip order: each page's slot, then its candidate card. An
+  // explicit "Add a page" tile follows the last slot — growth is a decision
+  // the owner makes here, never a side effect of another action.
+  const slotNodes = slots.flatMap((slot) => [slotNode(slot), candidateCard(slot)]).filter(Boolean);
+  const addPage = editable && slots.length < MAX_PAGES_PER_POST
+    ? el("button", {
+        type: "button",
+        class: "sl-addpage",
+        disabled: ctx.saving || imageBusy || null,
+        onclick: () => strip.onAddPage?.()
+      }, [
+        el("span", { class: "sl-addplace-plus", "aria-hidden": "true" }, "＋"),
+        el("span", null, t(locale, "drawerAddPage"))
       ])
     : null;
 
   /*
    * NO INLINE REGENERATE PANEL. The correction conversation lives in the
-   * host's chat — the ⋯ row posts a gadget:agent-intent carrying this image's
+   * host's chat — the ⋯ row posts a gadget:agent-intent carrying this page's
    * context and the drawer never re-runs a brief itself. A canvas whose host
    * never announced the contract shows the row disabled with the reason; it
    * does not grow a second regenerate surface here.
@@ -680,39 +840,53 @@ export function renderOutputPanel(locale, item, ctx) {
     return extra.bare ? button : el("div", { class: "sl-part-action" }, [button]);
   };
 
-  // The server cannot vouch for which image this revision accepted: say so
-  // under the strip and let the owner accept it again explicitly.
-  const provenance = accepted && item.acceptedGeneratedMediaProvenance === "unknown"
+  // The server cannot vouch for which image a page accepted: say so under
+  // the strip and let the owner accept it again explicitly. Re-accepting
+  // marks every unknown-provenance generated page owner-explicit — the same
+  // act the singular re-accept performed. Read through `pagesOfItem` so a
+  // pre-pages projection's derived page keeps the fact its legacy columns
+  // carried.
+  const unknownPages = pagesOfItem(item).filter((page) => page.kind === "generated" && page.mediaProvenance === "unknown");
+  const provenance = unknownPages.length
     ? el("div", { class: "sl-guidance sl-provenance-unknown", role: "note" }, [
         el("p", null, t(locale, "reviewImageReviewRequired")),
-        editable && accepted.ready === true
-          ? el("button", { type: "button", class: "sl-secondary", "data-action": "reaccept-image", disabled: ctx.saving, onclick: () => ctx.onReacceptImage?.(accepted.id) }, t(locale, "reviewReacceptImage"))
+        editable && unknownPages.some((page) => generatedRowFor(item, page)?.ready === true)
+          ? el("button", { type: "button", class: "sl-secondary", "data-action": "reaccept-image", disabled: ctx.saving, onclick: () => ctx.onReacceptImage?.() }, t(locale, "reviewReacceptImage"))
           : null
       ])
     : null;
 
-  // Alt text belongs to the revision: edited here, saved with Save, carried to Review.
+  // Alt text is per page — each filled page gets its own field, numbered
+  // when the post has more than one. Edits land in the page list and save
+  // with Save, exactly like the caption.
   let altField = null;
-  if (editable && (accepted || staged)) {
-    const altInput = el("textarea", {
-      id: "sl-drawer-alt-text",
-      class: "sl-drawer-caption sl-alt-text-input",
-      rows: "2",
-      placeholder: t(locale, "drawerAltTextPlaceholder")
+  const altPages = pages.filter((page) => page.kind);
+  if (editable && altPages.length) {
+    const inputs = altPages.map((page) => {
+      const index = pages.indexOf(page) + 1;
+      const saved = (item?.pages ?? []).find((entry) => entry.pageId === page.pageId) ?? null;
+      const input = el("textarea", {
+        id: altPages.length === 1 ? "sl-drawer-alt-text" : `sl-drawer-alt-text-${page.pageId}`,
+        class: "sl-drawer-caption sl-alt-text-input",
+        rows: "2",
+        placeholder: t(locale, "drawerAltTextPlaceholder")
+      });
+      input.value = page.altText ?? "";
+      input.classList.toggle("sl-dirty", input.value !== (saved?.altText || ""));
+      input.addEventListener("input", () => {
+        input.classList.toggle("sl-dirty", input.value !== (saved?.altText || ""));
+        ctx.onAltTextInput?.(page.pageId, input.value);
+      });
+      return el("div", { class: "sl-field sl-alt-text" }, [
+        el("label", { for: `sl-drawer-alt-text-${page.pageId}` }, t(locale, altPages.length > 1 ? "drawerAltForPage" : "drawerAltTextLabel", { n: index })),
+        input,
+        index === 1 ? el("p", { class: "sl-field-note" }, t(locale, "drawerAltTextNote")) : null
+      ].filter(Boolean));
     });
-    altInput.value = buffers.altText ?? item.altText ?? "";
-    altInput.classList.toggle("sl-dirty", altInput.value !== (item.altText || ""));
-    altInput.addEventListener("input", () => {
-      altInput.classList.toggle("sl-dirty", altInput.value !== (item.altText || ""));
-      ctx.onAltTextInput?.(altInput.value);
-    });
-    altField = el("div", { class: "sl-field sl-alt-text" }, [
-      el("label", { for: "sl-drawer-alt-text" }, t(locale, "drawerAltTextLabel")),
-      altInput,
-      el("p", { class: "sl-field-note" }, t(locale, "drawerAltTextNote"))
-    ]);
-  } else if (item.altText) {
-    altField = el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: item.altText }));
+    altField = el("div", { class: "sl-alt-group" }, inputs);
+  } else if (!editable && (item?.pages ?? []).some((page) => page.altText)) {
+    const first = (item.pages ?? []).find((page) => page.altText);
+    altField = el("p", { class: "sl-field-note" }, t(locale, "drawerGeneratedAlt", { alt: first.altText }));
   }
 
   const uploadBlock = buffers.imageSource === "upload" && uploadPreview
@@ -772,13 +946,16 @@ export function renderOutputPanel(locale, item, ctx) {
     el("div", { class: "sl-cols" }, [
       el("section", { class: "sl-cols-media", "aria-labelledby": "sl-output-images-title" }, [
         columnLabel(t(locale, "drawerImageSet"), null, "sl-output-images-title"),
-        addPlace,
-        el("div", { class: "sl-strip", role: "list" }, [...slotNodes, candidateSlot].filter(Boolean)),
-        // The honest interim line: a multi-image source feeds every child
-        // into ONE generated image today — the drawer says so until pages
-        // exist to hold them (Phase B). Single-image sources say nothing.
-        sourceImageCount > 1
-          ? el("p", { class: "sl-field-note" }, t(locale, "drawerSourceImagesNote", { n: sourceImageCount }))
+        el("div", { class: "sl-strip", role: "list" }, slotNodes),
+        addPage,
+        // The carousel's one rule, said once under the strip — the caption
+        // and the look belong to the post, never to a page.
+        multi
+          ? el("p", { class: "sl-field-note sl-pages-rule" }, t(locale, "drawerPagesRule"))
+          : null,
+        // Source videos nothing carried — disclosed, never silently dropped.
+        skippedVideos.length
+          ? el("p", { class: "sl-field-note" }, t(locale, "drawerSourceVideosNote", { n: skippedVideos.length }))
           : null,
         provenance,
         imageStatusLine,
@@ -911,9 +1088,14 @@ export function renderReferencePanel(locale, item, ctx = {}) {
   const hasVideo = (source.media ?? []).some((media) => media?.kind === "video");
   const refsAvailable = ctx.imageRefsAvailable === true;
   // Adopting the source picture is one action, reachable from two places:
-  // the Post tab's add menu and this column's quiet control under the image.
-  // Both run the same `onAdoptSource`; it is disabled by the same rule.
-  const adoptDisabled = ctx.saving || !refsAvailable || item.acceptedVisualMode === "keep_original";
+  // the Post tab's page menus and this column's quiet control under the
+  // image. It is disabled by the same rule the menus apply: nothing left to
+  // adopt when every bindable child is already an original page.
+  const bound = new Set(pagesOfItem(item).filter((page) => page.kind === "original").map((page) => page.mediaId));
+  const adoptable = (source.media ?? []).some(
+    (media) => (media?.kind === "image" || media?.kind === "carousel_child") && typeof media?.id === "string" && media.id && !bound.has(media.id)
+  );
+  const adoptDisabled = ctx.saving || !refsAvailable || !adoptable;
   return el("section", { class: "sl-drawer-section sl-reference", "aria-labelledby": "sl-reference-img-title" }, [
     el("div", { class: "sl-cols" }, [
       el("div", { class: "sl-cols-media" }, [

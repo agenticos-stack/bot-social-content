@@ -15,7 +15,7 @@ import { t } from "../../src/src/client/i18n.js";
 import * as inbox from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
 import { createMediaStage } from "../../src/src/client/preview-media.js";
-import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences } from "../../src/model.js";
+import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, visualModeFromPages } from "../../src/model.js";
 import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
 
@@ -29,7 +29,7 @@ if (start < 0 || end < 0) throw new Error("drawer-session.test.ts harness bounda
 const { rig, post } = new Function(
   "deps",
   `with(deps){${stripTypeScriptTypes(harness.slice(start, end))};return {rig, post};}`
-)({ source, dom, drawers, t, ...inbox, setNotice, createMediaStage, builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, findAll, flushAsyncWork, installMinimalDom, recordDispatch: async () => {}, gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage }) as {
+)({ source, dom, drawers, t, ...inbox, setNotice, createMediaStage, builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, visualModeFromPages, findAll, flushAsyncWork, installMinimalDom, recordDispatch: async () => {}, gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage }) as {
   rig: (options?: AnyRec) => AnyRec;
   post: (id?: string, overrides?: AnyRec) => AnyRec;
 };
@@ -60,13 +60,13 @@ const alt = (r: AnyRec) => byId(r.dialog(), "sl-drawer-alt-text");
 const saveButton = (r: AnyRec) => findButton(r.dialog(), t("en", "drawerSaveDraft"));
 // The primary names what it files: the picked destination subset.
 const PUBLISH = t("en", "drawerPublishToOne", { who: "FB_MAIN" });
-/** The add menu's Generate row — a bare press sends the staged brief. The
- *  trigger is the empty slot's dashed add-place tile: once a picture exists
- *  generation moves to its ⋯ menu's Regenerate… ask, never a bare press. */
+/** A page's ⋯ menu Generate row — a bare press sends the staged brief scoped
+ *  to that page. The trigger is the empty page's ⋯ chip: once a picture
+ *  exists, generation moves to its Regenerate… ask, never a bare press. */
 async function startGenerate(r: AnyRec) {
   const trigger = buttons(r.dialog()).find((b: AnyRec) =>
-    String(b.className ?? "").split(" ").includes("sl-addplace"));
-  if (!trigger) throw new Error("Add-image trigger missing");
+    String(b.className ?? "").split(" ").includes("sl-picbtn"));
+  if (!trigger) throw new Error("Page-action trigger missing");
   await trigger.dispatchEvent({ type: "click" });
   await flushAsyncWork();
   const item = buttons(r.dialog()).find((b) => String(b.textContent ?? "").startsWith(t("en", "drawerAddGenerate")));
@@ -87,12 +87,29 @@ function ready(overrides: AnyRec = {}) {
 function gateSaves(r: AnyRec) {
   const gates: Array<(fail: boolean) => void> = [];
   const hold = () => new Promise<boolean>((go) => gates.push(go));
+  const knownMedia = (row: AnyRec, id: string) =>
+    [row.generatedImage, row.generatedCandidate, ...(row.generatedHistory ?? [])]
+      .find((media: AnyRec) => media?.id === id) ?? { id, ready: true, mimeType: "image/jpeg", status: "accepted" };
   r.scope.rpc.saveRevisions = async (input: AnyRec) => {
     r.calls.revisionWrites.push(input);
     if (await hold()) return { ok: true, results: input.revisions.map(() => ({ ok: false, issues: [{ message: "Revision conflict." }] })) };
     const results = input.revisions.map((rev: AnyRec) => {
       const row = r.db.items.find((item: AnyRec) => item.id === rev.batchItemId);
       if (rev.caption !== undefined) row.caption = rev.caption;
+      // A pages write is authoritative: the singular projections mirror it
+      // exactly the way saveRevisionLocked derives its legacy columns.
+      if (Array.isArray(rev.pages)) {
+        row.pages = rev.pages.map((page: AnyRec) => ({
+          ...page,
+          generatedMedia: page.kind === "generated" && page.mediaId ? knownMedia(row, page.mediaId) : null,
+          candidate: null
+        }));
+        row.acceptedVisualMode = visualModeFromPages(rev.pages);
+        const gen = rev.pages.find((page: AnyRec) => page.kind === "generated" && page.mediaId);
+        row.generatedImage = gen ? knownMedia(row, gen.mediaId) : null;
+        row.altText = rev.pages.find((page: AnyRec) => page.altText)?.altText ?? null;
+        row.generatedCandidate = null;
+      }
       if (rev.altText !== undefined) row.altText = rev.altText;
       if (rev.acceptedGeneratedMediaId) {
         row.generatedImage = { id: rev.acceptedGeneratedMediaId, ready: true, mimeType: "image/jpeg", status: "accepted" };
@@ -238,13 +255,14 @@ describe("F01: Publish from the sheet", () => {
     await click(r.dialog(), t("en", "drawerHistoryUseImage"));
     await saves.release();
     await done;
-    expect(r.calls.revisionWrites[0].revisions[0].acceptedGeneratedMediaId).toBe("gm_cand");
+    // A staged image rides the save as its page's binding.
+    expect(r.calls.revisionWrites[0].revisions[0].pages[0].mediaId).toBe("gm_cand");
     expect(r.db.items[0].generatedImage.id).toBe("gm_cand");
     expect(r.dialog().open).toBe(true);
     expect(r.calls.submits).toEqual([]);
     expect(saveButton(r).disabled).toBe(false);
     const again = await start_(r.dialog(), PUBLISH);
-    expect(r.calls.revisionWrites[1].revisions[0].acceptedGeneratedMediaId).toBe("gm_old");
+    expect(r.calls.revisionWrites[1].revisions[0].pages[0].mediaId).toBe("gm_old");
     await saves.release();
     await again.done;
     await flushAsyncWork();
@@ -325,7 +343,10 @@ describe("F01: Save and leave (Close's unsaved-changes decision)", () => {
     decisions(r, "save");
     const second = r.scope.drawerSession.requestClose();
     await flushAsyncWork();
-    expect(r.calls.revisionWrites[1].revisions[0]).toMatchObject({ caption: "Caption B", altText: "Alt B", acceptedGeneratedMediaId: "gm_old" });
+    expect(r.calls.revisionWrites[1].revisions[0]).toMatchObject({
+      caption: "Caption B",
+      pages: [expect.objectContaining({ kind: "generated", mediaId: "gm_old", altText: "Alt B" })]
+    });
     await saves.release();
     await second;
     await flushAsyncWork();
@@ -393,7 +414,9 @@ describe("F01: Save instructions and generate", () => {
     await flushAsyncWork();
     expect(r.calls.instructionWrites).toEqual([{ batchItemId: "a", image: "Image A" }]);
     expect(savedAtRequest).toEqual([{ image: "Image A", caption: null }]);
-    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true }, image: { references: "source", aspectRatio: "4:5" } }]]);
+    // The ask names its page — a post with two source-bound pages generates
+    // only the one whose ⋯ opened the menu.
+    expect(r.calls.requests).toEqual([["b", ["a"], { needs: { image: true, imagePages: ["pg_src_m1"] }, image: { references: "source", aspectRatio: "4:5" } }]]);
     expect(byId(r.dialog(), "sl-instructions-image").value).toBe("Image B");
     expect(saveButton(r).disabled).toBe(false);
 

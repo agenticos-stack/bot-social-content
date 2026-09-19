@@ -22,7 +22,7 @@
       "source": { "inspect": "member", "modify": "member", "codeNav": "hidden" }
     }
   },
-  "storageSchemaVersion": 19,
+  "storageSchemaVersion": 20,
   "files": [
     "client.js",
     "server.js",

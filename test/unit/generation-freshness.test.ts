@@ -387,7 +387,9 @@ describe("G3 — migrated pins are provenance-unknown, never re-guessed", () => 
       ["generated_media", "derived_from"],
       ["publications", "last_checked_at"],
       ["publications", "provider_id"],
-      ["publications", "receipt_url"]
+      ["publications", "receipt_url"],
+      ["revisions", "pages_json"],
+      ["generated_media", "page_id"]
     ]) {
       db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
     }
@@ -425,7 +427,7 @@ describe("G3 — migrated pins are provenance-unknown, never re-guessed", () => 
       publications: sqlite.prepare("SELECT * FROM publications ORDER BY id").all()
     };
 
-    expect(gadget.storage.migrate()).toBe(19);
+    expect(gadget.storage.migrate()).toBe(20);
     expect(gadget.storage.getRevision("item-1", 1)).toMatchObject({ acceptedGeneratedMediaId: "gm_2", acceptedGeneratedMediaProvenance: "unknown" });
     expect(gadget.storage.getRevision("item-1", 2)).toMatchObject({ acceptedGeneratedMediaId: "gm_2", acceptedGeneratedMediaProvenance: "unknown" });
     expect(gadget.storage.getRevision("item-1", 3)).toMatchObject({ acceptedGeneratedMediaId: "gm_2", acceptedGeneratedMediaProvenance: "recorded" });
@@ -436,7 +438,7 @@ describe("G3 — migrated pins are provenance-unknown, never re-guessed", () => 
     expect(after).toEqual(before);
 
     // Repeated startup (and a new Gadget on the same database) changes nothing.
-    expect(gadget.storage.migrate()).toBe(19);
+    expect(gadget.storage.migrate()).toBe(20);
     const reloaded = new Gadget(raw as never, mockEnv(env) as never);
     expect(reloaded.storage.getRevision("item-1", 1).acceptedGeneratedMediaProvenance).toBe("unknown");
 
