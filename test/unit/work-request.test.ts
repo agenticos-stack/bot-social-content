@@ -400,4 +400,70 @@ describe("a canvas request the platform can file", () => {
       ]
     });
   });
+
+  it("stamps derive on a caption ask against an empty caption, and the work item carries it", async () => {
+    /**
+     * DERIVE IS PART OF THE ASK. An empty caption means the rewrite writes a
+     * new one from the source reference — the mode is stamped on the mark so
+     * the request keeps saying so even after the post itself changes.
+     */
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const asked = await gadget.requestGeneration(opened.id, [batchItemId], {
+      needs: { caption: true },
+      replace: true
+    });
+    expect(asked.ok).toBe(true);
+    expect(asked.workRequest.items).toMatchObject([
+      { parts: { caption: true, image: false }, captionMode: "derive" }
+    ]);
+    const mark = generationMark(gadget.storage.getBatchItem(batchItemId).generation);
+    expect(mark.captionMode).toBe("derive");
+    expect(mark.scope).toEqual({ caption: true, image: false });
+  });
+
+  it("stamps enhance on a caption ask against a saved caption", async () => {
+    // A post that already has text gets its caption improved, not replaced —
+    // the work item names the mode so the agent never infers it from a draft
+    // that may have moved on since the ask.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const saved = await gadget.saveRevisions({ revisions: [{ batchItemId, caption: "春季菜單來了", expectedRevision: 0 }] });
+    expect(saved.ok).toBe(true);
+    const asked = await gadget.requestGeneration(opened.id, [batchItemId], {
+      needs: { caption: true },
+      replace: true
+    });
+    expect(asked.ok).toBe(true);
+    expect(asked.workRequest.items).toMatchObject([{ captionMode: "enhance" }]);
+    expect(generationMark(gadget.storage.getBatchItem(batchItemId).generation).captionMode).toBe("enhance");
+  });
+
+  it("keeps the stamped mode after the caption itself moves on", async () => {
+    // An empty caption derives; the mark still says derive after a later
+    // save fills the caption — replaying the request must not silently
+    // become a different instruction.
+    const { gadget } = gadgetWith(undefined);
+    const opened = await gadget.createBatch({ itemIds: ["instagram:IG_MAIN:p1"] });
+    const batchItemId = opened.items[0].id;
+
+    const asked = await gadget.requestGeneration(opened.id, [batchItemId], {
+      needs: { caption: true },
+      replace: true
+    });
+    expect(asked.ok).toBe(true);
+    expect(generationMark(gadget.storage.getBatchItem(batchItemId).generation).captionMode).toBe("derive");
+
+    // The owner's own edit carries no request id — it does not answer the
+    // request, and the live mark keeps its ask-time mode either way.
+    const filled = await gadget.saveRevisions({
+      revisions: [{ batchItemId, caption: "後來填上的文案", expectedRevision: 0 }]
+    });
+    expect(filled.ok).toBe(true);
+    expect(generationMark(gadget.storage.getBatchItem(batchItemId).generation).captionMode).toBe("derive");
+  });
 });

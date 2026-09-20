@@ -1,9 +1,9 @@
-// The source drawer's media stage: which frame is showing, what the stage is
-// doing while it fetches, and whose blob URLs get revoked.
+// The Reference tab's media rail: one numbered slot per source frame, what a
+// slot is doing while its frame fetches, and whose blob URLs get revoked.
 //
 // Every case here is one the twelve posts from a real account produced.
 import { beforeEach, describe, expect, it } from "vitest";
-import { createMediaStage } from "../../src/src/client/preview-media.js";
+import { createMediaRail } from "../../src/src/client/preview-media.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom.js";
 
 type Frame = { id: string; kind?: string };
@@ -36,8 +36,10 @@ const texts = (node: unknown) =>
     .join(" ");
 
 const images = (node: unknown) => findAll(node as never, (e: { tagName?: string }) => e.tagName === "IMG");
+const byClass = (node: unknown, cls: string) =>
+  findAll(node as never, (e: { className?: string }) => String(e.className ?? "").split(" ").includes(cls));
 
-describe("the drawer's media stage", () => {
+describe("the drawer's media rail", () => {
   beforeEach(() => { installMinimalDom(); });
 
   /*
@@ -49,73 +51,68 @@ describe("the drawer's media stage", () => {
    */
   it("says it is fetching, then shows the frame", async () => {
     const door = doorServing({ "0": {} });
-    const stage = createMediaStage(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
-    expect(texts(stage.node)).toContain("Fetching");
-    expect(images(stage.node)).toHaveLength(0);
+    const rail = createMediaRail(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
+    expect(texts(rail.node)).toContain("Fetching");
+    expect(images(rail.node)).toHaveLength(0);
 
     await flushAsyncWork();
-    expect(texts(stage.node)).not.toContain("Fetching");
-    // The readable frame plus the blurred copy behind it — one fetch, two uses.
-    expect(images(stage.node).length).toBeGreaterThanOrEqual(1);
+    expect(texts(rail.node)).not.toContain("Fetching");
+    expect(images(rail.node).length).toBeGreaterThanOrEqual(1);
   });
 
   it("carries the door's own sentence when a frame is refused", async () => {
     const door = doorServing({ "0": { refuse: "That preview is 1441KB, over the 1024KB this cache holds." } });
-    const stage = createMediaStage(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
+    const rail = createMediaRail(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
     await flushAsyncWork();
-    expect(texts(stage.node)).toContain("1441KB");
-    expect(texts(stage.node)).toContain("Try again");
-    expect(images(stage.node)).toHaveLength(0);
+    expect(texts(rail.node)).toContain("1441KB");
+    expect(texts(rail.node)).toContain("Try again");
+    expect(images(rail.node)).toHaveLength(0);
   });
 
   it("says a text-only post is text-only, and asks the door for nothing", async () => {
     const door = doorServing({});
-    const stage = createMediaStage(door.rpc, itemWith([]), "en");
+    const rail = createMediaRail(door.rpc, itemWith([]), "en");
     await flushAsyncWork();
-    expect(texts(stage.node)).toContain("no image");
+    expect(texts(rail.node)).toContain("no image");
     expect(door.asked).toEqual([]);
   });
 
   /*
    * `item.media[0]` was the whole of the old drawer. Two of the twelve posts
-   * from a real account are carousels of three and five frames.
+   * from a real account are carousels of three and five frames — the rail
+   * shows every one of them at once, numbered like the Post tab's pages.
    */
   describe("a carousel", () => {
     const five: Frame[] = [0, 1, 2, 3, 4].map((n) => ({ id: String(n), kind: "image" }));
 
-    it("offers one control per frame and counts them", async () => {
+    it("shows one numbered slot per frame, in source order", async () => {
       const door = doorServing({ "0": {}, "1": {}, "2": {}, "3": {}, "4": {} });
-      const stage = createMediaStage(door.rpc, itemWith(five), "en");
+      const rail = createMediaRail(door.rpc, itemWith(five), "en");
       await flushAsyncWork();
-      expect(stage.frameCount).toBe(5);
-      expect(stage.strip?.children).toHaveLength(5);
-      expect(texts(stage.node)).toContain("1 of 5");
+      expect(rail.frameCount).toBe(5);
+      expect(byClass(rail.node, "sl-slot")).toHaveLength(5);
+      const numbers = byClass(rail.node, "sl-slot-num").map((e: { textContent?: string }) => e.textContent);
+      expect(numbers).toEqual(["1", "2", "3", "4", "5"]);
+      expect(images(rail.node)).toHaveLength(5);
     });
 
-    it("fetches a frame only when it is asked for, and only once", async () => {
+    it("reads every frame on show, once each, in source order", async () => {
       const door = doorServing({ "0": {}, "1": {}, "2": {}, "3": {}, "4": {} });
-      const stage = createMediaStage(door.rpc, itemWith(five), "en");
+      createMediaRail(door.rpc, itemWith(five), "en");
       await flushAsyncWork();
-      // Five frames is five round trips down a transport that runs one call at
-      // a time; nothing is fetched up front.
-      expect(door.asked).toEqual(["0"]);
-
-      stage.strip!.children[2].dispatchEvent({ type: "click" } as never);
+      // Every slot is on show, so every frame reads — one getMedia door, one
+      // read per frame, and a repaint never re-reads.
+      expect(door.asked).toEqual(["0", "1", "2", "3", "4"]);
       await flushAsyncWork();
-      expect(door.asked).toEqual(["0", "2"]);
-      expect(texts(stage.node)).toContain("3 of 5");
-
-      stage.strip!.children[0].dispatchEvent({ type: "click" } as never);
-      await flushAsyncWork();
-      // Frame 0 is already held: showing it again is not another fetch.
-      expect(door.asked).toEqual(["0", "2"]);
+      expect(door.asked).toEqual(["0", "1", "2", "3", "4"]);
     });
 
-    it("leaves a single-frame post without a strip to click through", async () => {
+    it("leaves a single-frame post unnumbered", async () => {
       const door = doorServing({ "0": {} });
-      const stage = createMediaStage(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
+      const rail = createMediaRail(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
       await flushAsyncWork();
-      expect(stage.strip).toBeNull();
+      expect(byClass(rail.node, "sl-slot")).toHaveLength(1);
+      expect(byClass(rail.node, "sl-slot-num")).toHaveLength(0);
     });
   });
 
@@ -132,14 +129,12 @@ describe("the drawer's media stage", () => {
     URL.revokeObjectURL = (url: string) => { revoked.push(url); realRevoke.call(URL, url); };
     try {
       const door = doorServing({ "0": {}, "1": {}, "2": {} });
-      const stage = createMediaStage(door.rpc, itemWith([0, 1, 2].map((n) => ({ id: String(n), kind: "image" }))), "en");
-      await flushAsyncWork();
-      stage.strip!.children[1].dispatchEvent({ type: "click" } as never);
+      const rail = createMediaRail(door.rpc, itemWith([0, 1, 2].map((n) => ({ id: String(n), kind: "image" }))), "en");
       await flushAsyncWork();
       expect(revoked).toHaveLength(0);
 
-      stage.dispose();
-      expect(revoked).toHaveLength(2);
+      rail.dispose();
+      expect(revoked).toHaveLength(3);
     } finally {
       URL.revokeObjectURL = realRevoke;
     }
@@ -151,8 +146,8 @@ describe("the drawer's media stage", () => {
     URL.revokeObjectURL = (url: string) => { revoked.push(url); realRevoke.call(URL, url); };
     try {
       const door = doorServing({ "0": {} });
-      const stage = createMediaStage(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
-      stage.dispose();
+      const rail = createMediaRail(door.rpc, itemWith([{ id: "0", kind: "image" }]), "en");
+      rail.dispose();
       await flushAsyncWork();
       expect(revoked).toHaveLength(1);
     } finally {

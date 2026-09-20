@@ -1059,6 +1059,14 @@ export class Gadget extends DurableObject {
           ...(typeof mark.instructions?.caption === "string" && mark.instructions.caption
             ? { captionPrompt: mark.instructions.caption.slice(0, 4000) }
             : {}),
+          /*
+           * The caption mode the ask was made under — "derive" writes from
+           * the source reference, "enhance" improves the caption the post
+           * carried. PRESENT on a caption ask is the declaration the
+           * platform renders, so the agent never has to infer it from the
+           * post's current state.
+           */
+          ...(mark.scope.caption === true && mark.captionMode ? { captionMode: mark.captionMode } : {}),
           ...(!scopePages && typeof mark.instructions?.image === "string" && mark.instructions.image
             ? { imagePrompt: mark.instructions.image.slice(0, 4000) }
             : {}),
@@ -2301,6 +2309,7 @@ export class Gadget extends DurableObject {
       const request = generateId("gen");
       const config = this.storage.getConfig();
       const wantsImage = needs ? needs.image === true : true;
+      const wantsCaption = needs ? needs.caption === true : true;
       /*
        * THE BRIEF IS RESOLVED BEFORE ANY MARK IS STAMPED. A declared source
        * reference that resolves to nothing refuses the WHOLE call by value —
@@ -2321,6 +2330,18 @@ export class Gadget extends DurableObject {
         const run = {};
         for (const part of ["image", "caption"]) if (runInstructions[part]) run[part] = runInstructions[part];
         if (Object.keys(run).length) snapshot.runInstructions = run;
+        const revision = this.storage.latestRevision(item.id);
+        if (wantsCaption) {
+          /*
+           * DERIVE OR ENHANCE, STAMPED AT ASK TIME. "Rewrite caption" on a
+           * post carrying no caption derives from the source reference; on
+           * one that already has text it improves that caption. The mode is
+           * part of what was asked — durable on the mark like the brief, so
+           * a replayed request keeps the same intent and the agent never has
+           * to guess which of the two it was told to do.
+           */
+          snapshot.captionMode = revision?.caption?.trim() ? "enhance" : "derive";
+        }
         if (wantsImage) {
           /*
            * THE ASK IS PER PAGE. The post's effective page list decides what
@@ -2330,7 +2351,6 @@ export class Gadget extends DurableObject {
            * must be one of THIS post's own pages or the whole call refuses.
            */
           const sourceItem = this.storage.getItem(item.itemId);
-          const revision = this.storage.latestRevision(item.id);
           const pages = effectiveRevisionPages(revision, sourceItem, {
             hasPoster: this.storage.getPoster(item.id, item.currentRevision) !== null
           });
