@@ -33,7 +33,7 @@ import { el, icon, relativeLabel, replace } from "./dom.js";
 import { resolveLocale, t } from "./i18n.js";
 import { classifyRefreshOutcome } from "../../refresh-outcome.js";
 import { createRpc, loadGeneratedImageAsBlobUrl, loadMediaAsBlobUrl } from "./rpc.js";
-import { createMediaStage } from "./preview-media.js";
+import { createMediaRail } from "./preview-media.js";
 import { createImageAcceptance } from "./image-acceptance.js";
 import { newGrantRequestId, parseGadgetDoorsChangedMessage, parseGadgetGrantResultMessage } from "../../grant-request.js";
 import {
@@ -254,9 +254,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-icon-action.is-busy:disabled { color:var(--sl-ink-soft, currentColor); cursor:progress; }
 @keyframes sl-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .sl-icon-action.is-busy svg { animation: none; opacity: .55; } }
-.sl-stage-thumb[data-state="refused"] { outline: 1px dashed var(--sl-line-strong); }
-.sl-stage-thumb[data-state="held"] .sl-stage-thumb-n::after { content: " ✓"; }
-.sl-stage-read { margin: 0 0 0 8px; align-self: center; font-size: 12px; color: var(--sl-ink-soft, inherit); }
 .sl-icon-action:hover:not(:disabled) { background:var(--sl-hover); color:var(--sl-ink); }
 .sl-icon-action:disabled { color:var(--sl-line-strong); cursor:not-allowed; }
 .sl-titleline p { margin: 0; color: var(--sl-muted); font-size: 12px; max-width: 620px; }
@@ -666,9 +663,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    regardless of how tall the decision column beside it grows. */
 .sl-pc-media-slot { width: 100%; display: grid; place-items: center; background: var(--sl-surface-2); border-radius: var(--sl-radius-control); }
 /* The slot already reserves the exact ratio the template draws at (see
-   steps.js's mediaAspect), so the canvas fills it edge to edge rather than
-   capping its own height the way a variable-ratio source frame has to
-   (preview-media.js's FRAME_MAX) -- there is no mismatch here to guard. */
+   steps.js's mediaAspect), so the canvas fills it edge to edge — there is
+   no variable-ratio mismatch here to guard. */
 .sl-pc-canvas { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: var(--sl-radius-control); border: 1px solid var(--sl-line); }
 .sl-pc-media-empty { color: var(--sl-muted); font-size: 11px; }
 .sl-pc-body { padding: 18px; display: grid; gap: 16px; align-content: start; }
@@ -793,38 +789,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-preview-kicker { display: block; color: var(--sl-muted); font-size: 10.5px; letter-spacing: .02em; margin-bottom: 3px; }
 
 .sl-preview-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 18px 18px; overflow-wrap: anywhere; }
-/* The media stage. See preview-media.js for why the cap is a length. */
-.sl-preview-stage-wrap { margin-bottom: 20px; }
-.sl-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; padding: 0; background: #0d0c0a; border: 1px solid var(--sl-line); border-radius: var(--sl-radius-card) var(--sl-radius-card) 0 0; overflow: hidden; }
-.sl-stage-surface { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; }
-.sl-stage-img { position: relative; display: block; width: auto; height: auto; max-width: 100%; }
-.sl-stage-chip { position: absolute; z-index: 2; top: 12px; font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 4px 8px; color: #f3f0e9; background: rgba(13,12,10,.74); border: 1px solid rgba(243,240,233,.16); }
-.sl-stage-kind { left: 12px; }
-.sl-stage-count { right: 12px; font-variant-numeric: tabular-nums; }
-/* A text-only post has no frame kind or count: an empty chip drew as a dark block. */
-.sl-stage-chip:empty { display: none; }
-.sl-stage-nav { position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 34px; height: 56px; cursor: pointer; color: #f3f0e9; background: rgba(13,12,10,.6); border: 1px solid rgba(243,240,233,.18); font-size: 17px; line-height: 1; }
-.sl-stage-nav:hover { background: rgba(13,12,10,.9); }
-.sl-stage-prev { left: 8px; }
-.sl-stage-next { right: 8px; }
-.sl-stage-state { display: grid; place-items: center; gap: 8px; text-align: center; padding: 26px 12px; }
-.sl-stage-state p { margin: 0; color: #9d968a; font-size: 12.5px; line-height: 1.55; max-width: 34ch; }
-.sl-stage-state strong { color: #f3f0e9; font-size: 13.5px; }
-/* A genuinely empty post is a quiet fact, not a loading state or a refusal
-   -- it keeps the stage's own footprint (below) but drops the dark ground,
-   the two other states earn. */
-.sl-stage.sl-stage-empty { background: var(--sl-surface-2); border-style: dashed; border-radius: var(--sl-radius-card); }
-.sl-stage-empty-note { padding: 22px; text-align: center; max-width: 30ch; }
-.sl-stage-empty-note strong { display: block; color: var(--sl-ink); font-size: 12px; font-weight: 650; margin-bottom: 4px; }
-.sl-stage-empty-note p { margin: 0; color: var(--sl-muted); font-size: 11.5px; line-height: 1.55; }
-.sl-stage-skeleton { width: 108px; height: 136px; background: linear-gradient(100deg, #24211a 30%, #3a3427 50%, #24211a 70%) 0 0 / 300% 100%; animation: sl-shimmer 1.5s linear infinite; }
-@keyframes sl-shimmer { to { background-position: -150% 0; } }
-@media (prefers-reduced-motion: reduce) { .sl-stage-skeleton { animation: none; } }
-.sl-stage-retry { cursor: pointer; font-size: 11.5px; font-weight: 600; padding: 6px 11px; color: #f3f0e9; background: transparent; border: 1px solid rgba(243,240,233,.32); }
-.sl-stage-retry:hover { background: rgba(243,240,233,.1); }
-.sl-stage-strip { display: flex; gap: 6px; padding: 8px 10px; background: #080807; border: 1px solid var(--sl-line); border-top: 0; border-radius: 0 0 var(--sl-radius-card) var(--sl-radius-card); overflow-x: auto; overscroll-behavior-x: contain; }
-.sl-stage-thumb { flex: 0 0 auto; width: 34px; height: 42px; cursor: pointer; display: grid; place-items: center; color: #9d968a; background: #14120f; border: 1px solid rgba(243,240,233,.18); font-size: 11px; font-variant-numeric: tabular-nums; }
-.sl-stage-thumb[aria-selected="true"] { color: #f3f0e9; border-color: var(--sl-accent, #f5b544); }
+/* The reference rail's under-slot block: the cap line and any recovery
+   action stack below the frame (preview-media.js renders both inside
+   .sl-slot-tail, hidden when a slot has nothing to say). */
+.sl-slot-tail { display: flex; flex-direction: column; gap: 5px; }
+.sl-slot-tail[hidden] { display: none; }
 /* Provenance and metrics read as ONE quiet wrapping line, not a data
  * table — the <dl> stays because the pairing is right for a screen
  * reader; each fact is "label value" inline. */
@@ -858,28 +827,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
    system to keep in sync with this one. */
 .sl-preview-actions.sl-preview-actions { padding: 8px 18px 16px; border-top: 0; display: flex; gap: 8px; }
 .sl-preview-actions button { flex: 1; min-height: var(--sl-h-control); white-space: normal; }
-/* An item's stage sits inside a sheet that already scrolls — a little shorter
-   than the source drawer's, same media fidelity. */
-.sl-drawer-section .sl-stage { min-height: 220px; }
-.sl-drawer-section .sl-stage-img { max-height: min(420px, 46dvh); }
-.sl-drawer-section .sl-preview-stage-wrap { margin-bottom: 10px; }
-/* The Reference tab's source stage keeps the shared carousel mechanics but
-   wears the mockup's light frame — a 4/5 light panel, capped, not the dark
-   stage the single-post preview uses. */
-.sl-drawer-section .sl-reference-stage { max-width: 228px; margin-bottom: 0; }
-.sl-drawer-section .sl-reference-stage .sl-stage { min-height: 0; aspect-ratio: 4 / 5; background: var(--sl-surface-2); }
-.sl-drawer-section .sl-reference-stage .sl-stage-img { max-height: 320px; }
-.sl-drawer-section .sl-reference-stage .sl-stage-chip { color: var(--sl-ink-2); background: rgba(255,255,255,.92); border-color: var(--sl-line); }
-.sl-drawer-section .sl-reference-stage .sl-stage-nav { color: var(--sl-ink); background: rgba(255,255,255,.82); border-color: var(--sl-line); }
-.sl-drawer-section .sl-reference-stage .sl-stage-nav:hover { background: var(--sl-surface); }
-.sl-drawer-section .sl-reference-stage .sl-stage-state p { color: var(--sl-ink-2); }
-.sl-drawer-section .sl-reference-stage .sl-stage-state strong { color: var(--sl-ink); }
-.sl-drawer-section .sl-reference-stage .sl-stage-retry { color: var(--sl-ink); border-color: var(--sl-line-strong); }
-.sl-drawer-section .sl-reference-stage .sl-stage-retry:hover { background: var(--sl-surface); }
-.sl-drawer-section .sl-reference-stage .sl-stage-skeleton { background: linear-gradient(100deg, #e9e9ec 30%, #f7f7f9 50%, #e9e9ec 70%) 0 0 / 300% 100%; }
-.sl-drawer-section .sl-reference-stage .sl-stage-strip { background: var(--sl-surface-2); }
-.sl-drawer-section .sl-reference-stage .sl-stage-thumb { color: var(--sl-ink-2); background: var(--sl-surface); border-color: var(--sl-line); }
-.sl-drawer-section .sl-reference-stage .sl-stage-thumb[aria-selected="true"] { color: var(--sl-ink); border-color: var(--sl-accent); }
 /* What the composer below it must not lose, marked read-only -- a
    textarea cannot carry inline marks of its own. */
 .sl-drawer-caption-preview { margin: 0; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; }
@@ -1093,10 +1040,10 @@ function App() {
   let inboxState = createInboxState();
   let wizard = createWizardState();
   let activePreviewItem = null;
-  let activePreviewStage = null;
-  // Every media stage still on screen (preview dialog and drawer panels), so a
-  // host door notice reaches each one; a stage leaves the set when disposed.
-  const liveMediaStages = new Set();
+  let activePreviewRail = null;
+  // Every media rail still on screen (preview dialog and drawer panels), so a
+  // host door notice reaches each one; a rail leaves the set when disposed.
+  const liveMediaRails = new Set();
   let lastFocusedBeforePreview = null;
   let drawerRequest = 0;
   // Every summary read takes the next number; only the most recently started
@@ -1209,13 +1156,13 @@ function App() {
   /**
    * A host door notice says an operation was attempted elsewhere, never that it
    * succeeded. Re-read consent (metadata only: no getMedia, provider call or
-   * generation) and give live media stages the read's outcome. An obsolete read
+   * generation) and give live media rails the read's outcome. An obsolete read
    * changes nothing.
    */
   async function onDoorsChanged() {
     const state = await readMeteredFetchConsent();
     if (state === null) return;
-    for (const stage of liveMediaStages) stage.notifyPermission({ state });
+    for (const rail of liveMediaRails) rail.notifyPermission({ state });
   }
 
   /** The owner's "Check again": the same ordered read; an obsolete one reports the committed state. */
@@ -1291,8 +1238,15 @@ function App() {
   const requestDoorGrant = (requirementKey) => askHost("gadget:grant-door", requirementKey, 0);
   const requestDoorActivation = (requirementKey) => askHost("gadget:activate-door", requirementKey, 45_000);
 
-  function mediaStageFor(target) {
-    const stage = createMediaStage(rpc, target, locale, {
+  /*
+   * The Reference tab and the source preview both draw the post's frames in
+   * the Post tab's own vocabulary — one numbered slot per frame, every frame
+   * reading at once through the same consented `getMedia` door. The rail
+   * owns nothing new: grant, activation, recheck and refresh are the
+   * callbacks it needs from here.
+   */
+  function mediaRailFor(target) {
+    const rail = createMediaRail(rpc, target, locale, {
       requestGrant: () => requestDoorGrant("metered_fetch"),
       requestActivation: () => requestDoorActivation("metered_fetch"),
       refreshSources: () => collectionHandlers.onRefresh(),
@@ -1300,13 +1254,13 @@ function App() {
       // the same metadata-only read as a notice, never `getMedia`.
       recheckPermission: () => recheckMeteredFetchConsent()
     });
-    liveMediaStages.add(stage);
-    const dispose = stage.dispose;
-    stage.dispose = () => {
-      liveMediaStages.delete(stage);
+    liveMediaRails.add(rail);
+    const dispose = rail.dispose;
+    rail.dispose = () => {
+      liveMediaRails.delete(rail);
       dispose();
     };
-    return stage;
+    return rail;
   }
 
   const toaster = createToaster(announceRegion, {
@@ -1355,8 +1309,8 @@ function App() {
     activePreviewItem = item;
     const body = el("div", { class: "sl-preview-scroll" });
 
-    if (activePreviewStage) activePreviewStage.dispose();
-    activePreviewStage = mediaStageFor(item);
+    if (activePreviewRail) activePreviewRail.dispose();
+    activePreviewRail = mediaRailFor(item);
 
     /*
      * Same column pair as the drawer's 帖文 and 參考 panels: media under a
@@ -1370,10 +1324,7 @@ function App() {
             el("div", { class: "sl-collabel" }, [
               el("span", { class: "sl-field-label sl-grow", id: "sl-source-media-label" }, t(locale, "drawerRefImageLabel"))
             ]),
-            el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [
-              activePreviewStage.node,
-              activePreviewStage.strip
-            ])
+            activePreviewRail.node
           ]),
           el("div", { class: "sl-cols-side" }, [
             el("div", { class: "sl-collabel" }, [
@@ -1383,7 +1334,7 @@ function App() {
                 : null
             ].filter(Boolean)),
             el("p", { class: "sl-drawer-caption-preview sl-reference-text" }, item.text || ""),
-            drawerFacts(locale, item, activePreviewStage.frameCount),
+            drawerFacts(locale, item, activePreviewRail.frameCount),
             item.duplicateOf ? el("p", { class: "sl-field-note" }, t(locale, "duplicateNote")) : null
           ].filter(Boolean))
         ])
@@ -1394,7 +1345,7 @@ function App() {
      * RELABEL THE FOOTER; DO NOT REBUILD THE DRAWER.
      *
      * Selecting used to call `openPreview` again, which disposes the media
-     * stage and builds a new one — so pressing "Select post" threw away the
+     * rail and builds a new one — so pressing "Select post" threw away the
      * picture and refetched it, and the only visible result of the press was
      * that the image vanished for several seconds and came back. Nothing else
      * on screen acknowledged the action at all.
@@ -1685,11 +1636,12 @@ function App() {
     };
     const itemNotes = new Map();     // batchItemId -> live note element (current render)
     const generatedUrls = new Map(); // generatedMediaId -> live blob: URL (revoked on redraw/close)
-    // One reference stage per post for this drawer session, kept across
-    // section switches (its node is re-attached, never rebuilt) so the frame,
-    // loaded/blocked state and any recovery in progress survive. Disposed when
-    // the post leaves the drawer, its source item changes, or the drawer ends.
-    const stages = new Map(); // batchItemId -> { key, stage }
+    // One reference rail per post for this drawer session, kept across
+    // section switches (its node is re-attached, never rebuilt) so the frame
+    // reads, loaded/blocked state and any recovery in progress survive.
+    // Disposed when the post leaves the drawer, its source item changes, or
+    // the drawer ends.
+    const rails = new Map(); // batchItemId -> { key, rail }
     // A generated caption that arrived over the owner's unsaved caption.
     const captionConflicts = new Map(); // batchItemId -> { caption, revision }
     // What the PLATFORM says happened to a request, read through Check status.
@@ -1719,14 +1671,14 @@ function App() {
       const source = item?.sourceItem;
       return source ? `${source.id ?? ""}::${(source.media ?? []).map((media) => media?.id).join(",")}` : null;
     };
-    const stageFor = (item) => {
+    const railFor = (item) => {
       const key = sourceKeyOf(item);
-      const held = stages.get(item.id);
-      if (held && held.key === key) return held.stage;
-      held?.stage.dispose();
-      const stage = mediaStageFor(item.sourceItem);
-      stages.set(item.id, { key, stage });
-      return stage;
+      const held = rails.get(item.id);
+      if (held && held.key === key) return held.rail;
+      held?.rail.dispose();
+      const rail = mediaRailFor(item.sourceItem);
+      rails.set(item.id, { key, rail });
+      return rail;
     };
 
     /** Merge a fresh read: saved output replaces the projection, owner buffers stay. */
@@ -1742,11 +1694,11 @@ function App() {
       }
       items = freshItems;
       if (!items.some((entry) => entry.id === activeId)) activeId = items[0]?.id ?? null;
-      for (const [id, held] of stages) {
+      for (const [id, held] of rails) {
         const owner = items.find((entry) => entry.id === id);
         if (!owner || sourceKeyOf(owner) !== held.key) {
-          held.stage.dispose();
-          stages.delete(id);
+          held.rail.dispose();
+          rails.delete(id);
         }
       }
     };
@@ -3085,7 +3037,7 @@ function App() {
         // The picture owns its adopt affordance here too — the same action
         // the Post tab's add menu carries, one click for the same write.
         panel = renderReferencePanel(locale, item, {
-          stage: item.sourceItem ? stageFor(item) : null,
+          rail: item.sourceItem ? railFor(item) : null,
           editable,
           saving,
           imageRefsAvailable: sourceImageReferences(item.sourceItem).length > 0,
@@ -3356,8 +3308,8 @@ function App() {
       live = false;
       readToken += 1;
       hostFeatureListeners.delete(redrawPreserving);
-      for (const held of stages.values()) held.stage.dispose();
-      stages.clear();
+      for (const held of rails.values()) held.rail.dispose();
+      rails.clear();
       for (const url of generatedUrls.values()) URL.revokeObjectURL(url);
       generatedUrls.clear();
       if (drawerSession === session) drawerSession = null;
@@ -3400,9 +3352,9 @@ function App() {
   }
 
   function closePreview() {
-    if (activePreviewStage) {
-      activePreviewStage.dispose();
-      activePreviewStage = null;
+    if (activePreviewRail) {
+      activePreviewRail.dispose();
+      activePreviewRail = null;
     }
     activePreviewItem = null;
     if (previewDialog.open) previewDialog.close();

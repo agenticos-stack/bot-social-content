@@ -98,7 +98,7 @@ test("the client stylesheet survives the bundler intact", async () => {
   for (const rule of [
     ".sl-icon-action { width:var(--sl-h-control)",   // early, before the drawer rules
     ".sl-preview-head-actions",       // the drawer header
-    ".sl-stage-strip",                // the media stage
+    ".sl-slot-num",                   // the media rail's numbered slots
     ".sl-announce-card",              // the last block in the sheet
     ".sl-drawer-facts"
   ]) {

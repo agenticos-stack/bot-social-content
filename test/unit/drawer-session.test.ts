@@ -1,6 +1,6 @@
 // The open drawer as a session: live updates (U1), instructions before a
 // generation request (U2), one request at a time per post, and the reference
-// stage kept across sections (U3).
+// rail kept across sections (U3).
 //
 // These run the UNCHANGED `openBatchDrawer`, `handleOperation` and
 // `establishLiveUpdates` bodies extracted from client.js (the same technique
@@ -14,7 +14,7 @@ import * as drawers from "../../src/src/client/drawer.js";
 import { t } from "../../src/src/client/i18n.js";
 import { createInboxState, isEditableItem, setInboxSummaries } from "../../src/src/client/inbox.js";
 import { setNotice } from "../../src/src/client/collection.js";
-import { createMediaStage } from "../../src/src/client/preview-media.js";
+import { createMediaRail } from "../../src/src/client/preview-media.js";
 import { builtinImageInstruction, generationDisplayStage, generationMark, generationStage, itemPresentation, platformStage, postFiled, sourceImageReferences, visualModeFromPages } from "../../src/model.js";
 import { gadgetAgentIntentMessage, gadgetTopupMessage, newTopupRequestId, parseGadgetTopupResultMessage } from "../../src/agent-intent.js";
 import { findAll, flushAsyncWork, installMinimalDom } from "./_helpers/minimal-dom";
@@ -93,7 +93,7 @@ const pendingMark = (needs: AnyRec) => ({ id: "gen_1", base: 1, scope: { image: 
 // filled page's Regenerate… intent instead.
 const imageless = { generatedImage: null, acceptedVisualMode: null };
 
-function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec) => AnyRec; hostFeatures?: Set<string> } = {}) {
+function rig(options: { items?: AnyRec[]; rail?: (target: AnyRec, calls: AnyRec) => AnyRec; hostFeatures?: Set<string> } = {}) {
   installMinimalDom();
   const db: AnyRec = { id: "b", items: options.items ?? [post()] };
   const calls: AnyRec = { reads: 0, requests: [], instructionWrites: [], revisionWrites: [], submits: [], sequence: [], guards: 0, stagesCreated: 0, stagesDisposed: 0, announced: [], posts: [] };
@@ -116,10 +116,10 @@ function rig(options: { items?: AnyRec[]; stage?: (target: AnyRec, calls: AnyRec
     wizardHandlers: {}, refusalMessage: (result: AnyRec) => result?.message ?? null,
     resumeBatch: (_old: unknown, batch: unknown) => ({ batch }), refreshPublishState: async () => {},
     loadGeneratedImageAsBlobUrl: async (_rpc: unknown, id: string) => ({ url: `blob:${id}`, mime: "image/jpeg" }),
-    mediaStageFor: (target: AnyRec) => {
-      if (options.stage) return options.stage(target, calls);
+    mediaRailFor: (target: AnyRec) => {
+      if (options.rail) return options.rail(target, calls);
       calls.stagesCreated++;
-      return { node: dom.el("div"), strip: null, dispose: () => { calls.stagesDisposed++; } };
+      return { node: dom.el("div"), dispose: () => { calls.stagesDisposed++; }, notifyPermission() {}, frameStates: () => [] };
     },
     publicationStateSummary: (_locale: string, outcome: string) => outcome,
     confirmUnsavedNavigation: async () => { calls.guards++; return "keep"; },
@@ -614,8 +614,35 @@ describe("one outstanding request per post", () => {
   });
 });
 
+describe("the caption rewrite's mode label", () => {
+  it("names enhance under a saved caption, and derive under an empty one", async () => {
+    const r = rig({ items: [post("a"), post("b", { caption: "", ...imageless })] });
+    await r.open({ id: "b", itemId: "a" });
+    expect(r.dialog().textContent).toContain(t("en", "drawerCaptionModeEnhance"));
+    await r.open({ id: "b", itemId: "b" });
+    expect(r.dialog().textContent).toContain(t("en", "drawerCaptionModeDerive"));
+  });
+
+  it("shows the mode a live request was stamped with, not the caption's current state", async () => {
+    // The ask was stamped derive while the caption was empty; a caption
+    // typed since must not quietly re-label the pending rewrite.
+    const mark = { ...pendingMark({ caption: true }), captionMode: "derive" };
+    const r = rig({ items: [post("a", { generation: mark })] });
+    await r.open({ id: "b", itemId: "a" });
+    expect(r.dialog().textContent).toContain(t("en", "drawerCaptionModeDerive"));
+  });
+
+  it("renders the label in written zh-HK", async () => {
+    const r = rig({ items: [post("a", { caption: "", ...imageless })] });
+    r.scope.locale = "zh-HK";
+    await r.open({ id: "b", itemId: "a" });
+    expect(r.dialog().textContent).toContain(t("zh-HK", "drawerCaptionModeDerive"));
+    expect(r.dialog().textContent).toContain("根據參考內容");
+  });
+});
+
 // ---------------------------------------------------------------------------
-// U3 — the reference stage survives section switches
+// U3 — the reference rail survives section switches
 // ---------------------------------------------------------------------------
 
 /**
@@ -634,9 +661,9 @@ function mediaGadget() {
     holdReads: (value: boolean) => { hold = value; },
     releaseReads: () => { for (const go of waiting.splice(0)) go(); },
     answerHost: (answer: AnyRec) => host.shift()!(answer),
-    stage: (target: AnyRec, calls: AnyRec) => {
+    rail: (target: AnyRec, calls: AnyRec) => {
       calls.stagesCreated++;
-      const stage = createMediaStage({
+      const stage = createMediaRail({
         getMedia: async (_itemId: string, mediaId: string) => {
           reads.push(mediaId); // one gadget read
           if (hold) await new Promise<void>((go) => waiting.push(go));
@@ -661,18 +688,18 @@ async function switchAwayAndBack(r: AnyRec) {
   await click(r.dialog(), t("en", "drawerTabReference"));
 }
 
-describe("U3: one reference stage per post per drawer session", () => {
+describe("U3: one reference rail per post per drawer session", () => {
   it("keeps a loading frame's single read across section switches", async () => {
     const gadget = mediaGadget();
-    const r = rig({ stage: gadget.stage });
+    const r = rig({ rail: gadget.rail });
     gadget.holdReads(true);
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabReference"));
-    expect(gadget.reads).toEqual(["m1"]);
+    expect(gadget.reads).toEqual(["m1", "m2"]);
     await switchAwayAndBack(r);
     gadget.releaseReads();
     await flushAsyncWork();
-    expect(gadget.reads).toEqual(["m1"]); // one gadget read total
+    expect(gadget.reads).toEqual(["m1", "m2"]); // one gadget read per slot
     expect(r.calls.stagesCreated).toBe(1);
     expect(r.calls.stagesDisposed).toBe(0);
   });
@@ -680,7 +707,7 @@ describe("U3: one reference stage per post per drawer session", () => {
   it("applies a consent answer that arrives after the owner switched sections", async () => {
     const gadget = mediaGadget();
     gadget.answers.m1 = { ok: false, code: "fetch_permission_required", message: "Public account fetching is not granted." };
-    const r = rig({ stage: gadget.stage });
+    const r = rig({ rail: gadget.rail });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabReference"));
     void press(r.dialog(), t("en", "drawerMediaGrant"));
@@ -688,7 +715,7 @@ describe("U3: one reference stage per post per drawer session", () => {
     gadget.answers.m1 = { bytes: [255, 216, 255, 217] };
     gadget.answerHost({ outcome: "activated" });
     await flushAsyncWork();
-    expect(gadget.reads).toEqual(["m1", "m1"]); // the refused read, then the one the answer allowed
+    expect(gadget.reads).toEqual(["m1", "m2", "m1"]); // m1's refused read, then the one the answer allowed
     const stage = r.scope.drawerSession && images(r.dialog());
     expect(stage.map((img: AnyRec) => img.src ?? img.getAttribute("src")).some((src: string) => String(src).startsWith("blob:"))).toBe(true);
     expect(r.calls.stagesCreated).toBe(1);
@@ -697,7 +724,7 @@ describe("U3: one reference stage per post per drawer session", () => {
   it("keeps the cancellation note after switching sections", async () => {
     const gadget = mediaGadget();
     gadget.answers.m1 = { ok: false, code: "fetch_permission_required", message: "Public account fetching is not granted." };
-    const r = rig({ stage: gadget.stage });
+    const r = rig({ rail: gadget.rail });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabReference"));
     void press(r.dialog(), t("en", "drawerMediaGrant"));
@@ -706,13 +733,13 @@ describe("U3: one reference stage per post per drawer session", () => {
     expect(r.dialog().textContent).toContain(t("en", "drawerMediaCancelled"));
     await switchAwayAndBack(r);
     expect(r.dialog().textContent).toContain(t("en", "drawerMediaCancelled"));
-    expect(gadget.reads).toEqual(["m1"]);
+    expect(gadget.reads).toEqual(["m1", "m2"]);
   });
 
   it("keeps the loaded state after a successful recovery, without reading again", async () => {
     const gadget = mediaGadget();
     gadget.answers.m1 = { ok: false, code: "fetch_permission_required", message: "Public account fetching is not granted." };
-    const r = rig({ stage: gadget.stage });
+    const r = rig({ rail: gadget.rail });
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabReference"));
     void press(r.dialog(), t("en", "drawerMediaGrant"));
@@ -726,7 +753,7 @@ describe("U3: one reference stage per post per drawer session", () => {
     expect(images(r.dialog()).some((img: AnyRec) => String(img.src ?? img.getAttribute("src")).startsWith("blob:"))).toBe(true);
   });
 
-  it("disposes the stage when the drawer closes, and when the post's source item is replaced", async () => {
+  it("disposes the rail when the drawer closes, and when the post's source item is replaced", async () => {
     const r = rig();
     await r.open({ id: "b", itemId: "a" });
     await click(r.dialog(), t("en", "drawerTabReference"));

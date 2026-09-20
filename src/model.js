@@ -1676,6 +1676,11 @@ export function generationMark(mark) {
       // references when the post's own image was the basis). Absent on marks
       // written before the brief existed, and on caption-only asks.
       imageBrief: generationImageBrief(mark.imageBrief),
+      // The caption part's mode, stamped at ask time: "derive" writes from
+      // the source reference (no caption existed), "enhance" improves the
+      // caption the post already carried. Absent on image-only asks and on
+      // marks written before the mode existed.
+      captionMode: mark.captionMode === "derive" || mark.captionMode === "enhance" ? mark.captionMode : undefined,
       // What the PLATFORM did with the request, stamped by the host from the
       // annotated method result and confirmed (never overridden) by the client.
       // Absent means no acknowledgement was ever recorded — not that generation

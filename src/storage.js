@@ -1284,7 +1284,8 @@ export class Storage {
         ...(snapshot.instructions ? { instructions: snapshot.instructions } : {}),
         ...(snapshot.instructionSources ? { instructionSources: snapshot.instructionSources } : {}),
         ...(snapshot.runInstructions ? { runInstructions: snapshot.runInstructions } : {}),
-        ...(snapshot.imageBrief ? { imageBrief: snapshot.imageBrief } : {})
+        ...(snapshot.imageBrief ? { imageBrief: snapshot.imageBrief } : {}),
+        ...(snapshot.captionMode ? { captionMode: snapshot.captionMode } : {})
       });
       this.sql.exec(
         "UPDATE batch_items SET generation = ?, last_generation = ?, updated_at = ? WHERE id = ?",

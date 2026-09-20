@@ -1,19 +1,17 @@
-// Social Content client — the source drawer's media stage.
+// Social Content client — source-media reads and the surfaces that draw them.
 //
-// Owns which frame of the post is showing, what each frame's read is doing
-// (fetching / held / refused, plus any recovery the owner started), and the
-// lifetime of the blob URLs it mints.
+// `createMediaReads` owns which frames a source post has, what each frame's
+// read is doing (fetching / held / refused, plus any recovery the owner
+// started), and the lifetime of the blob URLs it mints. The rail — the Post
+// tab's numbered slot strip, every frame at once — is the renderer on it.
 //
-// The stage never sees a provider URL. `img-src blob: data:` with
+// The rail never sees a provider URL. `img-src blob: data:` with
 // `connect-src 'none'` means a picture reaches this document only as bytes the
 // gadget already holds, handed over through `getMedia` (SEC-004 / CON-004).
 
 import { el, replace } from "./dom.js";
 import { loadMediaAsBlobUrl } from "./rpc.js";
 import { t } from "./i18n.js";
-
-/** A length, not a percentage: a percentage max-height on a centred item cut portrait frames. */
-const FRAME_MAX = "min(600px, 68dvh)";
 
 function readableBytes(total) {
   if (typeof total !== "number" || !Number.isFinite(total) || total <= 0) return null;
@@ -36,6 +34,7 @@ function framesOf(item) {
  *   host to start the door it already holds. Grants nothing.
  * - `refresh`: the stored media link is stale; the owner may refresh sources.
  * - `retry`: read this one frame again.
+ * - `recheck`: read consent metadata again (never `getMedia`).
  * - `null`: nothing to do from here (the file cannot be used).
  */
 const REFUSALS = {
@@ -73,7 +72,9 @@ function permissionCodeFor(state) {
 }
 
 /**
- * Builds the stage for one item and starts reading its first frame.
+ * The per-frame read engine both renderers share: the frame list, each
+ * read's state (unread / fetching / held / refused, plus any recovery the
+ * owner started), and the blob URLs it mints.
  *
  * `options.requestGrant()` / `options.requestActivation()` resolve to the
  * host's correlated `{ outcome, message }` (`grant-request.js` vocabulary).
@@ -82,96 +83,20 @@ function permissionCodeFor(state) {
  * on an unconfirmed-permission frame — a plain metadata read, never
  * `getMedia`, resolving to `{ state }`.
  *
- * `notifyPermission({ state })` (F2) is how the caller — never this module —
- * reports a fresh `metered_fetch` consent read, taken after an unprompted
- * host notice. This stage never reads permission metadata on its own
- * initiative and never infers consent from the notice itself. None of these
- * reads media; only a confirmed `activated` (or the owner's own click) leads
- * to a read, and only of the frame that asked.
+ * `repaint(key)` is the renderer's hook, called whenever one frame's display
+ * state may have changed; the rail repaints the matching slot.
  *
- * Returns `{ node, strip, frameCount, frameStates, notifyPermission, dispose }`.
+ * Returns `{ frames, urls, facts, states, read, readAll, act, refusalShape,
+ * frameLabel, frameStates, isLive, notifyPermission, dispose }`.
  */
-export function createMediaStage(rpc, item, locale, options = {}) {
+function createMediaReads(rpc, item, locale, options, repaint) {
   const frames = framesOf(item);
   const urls = new Map();      // media id -> blob URL
   const facts = new Map();     // media id -> { total }
   const states = new Map();    // media id -> { status, code, message, action, note }
   const inFlight = new Map();  // media id -> { token, promise }
   let tokens = 0;
-  let index = 0;
   let live = true;
-
-  const surface = el("div", { class: "sl-stage-surface" });
-  const kindChip = el("span", { class: "sl-stage-chip sl-stage-kind" });
-  const countChip = el("span", { class: "sl-stage-chip sl-stage-count" });
-  const stage = el("div", { class: "sl-stage" }, [surface, kindChip, countChip]);
-  const strip = el("div", { class: "sl-stage-strip", role: "tablist", "aria-label": t(locale, "drawerFrames") });
-  const readNote = el("p", { class: "sl-stage-read", role: "status" });
-
-  const keyAt = (at) => (frames[at] ? String(frames[at].id) : "");
-  const isCurrent = (key) => live && keyAt(index) === key;
-
-  function showFetching() {
-    replace(surface, [
-      el("div", { class: "sl-stage-state" }, [
-        el("div", { class: "sl-stage-skeleton", "aria-hidden": "true" }),
-        el("p", null, t(locale, "drawerMediaFetching"))
-      ])
-    ]);
-  }
-
-  function showRefusal(key) {
-    const state = states.get(key);
-    const shape = REFUSALS[state?.code] ?? DEFAULT_REFUSAL;
-    // F2: an absent-consent read disables a permission-related action
-    // outright — the read is authoritative, and a stale "Activate" pointed
-    // at a grant that is gone would just fail again. `null` here means no
-    // button at all, never a permanently-disabled one nobody can recover
-    // from: a later `notifyPermission({ state: "granted" })` clears the flag
-    // and restores it.
-    const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
-    const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
-    const pending = Boolean(state?.action);
-    const pendingLabel = state?.action === "grant" ? "drawerMediaWaitingGrant" : state?.action === "activate" ? "drawerMediaStarting" : "drawerMediaFetching";
-    replace(surface, [
-      el("div", { class: "sl-stage-state", "aria-busy": String(pending) }, [
-        el("strong", null, t(locale, shape.title)),
-        el("p", null, shape.body ? t(locale, shape.body) : state?.message || t(locale, "drawerMediaRefusedBody")),
-        state?.note ? el("p", { role: "status" }, state.note) : null,
-        action
-          ? el("button", {
-              type: "button",
-              class: "sl-stage-retry",
-              disabled: pending,
-              "aria-disabled": String(pending),
-              onclick: () => act(key, action)
-            }, t(locale, pending ? pendingLabel : label))
-          : null
-      ])
-    ]);
-  }
-
-  function showEmpty() {
-    stage.classList.add("sl-stage-empty");
-    replace(surface, [
-      el("div", { class: "sl-stage-empty-note" }, [
-        el("strong", null, t(locale, "drawerMediaNoneTitle")),
-        el("p", null, t(locale, "drawerMediaNoneBody"))
-      ])
-    ]);
-  }
-
-  function showFrame(url, frame) {
-    replace(surface, [
-      el("img", {
-        class: "sl-stage-img",
-        src: url,
-        alt: item.text ? item.text.slice(0, 120) : t(locale, "drawerEyebrow"),
-        style: `max-height: ${FRAME_MAX}`
-      })
-    ]);
-    kindChip.textContent = frameLabel(frame);
-  }
 
   /** A video is a cover image and nothing more: nothing here watched it or heard it. */
   function frameLabel(frame) {
@@ -181,40 +106,24 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     return parts.join(" · ");
   }
 
-  function paintStates() {
-    for (const [position, button] of [...strip.children].entries()) {
-      const status = states.get(keyAt(position))?.status;
-      const key = status === "held" ? "drawerFrameStateHeld" : status === "refused" ? "drawerFrameStateBlocked" : "drawerFrameStateUnread";
-      button.setAttribute("aria-label", t(locale, key, { n: position + 1 }));
-      button.setAttribute("data-state", status ?? "unread");
-      button.setAttribute("aria-selected", String(position === index));
-    }
-    const held = [...states.values()].filter((entry) => entry.status === "held").length;
-    readNote.textContent = frames.length > 1 ? t(locale, "drawerFramesRead", { read: held, total: frames.length }) : "";
-  }
-
-  function repaint(key) {
-    paintStates();
-    if (!isCurrent(key)) return;
-    // Redrawing replaces the control the owner just used. Keep focus in the
-    // stage (on its next action, else the state itself) instead of dropping it
-    // to the document body.
-    const doc = surface.ownerDocument;
-    const hadFocus = Boolean(doc?.activeElement && doc.activeElement !== doc.body && surface.contains?.(doc.activeElement));
-    if (urls.has(key)) showFrame(urls.get(key), frames[index]);
-    else if (states.get(key)?.status === "refused") showRefusal(key);
-    else showFetching();
-    if (!hadFocus) return;
-    const target = surface.querySelector?.("button:not([disabled])") ?? surface.querySelector?.(".sl-stage-state, .sl-stage-img");
-    if (!target || typeof target.focus !== "function") return;
-    if (target.tagName !== "BUTTON") target.setAttribute("tabindex", "-1");
-    target.focus();
+  /**
+   * What a refused frame offers, resolved for this canvas's wiring: a
+   * `refresh` offer with no re-scan function falls back to a plain retry of
+   * the frame, and a pending recovery swaps the label for its in-flight one.
+   */
+  function refusalShape(state) {
+    const shape = REFUSALS[state?.code] ?? DEFAULT_REFUSAL;
+    const action = shape.action === "refresh" && typeof options.refreshSources !== "function" ? "retry" : shape.action;
+    const label = shape.action === "refresh" && action === "retry" ? "drawerMediaCheckAgain" : shape.label;
+    const pending = Boolean(state?.action);
+    const pendingLabel = state?.action === "grant" ? "drawerMediaWaitingGrant" : state?.action === "activate" ? "drawerMediaStarting" : "drawerMediaFetching";
+    return { shape, action, label, pending, pendingLabel };
   }
 
   /**
    * One read per frame at a time. A second ask while one is running joins it
-   * rather than discarding it; a completion is applied only if the stage is
-   * live and the read is still the one this frame is waiting on.
+   * rather than discarding it; a completion is applied only if the surface
+   * is live and the read is still the one this frame is waiting on.
    */
   function startFetch(key) {
     if (!live || !key || urls.has(key)) return;
@@ -306,6 +215,17 @@ export function createMediaStage(rpc, item, locale, options = {}) {
       case "activated":
         states.delete(key);
         startFetch(key);
+        /*
+         * ONE ANSWER OPENS THE DOOR FOR EVERY WAITING FRAME. The grant was
+         * for the surface, not for the one slot the owner happened to press —
+         * every frame still refused for a permission reason may now read.
+         */
+        for (const [other, entry] of [...states.entries()]) {
+          if (entry.status === "refused" && isPermissionCode(entry.code)) {
+            states.delete(other);
+            startFetch(other);
+          }
+        }
         return;
       case "activation_failed":
         states.set(key, { ...next, code: "fetch_activation_failed", message: message || attempt.message });
@@ -327,53 +247,20 @@ export function createMediaStage(rpc, item, locale, options = {}) {
     repaint(key);
   }
 
-  function show(at) {
-    if (!live) return;
-    if (!frames.length) { showEmpty(); return; }
-    index = (at + frames.length) % frames.length;
-    const frame = frames[index];
-    const key = String(frame.id);
-    countChip.textContent = t(locale, "drawerFrameCount", { n: index + 1, total: frames.length });
-    kindChip.textContent = frameLabel(frame);
-    // Navigating never re-reads: a held frame draws, a refused one keeps its
-    // explanation, a running read keeps running. Only an unread frame reads.
-    if (!urls.has(key) && !states.has(key)) startFetch(key);
-    repaint(key);
+  /**
+   * The read one navigation makes — an unread frame only. A held frame keeps
+   * its bytes, a refused one keeps its explanation, a running read keeps
+   * running.
+   */
+  function read(key) {
+    if (!live || !key || urls.has(key) || states.has(key)) return;
+    startFetch(key);
   }
 
-  if (frames.length > 1) {
-    for (const [position] of frames.entries()) {
-      const button = el("button", {
-        type: "button",
-        role: "tab",
-        class: "sl-stage-thumb",
-        "aria-selected": String(position === 0),
-        "aria-label": t(locale, "drawerFrameStateUnread", { n: position + 1 }),
-        onclick: () => show(position),
-        onkeydown: (event) => {
-          if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-          event.preventDefault();
-          const next = (index + (event.key === "ArrowRight" ? 1 : -1) + frames.length) % frames.length;
-          show(next);
-          const target = strip.children[next];
-          if (target && typeof target.focus === "function") target.focus();
-        }
-      }, [el("span", { class: "sl-stage-thumb-n" }, String(position + 1))]);
-      strip.appendChild(button);
-    }
-    stage.appendChild(el("button", {
-      type: "button", class: "sl-stage-nav sl-stage-prev",
-      "aria-label": t(locale, "drawerFramePrev"), onclick: () => show(index - 1)
-    }, "‹"));
-    stage.appendChild(el("button", {
-      type: "button", class: "sl-stage-nav sl-stage-next",
-      "aria-label": t(locale, "drawerFrameNext"), onclick: () => show(index + 1)
-    }, "›"));
-    stage.appendChild(readNote);
+  /** The rail's read: every frame on show, each through the same door. */
+  function readAll() {
+    for (const frame of frames) read(String(frame.id));
   }
-
-  if (frames.length) show(0);
-  else showEmpty();
 
   /**
    * The host told this canvas an operation was ATTEMPTED elsewhere (Studio's
@@ -391,9 +278,16 @@ export function createMediaStage(rpc, item, locale, options = {}) {
   }
 
   return {
-    node: stage,
-    strip: frames.length > 1 ? strip : null,
-    frameCount: frames.length,
+    frames,
+    urls,
+    facts,
+    states,
+    read,
+    readAll,
+    act,
+    refusalShape,
+    frameLabel,
+    isLive: () => live,
     frameStates() {
       return frames.map((frame) => ({ id: String(frame.id), status: states.get(String(frame.id))?.status ?? "unread" }));
     },
@@ -405,5 +299,112 @@ export function createMediaStage(rpc, item, locale, options = {}) {
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
     }
+  };
+}
+
+/**
+ * THE RAIL — the Reference tab's media surface, drawn in the Post tab's
+ * own vocabulary: one numbered `sl-slot` per source frame, in source order,
+ * every frame reading at once because every frame is on show.
+ *
+ * The slot keeps the read's honesty per frame: a held frame draws its
+ * bytes, a fetching one shimmers with the same skeleton the Post tab's
+ * arriving page wears, and a refused one names the refusal inside the frame
+ * and carries its own recovery action — the same per-frame `getMedia` door,
+ * the same grant/activate/recheck/refresh recovery, never a provider URL.
+ *
+ * Returns `{ node, frameCount, frameStates, notifyPermission, dispose }`.
+ */
+export function createMediaRail(rpc, item, locale, options = {}) {
+  const rail = el("div", { class: "sl-strip sl-ref-strip", role: "list", "aria-label": t(locale, "drawerFrames") });
+  const slots = new Map(); // media id -> { frameEl, tail, position }
+
+  const reads = createMediaReads(rpc, item, locale, options, repaint);
+  const { frames, urls, states } = reads;
+  const multi = frames.length > 1;
+
+  for (const [position, frame] of frames.entries()) {
+    const frameEl = el("div", { class: "sl-output-frame sl-slot-frame" });
+    const media = el("div", { class: "sl-slot-media" }, [frameEl]);
+    // The frame number rides on the picture, the way a page number does —
+    // a refusal naming "frame 2" points at this slot.
+    if (multi) media.appendChild(el("span", { class: "sl-slot-num", "aria-hidden": "true" }, String(position + 1)));
+    const tail = el("div", { class: "sl-slot-tail", hidden: true });
+    rail.appendChild(el("div", { class: "sl-slot", role: "listitem" }, [media, tail]));
+    slots.set(String(frame.id), { frameEl, tail, position });
+  }
+
+  // A source with no readable frames still gets the one honest slot: the
+  // same dashed frame an empty page wears, saying nothing was lost.
+  if (!frames.length) {
+    rail.appendChild(el("div", { class: "sl-slot", role: "listitem" }, [
+      el("div", { class: "sl-slot-media" }, [
+        el("div", { class: "sl-output-frame sl-slot-frame sl-slot-frame-empty" }, [
+          el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, "drawerMediaNoneTitle"))
+        ])
+      ]),
+      el("div", { class: "sl-slot-cap" }, t(locale, "drawerMediaNoneBody"))
+    ]));
+  }
+
+  function repaint(key) {
+    const slot = slots.get(key);
+    if (!slot) return;
+    const frame = frames[slot.position];
+    const url = urls.get(key);
+    const state = states.get(key);
+    let tailKids = [];
+    if (url) {
+      slot.frameEl.classList.remove("sl-output-frame-skel");
+      replace(slot.frameEl, [
+        el("img", {
+          class: "sl-pc-canvas",
+          src: url,
+          alt: frame?.alt || (item.text ? item.text.slice(0, 120) : t(locale, "drawerFrameNumber", { n: slot.position + 1 }))
+        })
+      ]);
+      tailKids = [el("div", { class: "sl-slot-cap" }, reads.frameLabel(frame))];
+    } else if (state?.status === "refused") {
+      slot.frameEl.classList.remove("sl-output-frame-skel");
+      const { shape, action, label, pending, pendingLabel } = reads.refusalShape(state);
+      replace(slot.frameEl, [
+        el("span", { class: "sl-pc-media-empty", role: "status" }, t(locale, shape.title))
+      ]);
+      tailKids = [
+        el("div", { class: "sl-slot-cap" }, shape.body ? t(locale, shape.body) : state?.message || t(locale, "drawerMediaRefusedBody"))
+      ];
+      const acts = [
+        action
+          ? el("button", {
+              type: "button",
+              class: "sl-secondary sl-sm",
+              disabled: pending || null,
+              "aria-disabled": String(pending),
+              onclick: () => reads.act(key, action)
+            }, t(locale, pending ? pendingLabel : label))
+          : null,
+        state?.note ? el("p", { class: "sl-field-note", role: "status" }, state.note) : null
+      ].filter(Boolean);
+      if (acts.length) tailKids.push(el("div", { class: "sl-slot-acts" }, acts));
+    } else {
+      // Fetching, or not yet read: the same shimmer-and-label an arriving
+      // generated page wears.
+      slot.frameEl.classList.add("sl-output-frame-skel");
+      replace(slot.frameEl, [el("span", { class: "sl-skel-label" }, t(locale, "drawerMediaFetching"))]);
+    }
+    replace(slot.tail, tailKids);
+    slot.tail.hidden = tailKids.length === 0;
+  }
+
+  // Every slot is on show, so every frame reads — one `getMedia` door, one
+  // read per frame, in source order.
+  reads.readAll();
+
+  return {
+    node: rail,
+    frameCount: frames.length,
+    frameStates: reads.frameStates,
+    notifyPermission: reads.notifyPermission,
+    dispose: reads.dispose
   };
 }

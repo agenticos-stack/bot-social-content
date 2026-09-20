@@ -912,6 +912,15 @@ export function renderOutputPanel(locale, item, ctx) {
   }
   // Rewrite caption is a quiet action on the shared label row.
   const rewriteAction = partButton("caption", "drawerRewriteCaption", "drawerRewriteCaptionKeeps", capState === "requested", { bare: true, className: "sl-brief-link" });
+  /*
+   * THE MODE THE REWRITE RUNS UNDER, NAMED NEXT TO THE ACTION. A live
+   * request carries the mode it was stamped with; an idle post previews
+   * the same rule the server will stamp — no caption derives one from
+   * the reference, an existing caption gets improved. The unsaved buffer
+   * counts because choosing "use it" saves before the ask is stamped.
+   */
+  const captionMode = generationMark(item?.generation)?.captionMode
+    ?? (captionEmpty ? "derive" : "enhance");
 
   /*
    * THE COLUMN PAIR BOTH TABS SHARE. Media on the left, words on the right —
@@ -941,6 +950,7 @@ export function renderOutputPanel(locale, item, ctx) {
       ]),
       el("section", { class: "sl-cols-side", "aria-labelledby": "sl-output-caption-title" }, [
         columnLabel(t(locale, "drawerOutputCaption"), rewriteAction, "sl-output-caption-title"),
+        el("p", { class: "sl-field-note sl-caption-mode" }, t(locale, captionMode === "derive" ? "drawerCaptionModeDerive" : "drawerCaptionModeEnhance")),
         capState === "requested"
           ? el("p", { class: "sl-field-note sl-part-status", role: "status" },
               unsubmitted
@@ -1052,10 +1062,11 @@ function formatLabel(mimeType) {
 // ---------------------------------------------------------------------------
 
 /**
- * ctx: `{ stage: { node, strip } | null, editable, saving,
- *   imageRefsAvailable, onAdoptSource() }` — the existing carousel stage with
- *   its own recovery, plus the one adopt action the column carries under the
- *   source image (the same `onAdoptSource` the Post tab's add menu runs).
+ * ctx: `{ rail: { node } | null, editable, saving,
+ *   imageRefsAvailable, onAdoptSource() }` — the source-media rail with its
+ *   own per-frame reads and recovery (the Post tab's slot vocabulary), plus
+ *   the one adopt action the column carries under it (the same
+ *   `onAdoptSource` the Post tab's add menu runs).
  */
 export function renderReferencePanel(locale, item, ctx = {}) {
   const source = item.sourceItem;
@@ -1078,7 +1089,7 @@ export function renderReferencePanel(locale, item, ctx = {}) {
     el("div", { class: "sl-cols" }, [
       el("div", { class: "sl-cols-media" }, [
         columnLabel(t(locale, "drawerRefImageLabel"), null, "sl-reference-img-title"),
-        ctx.stage ? el("div", { class: "sl-preview-stage-wrap sl-reference-stage" }, [ctx.stage.node, ctx.stage.strip]) : null,
+        ctx.rail?.node ?? null,
         hasVideo ? el("p", { class: "sl-field-note" }, t(locale, "drawerCoverOnly")) : null,
         ctx.editable
           ? el("button", {
