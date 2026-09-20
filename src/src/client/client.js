@@ -333,6 +333,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sl-collabel { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .sl-collabel .sl-grow { flex: 1; min-width: 0; }
 .sl-strip { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+/* Several source frames share the media column rather than each taking all of
+   it: two abreast, wrapping, so a ten-frame album reads in five rows instead of
+   ten screenfuls. Their captions and refusal tails stay with their own tile. */
+.sl-ref-strip-multi { flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.sl-ref-strip-multi > .sl-slot { width: calc(50% - 4px); min-width: 0; gap: 4px; }
+.sl-ref-strip-multi .sl-slot-cap { font-size: 10.5px; }
+.sl-ref-strip-multi .sl-slot-num { top: 5px; right: 5px; min-width: 18px; height: 18px; line-height: 16px; font-size: 10px; padding: 0 4px; }
 .sl-slot { display: flex; flex-direction: column; gap: 5px; }
 .sl-slot-media { position: relative; }
 .sl-slot-cap { font-size: 11px; color: var(--sl-ink-2); line-height: 1.35; }

@@ -316,12 +316,22 @@ function createMediaReads(rpc, item, locale, options, repaint) {
  * Returns `{ node, frameCount, frameStates, notifyPermission, dispose }`.
  */
 export function createMediaRail(rpc, item, locale, options = {}) {
-  const rail = el("div", { class: "sl-strip sl-ref-strip", role: "list", "aria-label": t(locale, "drawerFrames") });
   const slots = new Map(); // media id -> { frameEl, tail, position }
 
   const reads = createMediaReads(rpc, item, locale, options, repaint);
   const { frames, urls, states } = reads;
   const multi = frames.length > 1;
+  // ONE FRAME FILLS THE COLUMN; SEVERAL SHARE IT. At full column width the
+  // second frame of a two-frame source was already clipped by the sheet, and
+  // an album of ten was ten screenfuls of scrolling to see what the source
+  // was. Several frames lay out as a wrapping row of compact tiles instead —
+  // still every frame on show, in source order, which is the point of the
+  // rail, but read at a glance rather than a scroll.
+  const rail = el("div", {
+    class: "sl-strip sl-ref-strip" + (multi ? " sl-ref-strip-multi" : ""),
+    role: "list",
+    "aria-label": t(locale, "drawerFrames")
+  });
 
   for (const [position, frame] of frames.entries()) {
     const frameEl = el("div", { class: "sl-output-frame sl-slot-frame" });
